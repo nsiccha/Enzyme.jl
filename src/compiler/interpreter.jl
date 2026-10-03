@@ -407,7 +407,8 @@ Say how Enzyme handles a call of the signature `specTypes`, or `nothing` when
 it handles it like any other call:
 
 - `:primitive`: Enzyme differentiates the call itself (`is_primitive_func`).
-- `:alwaysinline`: the inliner must always inline it (`is_alwaysinline_func`).
+- `:alwaysinline`: the inliner must always inline it (`is_alwaysinline_func`
+  or the Julia 1.10 generator-collection fallback below).
 - `:inactive`, `:frule`, `:rrule`: the signature has a rule of that kind, and
   `interp` has that kind of rule enabled.
 
@@ -426,6 +427,15 @@ function enzyme_call_kind(@nospecialize(interp::EnzymeInterpreter), @nospecializ
         return :frule
     elseif interp.reverse_rules && cached_has_rrule(specTypes, interp.world, method_table)
         return :rrule
+    end
+    @static if VERSION < v"1.11-"
+        # Expose generator captures before activity analysis without bypassing
+        # explicit rules. Newer Julia has a different array allocation path.
+        if isa(specTypes, DataType) && length(specTypes.parameters) == 2 &&
+           specTypes.parameters[1] === typeof(Base.collect) &&
+           specTypes.parameters[2] <: Base.Generator
+            return :alwaysinline
+        end
     end
     return nothing
 end
