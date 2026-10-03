@@ -312,6 +312,12 @@ Core.Compiler.method_table(@nospecialize(interp::EnzymeInterpreter)) = interp.me
 
 function is_alwaysinline_func(@nospecialize(TT))::Bool
     isa(TT, DataType) || return false
+    # Expose individual generator captures before activity analysis: otherwise
+    # a constant array can be stored into a closure also holding active data.
+    if length(TT.parameters) == 2 && TT.parameters[1] === typeof(Base.collect) &&
+       TT.parameters[2] <: Base.Generator
+        return true
+    end
     @static if VERSION ≥ v"1.11-"
     if TT.parameters[1] == typeof(Core.memoryref)
         return true
