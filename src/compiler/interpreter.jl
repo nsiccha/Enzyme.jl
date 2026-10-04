@@ -924,6 +924,52 @@ end
     return dest
 end
 
+# Iterating over the vararg tuple in Base's dense-vector vcat joins constant
+# and active arrays at the loop phi. Keep each copy tied to its tuple field.
+@inline copy_vcat!(out, offset, ::Tuple{}) = out
+
+@inline function copy_vcat!(out, offset, arrays::Tuple)
+    a = first(arrays)
+    n = length(a)
+    @assert offset + n <= 1 + length(out) # Concurrent modification of arrays?
+    Base.unsafe_copyto!(out, offset, a, 1, n)
+    return copy_vcat!(out, offset + n, Base.tail(arrays))
+end
+
+@inline function override_vcat(arrays::Vector{T}...) where {T}
+    out = Vector{T}(undef, sum(map(length, arrays)))
+    return copy_vcat!(out, 1, arrays)
+end
+
+const DENSE_VCAT_METHOD = which(Base.vcat, Tuple{Vararg{Vector{T}}} where {T})
+
+function should_rewrite_vcat(interp::EnzymeInterpreter, argtypes, sv::AbsIntState)
+    length(argtypes) > 1 || return false
+    sig = Core.Compiler.argtypes_to_type(argtypes)
+    Base.isdispatchtuple(sig) || return false
+    sig <: (Tuple{typeof(Base.vcat), Vararg{Vector{T}}} where {T}) || return false
+    enzyme_call_kind(interp, sig) === nothing || return false
+
+    result = Core.Compiler.findall(sig, Core.Compiler.method_table(interp); limit = 1)
+    (result === nothing || result === missing) && return false
+    @static if isdefined(Core.Compiler, :MethodMatchResult)
+        matches = result.matches
+    else
+        matches = result
+    end
+    Core.Compiler.length(matches) == 1 || return false
+    match = Core.Compiler.getindex(matches, 1)
+    match.method === DENSE_VCAT_METHOD || return false
+    @static if isdefined(Core.Compiler, :add_mt_backedge!)
+        Core.Compiler.add_mt_backedge!(sv, typeof(Base.vcat).name.mt, sig)
+        Core.Compiler.add_backedge!(sv, Core.Compiler.specialize_method(match))
+    else
+        info = Core.Compiler.MethodMatchInfo(matches, Core.methodtable, sig, true)
+        Core.Compiler.add_edges!(sv.edges, info)
+    end
+    return true
+end
+
 @generated function same_sized(x::Tuple)
     result = :true
     prev = nothing
@@ -1446,6 +1492,21 @@ function abstract_call_known(
     end
 
     if interp.broadcast_rewrite
+        if f === Base.vcat && should_rewrite_vcat(interp, argtypes, sv)
+            arginfo2 = ArgInfo(
+                fargs isa Nothing ? nothing :
+                    [:(Enzyme.Compiler.Interpreter.override_vcat), fargs[2:end]...],
+                [Core.Const(Enzyme.Compiler.Interpreter.override_vcat), argtypes[2:end]...],
+            )
+            return Base.@invoke abstract_call_known(
+                interp::AbstractInterpreter,
+                Enzyme.Compiler.Interpreter.override_vcat::Any,
+                arginfo2::ArgInfo,
+                si::StmtInfo,
+                sv::AbsIntState,
+                max_methods::Int,
+            )
+        end
         if f === Base.copyto! && length(argtypes) == 3
             # Ideally we just override uses of the AbstractArray base class, but
             # I don't know how to override the method in base, without accidentally overridding
