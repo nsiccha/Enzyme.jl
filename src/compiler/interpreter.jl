@@ -943,31 +943,42 @@ end
 
 const DENSE_VCAT_METHOD = which(Base.vcat, Tuple{Vararg{Vector{T}}} where {T})
 
-function should_rewrite_vcat(interp::EnzymeInterpreter, argtypes, sv::AbsIntState)
-    length(argtypes) > 1 || return false
+include("concatenation.jl")
+
+concat_rewrite(interp::EnzymeInterpreter, f, argtypes, sv::AbsIntState) = nothing
+
+function concat_rewrite(interp::EnzymeInterpreter, f::DenseConcatFunction, argtypes, sv::AbsIntState)
+    length(argtypes) > 1 || return nothing
+    if f === Core.kwcall
+        length(argtypes) == 4 || return nothing
+        Core.Compiler.widenconst(argtypes[3]) === typeof(Base.stack) || return nothing
+    end
     sig = Core.Compiler.argtypes_to_type(argtypes)
-    Base.isdispatchtuple(sig) || return false
-    sig <: (Tuple{typeof(Base.vcat), Vararg{Vector{T}}} where {T}) || return false
-    enzyme_call_kind(interp, sig) === nothing || return false
+    Base.isdispatchtuple(sig) || return nothing
+    replacement = concat_replacement(f, sig)
+    replacement === nothing && return nothing
+    # Keep user rules and more-specific methods authoritative, and invalidate
+    # rewritten callers when method selection changes.
+    enzyme_call_kind(interp, simplify_kw(sig)) === nothing || return nothing
 
     result = Core.Compiler.findall(sig, Core.Compiler.method_table(interp); limit = 1)
-    (result === nothing || result === missing) && return false
+    (result === nothing || result === missing) && return nothing
     @static if isdefined(Core.Compiler, :MethodMatchResult)
         matches = result.matches
     else
         matches = result
     end
-    Core.Compiler.length(matches) == 1 || return false
+    Core.Compiler.length(matches) == 1 || return nothing
     match = Core.Compiler.getindex(matches, 1)
-    match.method === DENSE_VCAT_METHOD || return false
+    match.method === first(replacement) || return nothing
     @static if isdefined(Core.Compiler, :add_mt_backedge!)
-        Core.Compiler.add_mt_backedge!(sv, typeof(Base.vcat).name.mt, sig)
+        Core.Compiler.add_mt_backedge!(sv, typeof(f).name.mt, sig)
         Core.Compiler.add_backedge!(sv, Core.Compiler.specialize_method(match))
     else
         info = Core.Compiler.MethodMatchInfo(matches, Core.methodtable, sig, true)
         Core.Compiler.add_edges!(sv.edges, info)
     end
-    return true
+    return last(replacement)
 end
 
 @generated function same_sized(x::Tuple)
@@ -1492,15 +1503,16 @@ function abstract_call_known(
     end
 
     if interp.broadcast_rewrite
-        if f === Base.vcat && should_rewrite_vcat(interp, argtypes, sv)
+        replacement = concat_rewrite(interp, f, argtypes, sv)
+        if replacement !== nothing
             arginfo2 = ArgInfo(
                 fargs isa Nothing ? nothing :
-                    [:(Enzyme.Compiler.Interpreter.override_vcat), fargs[2:end]...],
-                [Core.Const(Enzyme.Compiler.Interpreter.override_vcat), argtypes[2:end]...],
+                    [QuoteNode(replacement), fargs[2:end]...],
+                [Core.Const(replacement), argtypes[2:end]...],
             )
             return Base.@invoke abstract_call_known(
                 interp::AbstractInterpreter,
-                Enzyme.Compiler.Interpreter.override_vcat::Any,
+                replacement::Any,
                 arginfo2::ArgInfo,
                 si::StmtInfo,
                 sv::AbsIntState,
