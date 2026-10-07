@@ -1035,14 +1035,13 @@ function called_function_name(@nospecialize(inst::LLVM.Value))::String
     return isa(fn, LLVM.Function) ? LLVM.name(fn) : ""
 end
 
-function is_pointerfree_array_type(@nospecialize(TT))::Bool
+function is_array_type(@nospecialize(TT))::Bool
     TT isa DataType || return false
     @static if VERSION < v"1.11-"
-        TT <: Array || return false
+        return TT <: Array
     else
-        (TT <: Array || TT <: Memory) || return false
+        return TT <: Array || TT <: Memory
     end
-    return isbitstype(eltype(TT))
 end
 
 @static if VERSION < v"1.11-"
@@ -1072,6 +1071,29 @@ else
         return legal && is_memory_instance(unbind(obj))
     end
 
+    # Whether `call` is a constant-length memset/memcpy/memmove into `ptr`, a pointer
+    # into the Array object `alloc`, that does not reach its `ref.mem` field at
+    # offset `memoff`; for example the copy of a matrix's size tuple.
+    function writes_beside_memory_field(
+            call::LLVM.CallInst,
+            ptr::LLVM.Value,
+            alloc::LLVM.CallInst,
+            memoff::Int,
+        )::Bool
+        nm = called_function_name(call)
+        (
+            startswith(nm, "llvm.memset.") || startswith(nm, "llvm.memcpy.") ||
+                startswith(nm, "llvm.memmove.")
+        ) || return false
+        ops = operands(call)
+        ops[1] == ptr || return false
+        len = ops[3]
+        isa(len, LLVM.ConstantInt) || return false
+        base, off = get_base_and_offset(ptr)
+        base == alloc || return false
+        return off >= memoff + sizeof(Ptr{Cvoid}) || off + convert(Int, len) <= memoff
+    end
+
     # Whether the Array object allocated by `alloc` wraps memory allocated by the
     # function being differentiated: every store to its `ref.mem` field writes such
     # memory, and the object reaches no call that could store other memory there.
@@ -1097,6 +1119,8 @@ else
                         is_fresh_memory(operands(user)[1], Set{LLVM.Value}()) || return false
                         found = true
                     end
+                elseif isa(user, LLVM.CallInst) && writes_beside_memory_field(user, cur, alloc, memoff)
+                    continue
                 elseif !(isa(user, LLVM.LoadInst) || isa(user, LLVM.PHIInst) || isa(user, LLVM.SelectInst))
                     return false
                 end
@@ -1107,15 +1131,16 @@ else
 end
 
 # When `cur`, an inactive tracked pointer to a Julia value of type `TT`, is (a cast
-# of) a newly allocated array whose elements hold no references, return that
-# allocation call; otherwise `nothing`. A zero-filled array of the same shape is
-# then a valid shadow for `cur`: nothing else can reach that shadow, and activity
-# analysis found no active data stored into the primal.
-function fresh_pointerfree_array_allocation(
+# of) a newly allocated array, return that allocation call; otherwise `nothing`.
+# If its elements hold no references, a zero-filled array of the same shape is then
+# a valid shadow for `cur`: nothing else can reach that shadow, and activity
+# analysis found no active data stored into the primal. Elements that are
+# references may alias other objects, so only an empty such array has that shadow.
+function fresh_array_allocation(
         @nospecialize(cur::LLVM.Value),
         @nospecialize(TT),
     )::Union{Nothing, LLVM.CallInst}
-    is_pointerfree_array_type(TT) || return nothing
+    is_array_type(TT) || return nothing
     ty = value_type(cur)
     (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return nothing
     base, off = get_base_and_offset(cur; offsetAllowed = false)
@@ -1130,15 +1155,23 @@ function fresh_pointerfree_array_allocation(
     return nothing
 end
 
-# A zero-filled array of the same shape as the array allocated by `alloc` (in the
-# function being generated), built at run time and cast to `ty`.
+# The shadow of an empty fresh array whose elements may hold references, called at
+# run time from generated code: a non-empty one raises `err`, the runtime activity
+# error that a mixed activity on it raised before.
+function empty_array_shadow(prim, err::EnzymeRuntimeActivityError)
+    isempty(prim) || throw(err)
+    return make_zero(prim)
+end
+
+# Emit the run-time call `args` (`make_zero` or `empty_array_shadow` applied to a
+# fresh array) returning a zero-filled array of the same shape, cast to `ty`.
 function emit_zero_shadow!(
         B::LLVM.IRBuilder,
-        alloc::LLVM.Value,
+        args::Vector{LLVM.Value},
         @nospecialize(ty::LLVM.LLVMType),
         created::Vector{LLVM.Instruction},
     )::LLVM.Value
-    res = emit_apply_generic!(B, LLVM.Value[unsafe_to_llvm(B, make_zero), alloc])
+    res = emit_apply_generic!(B, args)
     push!(created, res)
     if value_type(res) != ty
         res = bitcast!(B, res, ty)
@@ -1147,6 +1180,69 @@ function emit_zero_shadow!(
         end
     end
     return res
+end
+
+# How a mixed activity error describes the constant value `obj` of type `TT`.
+function mixed_activity_value_description(
+        legal::Bool,
+        @nospecialize(obj),
+        @nospecialize(obj0),
+        @nospecialize(TT),
+    )::String
+    legal || return "Unknown object of type" * " " * string(TT)
+    sv = string(obj) * " of type" * " " * string(TT)
+    if obj0 isa Core.Binding
+        sv = sv * " binded at " * string(obj0)
+    end
+    return sv
+end
+
+# The message of the runtime activity error for the mixed activity at `val`, where
+# `badval` describes the constant value `illegalVal`.
+function mixed_activity_message(
+        msg::String,
+        badval::Union{Nothing, String},
+        @nospecialize(illegalVal),
+        @nospecialize(val),
+        gutils::GradientUtils,
+        @nospecialize(bt),
+    )::String
+    io = IOBuffer()
+    print(io, msg)
+    println(io)
+    if badval !== nothing
+        println(io, " Julia value causing error:  " * badval)
+    else
+        ttval = val
+        if isa(ttval, LLVM.StoreInst)
+            ttval = operands(ttval)[1]
+        end
+        tt = TypeTree(API.EnzymeGradientUtilsAllocAndGetTypeTree(gutils, ttval))
+        st = API.EnzymeTypeTreeToString(tt)
+        print(io, "Type tree: ")
+        println(io, Base.unsafe_string(st))
+        API.EnzymeStringFree(st)
+    end
+    if illegalVal !== nothing
+        println(io, " LLVM view of erring value:   " * string(illegalVal))
+    end
+    if bt !== nothing
+        Base.show_backtrace(io, bt)
+    end
+    return String(take!(io))
+end
+
+# The method instance (or `nothing`) and world of the function containing `val`.
+function mixed_activity_method(@nospecialize(val))
+    f = if isa(val, LLVM.Instruction)
+        LLVM.parent(LLVM.parent(val))::LLVM.Function
+    elseif isa(val, LLVM.Argument)
+        parent_scope(val)::LLVM.Function
+    else
+        return nothing, nothing
+    end
+    mi, _ = enzyme_custom_extract_mi(f, false) #=error=#
+    return mi, enzyme_world()
 end
 
 function julia_error(
@@ -1657,17 +1753,40 @@ end
 
                 end
 
-                alloc = fresh_pointerfree_array_allocation(cur, TT)
+                alloc = fresh_array_allocation(cur, TT)
                 if alloc !== nothing
                     nalloc = new_from_original(gutils, alloc)
+                    shadowargs = if isbitstype(eltype(TT))
+                        LLVM.Value[unsafe_to_llvm(prevbb, make_zero), nalloc]
+                    else
+                        rttext = mixed_activity_message(
+                            msg,
+                            mixed_activity_value_description(legal2, obj, obj0, TT),
+                            cur,
+                            val,
+                            gutils,
+                            bt,
+                        )
+                        rtmi, rtworld = mixed_activity_method(val)
+                        rterr = if rtmi === nothing
+                            EnzymeRuntimeActivityError(rttext, nothing, nothing)
+                        else
+                            EnzymeRuntimeActivityError(rttext, rtmi, rtworld)
+                        end
+                        LLVM.Value[
+                            unsafe_to_llvm(prevbb, empty_array_shadow),
+                            nalloc,
+                            unsafe_to_llvm(prevbb, rterr),
+                        ]
+                    end
                     shadowres = if width == 1
-                        emit_zero_shadow!(prevbb, nalloc, value_type(cur), created)
+                        emit_zero_shadow!(prevbb, shadowargs, value_type(cur), created)
                     else
                         sres = UndefValue(
                             LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(cur))),
                         )
                         for idx in 1:width
-                            res = emit_zero_shadow!(prevbb, nalloc, value_type(cur), created)
+                            res = emit_zero_shadow!(prevbb, shadowargs, value_type(cur), created)
                             sres = insert_value!(prevbb, sres, res, idx - 1)
                             if sres isa LLVM.Instruction
                                 push!(created, sres)
@@ -1679,15 +1798,7 @@ end
                     return shadowres
                 end
 
-                badval = if legal2
-                    sv = string(obj) * " of type" * " " * string(TT)
-		    if obj0 isa Core.Binding
-			sv = sv *" binded at "*string(obj0)
-		    end
-		    sv
-                else
-                    "Unknown object of type" * " " * string(TT)
-                end
+                badval = mixed_activity_value_description(legal2, obj, obj0, TT)
                 @assert !illegal
                 illegalVal = cur
                 illegal = true
@@ -1936,49 +2047,8 @@ end
                 return C_NULL
             end
         end
-        msg2 = sprint() do io
-            print(io, msg)
-            println(io)
-            if badval !== nothing
-                println(io, " Julia value causing error:  " * badval)
-            else
-                ttval = val
-                if isa(ttval, LLVM.StoreInst)
-                    ttval = operands(ttval)[1]
-                end
-                tt = TypeTree(API.EnzymeGradientUtilsAllocAndGetTypeTree(gutils, ttval))
-                st = API.EnzymeTypeTreeToString(tt)
-                print(io, "Type tree: ")
-                println(io, Base.unsafe_string(st))
-                API.EnzymeStringFree(st)
-            end
-            if illegalVal !== nothing
-                println(io, " LLVM view of erring value:   " * string(illegalVal))
-            end
-            if bt !== nothing
-                Base.show_backtrace(io, bt)
-            end
-        end
-        
-	    mi = nothing
-        world = nothing
-
-        if isa(val, LLVM.Instruction)
-            f = LLVM.parent(LLVM.parent(val))::LLVM.Function
-            mi, rt = enzyme_custom_extract_mi(
-                f,
-                false,
-            ) #=error=#
-            world = enzyme_world()
-        elseif isa(val, LLVM.Argument)
-            f = parent_scope(val)::LLVM.Function
-            mi, rt = enzyme_custom_extract_mi(
-                f,
-                false,
-            ) #=error=#
-            world = enzyme_world()
-        end
-        mode = Enzyme.API.DEM_ReverseModeCombined
+        msg2 = mixed_activity_message(msg, badval, illegalVal, val, gutils, bt)
+        mi, world = mixed_activity_method(val)
 
         if mi !== nothing
             emit_error(b, nothing, (msg2, mi, world), EnzymeRuntimeActivityError{Cstring, Core.MethodInstance, UInt})

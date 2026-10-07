@@ -160,3 +160,156 @@ branch_global(x, e) = sum(e ? BRANCH_GLOBAL : x .* 2.0)
     )
     @test dx ≈ [0.0, 0.0]
 end
+
+# The fresh constant array holds references (arrays, or immutable structs with
+# array fields). Its elements may alias other objects, so only an empty one has a
+# fresh shadow; a non-empty one keeps the runtime activity error.
+const NestedPair = NamedTuple{(:values, :state), Tuple{Vector{Float64}, Vector{Float64}}}
+
+# Inlined, so the loop reads the branch's result directly as in a user's loop.
+@inline function sum_nested(v)
+    s = 0.0
+    for a in v
+        s += sum(a)
+    end
+    return s
+end
+@inline function sum_pairs(v)
+    s = 0.0
+    for a in v
+        s += sum(a.values) + 2.0 * sum(a.state)
+    end
+    return s
+end
+
+nested_literal(x, e) = sum_nested(e ? Vector{Float64}[] : [x .* 2.0, x .* 3.0])
+nested_pairs(x, e) =
+    sum_pairs(e ? NestedPair[] : [(; values = x .* 2.0, state = x .* 3.0)])
+nested_undef(x, e, n) = sum_nested(e ? Vector{Vector{Float64}}(undef, n) : [x .* 2.0])
+nested_matrix(x, e) =
+    sum_nested(e ? Matrix{Vector{Float64}}(undef, 0, 3) : reshape([x .* 2.0, x], 2, 1))
+nested_select(x, e) = sum_nested(ifelse(e, Vector{Float64}[], [x .* 2.0]))
+function nested_nonempty(x, e)
+    v = e ? [zeros(length(x))] : [x .* 2.0]
+    s = 0.0
+    for a in v
+        s += sum(a)
+    end
+    return s
+end
+# A matrix's size tuple is copied into its Array object.
+function matrix_loop(x, e)
+    v = e ? Matrix{Float64}(undef, 0, 3) : reshape(x .* 2.0, 1, 2)
+    s = 0.0
+    for a in v
+        s += a
+    end
+    return s
+end
+nested_return(x, e) = e ? Vector{Float64}[] : [x .* 2.0]
+function nested_push(x, e)
+    v = e ? Vector{Float64}[] : [x .* 2.0]
+    push!(v, x .* 3.0)
+    return sum_nested(v)
+end
+function nested_carry(x, k)
+    v = Vector{Float64}[]
+    for i in 1:k
+        v = [x .* Float64(i), x]
+    end
+    return sum_nested(v)
+end
+
+@testset "Branch selecting a fresh constant array of arrays" begin
+    x0 = [1.0, 2.0]
+    cases = (
+        (nested_literal, [0.0, 0.0], [5.0, 5.0]),
+        (nested_pairs, [0.0, 0.0], [8.0, 8.0]),
+        (nested_matrix, [0.0, 0.0], [3.0, 3.0]),
+        (matrix_loop, [0.0, 0.0], [2.0, 2.0]),
+        (nested_select, [0.0, 0.0], [2.0, 2.0]),
+        (nested_push, [3.0, 3.0], [5.0, 5.0]),
+    )
+    for (f, dtrue, dfalse) in cases, e in (true, false)
+        x = copy(x0)
+        dx = zero(x)
+        res = autodiff(ReverseWithPrimal, f, Active, Duplicated(x, dx), Const(e))
+        @test res[2] ≈ f(x0, e)
+        @test dx ≈ (e ? dtrue : dfalse)
+        @test x == x0
+    end
+
+    for e in (true, false)
+        expected = e ? 0.0 : 5.0
+        @test autodiff(Forward, nested_literal, Duplicated(copy(x0), [1.0, 0.0]), Const(e))[1] ≈
+            expected
+
+        d1 = zero(x0)
+        d2 = zero(x0)
+        autodiff(Reverse, nested_literal, Active, BatchDuplicated(copy(x0), (d1, d2)), Const(e))
+        @test d1 ≈ fill(expected, 2)
+        @test d2 ≈ fill(expected, 2)
+
+        dx = zero(x0)
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal,
+            Const{typeof(nested_literal)},
+            Active,
+            Duplicated{Vector{Float64}},
+            Const{Bool},
+        )
+        tape, primal, _ = fwd(Const(nested_literal), Duplicated(copy(x0), dx), Const(e))
+        rev(Const(nested_literal), Duplicated(copy(x0), dx), Const(e), 1.0, tape)
+        @test primal ≈ nested_literal(x0, e)
+        @test dx ≈ fill(expected, 2)
+
+        dret = autodiff(Forward, nested_return, Duplicated, Duplicated(copy(x0), [1.0, 0.0]), Const(e))[1]
+        @test dret == (e ? Vector{Float64}[] : [[2.0, 0.0]])
+    end
+
+    # The length is only known at run time. On Julia 1.11+ the branch then meets the
+    # element pointer of either the shared empty memory or a fresh allocation, which
+    # has no shadow yet; the active branch's derivative is also lost there.
+    for (e, n, expected) in ((true, 0, 0.0), (false, 0, 2.0), (false, 3, 2.0))
+        dx = zero(x0)
+        @static if VERSION < v"1.11-"
+            autodiff(Reverse, nested_undef, Active, Duplicated(copy(x0), dx), Const(e), Const(n))
+            @test dx ≈ fill(expected, 2)
+        else
+            @test_broken try
+                autodiff(Reverse, nested_undef, Active, Duplicated(copy(x0), dx), Const(e), Const(n))
+                dx ≈ fill(expected, 2)
+            catch err
+                err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
+                false
+            end
+        end
+    end
+
+    for k in (0, 1, 3)
+        dx = zero(x0)
+        autodiff(Reverse, nested_carry, Active, Duplicated(copy(x0), dx), Const(k))
+        @test dx ≈ fill(k == 0 ? 0.0 : k + 1.0, 2)
+    end
+
+    # refused: elements of a non-empty fresh array may alias objects whose shadow
+    # differs from a zero copy, which static activity analysis cannot track;
+    # correctness requires runtime activity (Enzyme FAQ, "Runtime Activity").
+    dx = zero(x0)
+    autodiff(Reverse, nested_nonempty, Active, Duplicated(copy(x0), dx), Const(false))
+    @test dx ≈ [2.0, 2.0]
+    @static if VERSION < v"1.11-"
+        err = try
+            autodiff(Reverse, nested_nonempty, Active, Duplicated(copy(x0), zero(x0)), Const(true))
+            nothing
+        catch e
+            e
+        end
+        @test err isa Enzyme.Compiler.EnzymeRuntimeActivityError
+        @test err.mi isa Core.MethodInstance
+        @test occursin("Julia value causing error", sprint(showerror, err))
+    end
+    dx = zero(x0)
+    autodiff(set_runtime_activity(Reverse), nested_nonempty, Active, Duplicated(copy(x0), dx), Const(true))
+    @test dx ≈ [0.0, 0.0]
+end
