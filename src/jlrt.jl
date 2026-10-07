@@ -1364,6 +1364,30 @@ function emit_error(B::LLVM.IRBuilder, @nospecialize(orig::Union{Nothing, LLVM.I
 		)
 	    end
     end
+    # An error in a block that already ends in `unreachable` adds no new
+    # unreachable path; see `strip_invariant_group_after_inserted_errors!`.
+    if !isa(LLVM.terminator(curent_bb), LLVM.UnreachableInst)
+        LLVM.API.LLVMAddCallSiteAttribute(
+            ct,
+            reinterpret(LLVM.API.LLVMAttributeIndex, LLVM.API.LLVMAttributeFunctionIndex),
+            StringAttribute(INSERTED_ERROR_ATTR),
+        )
+    end
     return ct
+end
+
+# Call-site attribute marking an error `emit_error` inserted into a block that
+# would otherwise continue.
+const INSERTED_ERROR_ATTR = "enzymejl_inserted_error"
+
+function is_inserted_error(@nospecialize(inst::LLVM.Instruction))::Bool
+    isa(inst, LLVM.CallInst) || return false
+    attr = LLVM.API.LLVMGetCallSiteStringAttribute(
+        inst,
+        reinterpret(LLVM.API.LLVMAttributeIndex, LLVM.API.LLVMAttributeFunctionIndex),
+        INSERTED_ERROR_ATTR,
+        length(INSERTED_ERROR_ATTR),
+    )
+    return attr != C_NULL
 end
 

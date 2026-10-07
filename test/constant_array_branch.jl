@@ -269,13 +269,10 @@ end
 
     # The length is only known at run time. On Julia 1.11+ the branch then meets the
     # element pointer of either the shared empty memory or a fresh allocation, which
-    # has no shadow yet; the active branch's derivative is also lost there.
+    # has no shadow yet, so taking the constant branch raises.
     for (e, n, expected) in ((true, 0, 0.0), (false, 0, 2.0), (false, 3, 2.0))
         dx = zero(x0)
-        @static if VERSION < v"1.11-"
-            autodiff(Reverse, nested_undef, Active, Duplicated(copy(x0), dx), Const(e), Const(n))
-            @test dx ≈ fill(expected, 2)
-        else
+        if VERSION >= v"1.11-" && e
             @test_broken try
                 autodiff(Reverse, nested_undef, Active, Duplicated(copy(x0), dx), Const(e), Const(n))
                 dx ≈ fill(expected, 2)
@@ -283,6 +280,9 @@ end
                 err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
                 false
             end
+        else
+            autodiff(Reverse, nested_undef, Active, Duplicated(copy(x0), dx), Const(e), Const(n))
+            @test dx ≈ fill(expected, 2)
         end
     end
 
@@ -312,4 +312,74 @@ end
     dx = zero(x0)
     autodiff(set_runtime_activity(Reverse), nested_nonempty, Active, Duplicated(copy(x0), dx), Const(true))
     @test dx ≈ [0.0, 0.0]
+end
+
+# The constant branch is a global or a `Const` argument holding arrays, which keeps
+# the runtime activity error. Taking the active branch must still return its
+# derivative: the error on the constant edge used to let post-optimization prove
+# that the loop runs once and then drop the derivative on Julia 1.12.
+const NESTED_GLOBAL = [[1.0, 1.0]]
+const NESTED_GLOBAL_MATRIX = reshape([[1.0, 1.0]], 1, 1)
+nested_global(x, e) = sum_nested(e ? NESTED_GLOBAL : [x .* 2.0])
+nested_global_matrix(x, e) = sum_nested(e ? NESTED_GLOBAL_MATRIX : reshape([x .* 2.0], 1, 1))
+nested_const_arg(x, c, e) = sum_nested(e ? c : [x .* 2.0])
+
+@testset "Active branch beside a constant array of arrays" begin
+    x0 = [1.0, 2.0]
+    cases = (
+        (nested_global, ()),
+        (nested_global_matrix, ()),
+        (nested_const_arg, (Const([[1.0, 1.0]]),)),
+    )
+    for (f, pre) in cases
+        # refused: a Const argument or a global may serve as storage for active data,
+        # which static activity analysis cannot track; correctness requires runtime
+        # activity (Enzyme FAQ, "Runtime Activity").
+        @test_throws Enzyme.Compiler.EnzymeRuntimeActivityError autodiff(
+            Reverse, f, Active, Duplicated(copy(x0), zero(x0)), pre..., Const(true)
+        )
+        dx = zero(x0)
+        autodiff(set_runtime_activity(Reverse), f, Active, Duplicated(copy(x0), dx), pre..., Const(true))
+        @test dx ≈ [0.0, 0.0]
+
+        if VERSION < v"1.11-"
+            # The error is raised before the branch, so the active branch raises too.
+            @test_broken try
+                dx = zero(x0)
+                autodiff(Reverse, f, Active, Duplicated(copy(x0), dx), pre..., Const(false))
+                dx ≈ [2.0, 2.0]
+            catch err
+                err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
+                false
+            end
+            continue
+        end
+
+        dx = zero(x0)
+        res = autodiff(ReverseWithPrimal, f, Active, Duplicated(copy(x0), dx), pre..., Const(false))
+        @test res[2] ≈ 6.0
+        @test dx ≈ [2.0, 2.0]
+
+        d1 = zero(x0)
+        d2 = zero(x0)
+        autodiff(Reverse, f, Active, BatchDuplicated(copy(x0), (d1, d2)), pre..., Const(false))
+        @test d1 ≈ [2.0, 2.0]
+        @test d2 ≈ [2.0, 2.0]
+
+        dx = zero(x0)
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal,
+            Const{typeof(f)},
+            Active,
+            Duplicated{Vector{Float64}},
+            map(typeof, pre)...,
+            Const{Bool},
+        )
+        tape, primal, _ = fwd(Const(f), Duplicated(copy(x0), dx), pre..., Const(false))
+        rev(Const(f), Duplicated(copy(x0), dx), pre..., Const(false), 1.0, tape)
+        @test primal ≈ 6.0
+        @test dx ≈ [2.0, 2.0]
+
+        @test autodiff(Forward, f, Duplicated(copy(x0), [1.0, 0.0]), pre..., Const(false))[1] ≈ 2.0
+    end
 end
