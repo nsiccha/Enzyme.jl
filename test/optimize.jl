@@ -271,3 +271,70 @@ end
     RO = Enzyme.Compiler.set_readonly(Enzyme.Compiler.AllEffects)
     @test RO == Enzyme.Compiler.ReadOnlyEffects
 end
+
+# A loop whose body calls a function that only writes on a throwing path (the
+# bounds check) and loads an array's `Memory` pointer: the load must be hoisted,
+# or Enzyme caches a GC pointer per iteration and the tape grows with the loop.
+@noinline lookup_or_throw(r, i) = r[i]
+function sum_squares_indirect(x, r)
+    a = Vector{Float64}(undef, length(x))
+    for i in eachindex(x)
+        j = lookup_or_throw(r, i)
+        a[i] = x[j] * x[j]
+    end
+    return sum(a)
+end
+function sum_squares_indirect_grad!(dx, x, r)
+    Enzyme.autodiff(Reverse, sum_squares_indirect, Active, Duplicated(x, dx), Const(r))
+    return nothing
+end
+
+@testset "Loop-invariant load hoisted past a read-only-or-throw call" begin
+    function bytes(n)
+        x = 0.5 .+ collect(1:n) ./ n
+        r = collect(1:n)
+        dx = zero(x)
+        sum_squares_indirect_grad!(dx, x, r)
+        @test dx ≈ 2 .* x
+        return @allocated sum_squares_indirect_grad!(dx, x, r)
+    end
+    # Only `a` and its shadow may grow with `n`; a per-iteration tape of the
+    # `Memory` pointer and its shadow would double that. Relies on
+    # EnzymeAD/Enzyme#3264 (Enzyme_jll 0.0.296), which states
+    # `enzyme_ReadOnlyOrThrow` in LLVM memory attributes so that LICM can hoist
+    # the load past `lookup_or_throw`.
+    @test bytes(2000) - bytes(10) < 3 * sizeof(Float64) * (2000 - 10)
+end
+
+function horner_loop(x, n)
+    s = 0.0
+    for _ in 1:n
+        s = s * x + 1.0
+    end
+    return s
+end
+function horner_fixed(x)
+    s = 0.0
+    for _ in 1:8
+        s = s * x + 1.0
+    end
+    return s
+end
+pre_ad_ir(f, types) = sprint() do io
+    Enzyme.Compiler.enzyme_code_llvm(io, f, Active, types; run_enzyme = false, second_stage = false)
+end
+
+@testset "Unrolling before AD" begin
+    # A loop with a runtime trip count is not runtime unrolled, as the reverse
+    # pass inherits the loop's shape.
+    ir = pre_ad_ir(horner_loop, Tuple{Active{Float64}, Const{Int}})
+    @test count("fmul", ir) == 1
+    # A loop with a small constant trip count is still fully unrolled.
+    ir = pre_ad_ir(horner_fixed, Tuple{Active{Float64}})
+    @test count("fmul", ir) == 8
+
+    # d/dx of sum_{k=0}^{n-1} x^k
+    x = 0.5
+    @test autodiff(Reverse, horner_loop, Active, Active(x), Const(9))[1][1] ≈ sum(k * x^(k - 1) for k in 1:8)
+    @test autodiff(Reverse, horner_fixed, Active, Active(x))[1][1] ≈ sum(k * x^(k - 1) for k in 1:7)
+end
