@@ -1245,6 +1245,46 @@ function mixed_activity_method(@nospecialize(val))
     return mi, enzyme_world()
 end
 
+# The condition under which the runtime activity error for the mixed activity at
+# `val` must be raised, emitted with `B`; `nothing` if always. A constant incoming
+# value of a phi only matters when control takes its edge: `B` is positioned
+# before the terminator of the incoming block, which may branch elsewhere too.
+mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(val)) = nothing
+mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, val::LLVM.PHIInst) =
+    edge_condition(B, LLVM.terminator(position(B)), new_from_original(gutils, LLVM.parent(val)))
+
+# The condition under which the terminator `term` branches to `dest`, emitted with
+# `B`; `nothing` if always.
+edge_condition(B::LLVM.IRBuilder, @nospecialize(term), @nospecialize(dest::LLVM.Value)) = nothing
+
+function edge_condition(B::LLVM.IRBuilder, term::LLVM.BrInst, @nospecialize(dest::LLVM.Value))
+    LLVM.isconditional(term) || return nothing
+    iftrue, iffalse = LLVM.successors(term)
+    iftrue == iffalse && return nothing
+    cond = LLVM.condition(term)
+    return iftrue == dest ? cond : not!(B, cond)
+end
+
+# A switch reaches `dest` through the cases that name it, or through the default
+# when no other case matches.
+function edge_condition(B::LLVM.IRBuilder, term::LLVM.SwitchInst, @nospecialize(dest::LLVM.Value))
+    ops = operands(term)
+    val = ops[1]
+    todefault = ops[2] == dest
+    cond = nothing
+    for i in 3:2:length(ops)
+        (ops[i + 1] == dest) == todefault && continue
+        if todefault
+            c = icmp!(B, LLVM.API.LLVMIntNE, val, ops[i])
+            cond = cond === nothing ? c : and!(B, cond, c)
+        else
+            c = icmp!(B, LLVM.API.LLVMIntEQ, val, ops[i])
+            cond = cond === nothing ? c : or!(B, cond, c)
+        end
+    end
+    return cond
+end
+
 function julia_error(
     cstr::Cstring,
     val::LLVM.API.LLVMValueRef,
@@ -2049,11 +2089,12 @@ end
         end
         msg2 = mixed_activity_message(msg, badval, illegalVal, val, gutils, bt)
         mi, world = mixed_activity_method(val)
+        cond = mixed_activity_condition(b, gutils, val)
 
         if mi !== nothing
-            emit_error(b, nothing, (msg2, mi, world), EnzymeRuntimeActivityError{Cstring, Core.MethodInstance, UInt})
+            emit_error(b, nothing, (msg2, mi, world), EnzymeRuntimeActivityError{Cstring, Core.MethodInstance, UInt}, cond)
         else
-            emit_error(b, nothing, msg2, EnzymeRuntimeActivityError{Cstring, Nothing, Nothing})
+            emit_error(b, nothing, msg2, EnzymeRuntimeActivityError{Cstring, Nothing, Nothing}, cond)
         end
         return C_NULL
     elseif errtype == API.ET_GetIndexError

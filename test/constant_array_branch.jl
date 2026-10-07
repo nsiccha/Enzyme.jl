@@ -268,22 +268,12 @@ end
     end
 
     # The length is only known at run time. On Julia 1.11+ the branch then meets the
-    # element pointer of either the shared empty memory or a fresh allocation, which
-    # has no shadow yet, so taking the constant branch raises.
+    # element pointer of either the shared empty memory or a fresh allocation; only
+    # the edge from a fresh allocation raises.
     for (e, n, expected) in ((true, 0, 0.0), (false, 0, 2.0), (false, 3, 2.0))
         dx = zero(x0)
-        if VERSION >= v"1.11-" && e
-            @test_broken try
-                autodiff(Reverse, nested_undef, Active, Duplicated(copy(x0), dx), Const(e), Const(n))
-                dx ≈ fill(expected, 2)
-            catch err
-                err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
-                false
-            end
-        else
-            autodiff(Reverse, nested_undef, Active, Duplicated(copy(x0), dx), Const(e), Const(n))
-            @test dx ≈ fill(expected, 2)
-        end
+        autodiff(Reverse, nested_undef, Active, Duplicated(copy(x0), dx), Const(e), Const(n))
+        @test dx ≈ fill(expected, 2)
     end
 
     for k in (0, 1, 3)
@@ -315,54 +305,60 @@ end
 end
 
 # The constant branch is a global or a `Const` argument holding arrays, which keeps
-# the runtime activity error. Taking the active branch must still return its
-# derivative: the error on the constant edge used to let post-optimization prove
-# that the loop runs once and then drop the derivative on Julia 1.12.
+# the runtime activity error. Taking another branch must still return its
+# derivative. The error used to be raised in the block that branches to the merge,
+# so it also fired for the other branches (Julia 1.10), or it let post-optimization
+# prove that the loop runs once and then drop the derivative (Julia 1.12).
 const NESTED_GLOBAL = [[1.0, 1.0]]
 const NESTED_GLOBAL_MATRIX = reshape([[1.0, 1.0]], 1, 1)
 nested_global(x, e) = sum_nested(e ? NESTED_GLOBAL : [x .* 2.0])
 nested_global_matrix(x, e) = sum_nested(e ? NESTED_GLOBAL_MATRIX : reshape([x .* 2.0], 1, 1))
 nested_const_arg(x, c, e) = sum_nested(e ? c : [x .* 2.0])
+nested_const_arg_flipped(x, c, e) = sum_nested(e ? [x .* 2.0] : c)
+# The comparisons become a switch.
+function nested_const_arg_switch(x, c, k)
+    v = if k == 1
+        c
+    elseif k == 2
+        [x .* 2.0]
+    elseif k == 3
+        [x .* 3.0]
+    else
+        [x .* 4.0]
+    end
+    return sum_nested(v)
+end
 
-@testset "Active branch beside a constant array of arrays" begin
+@testset "Other branches beside a constant array of arrays" begin
     x0 = [1.0, 2.0]
+    c = Const([[1.0, 1.0]])
+    # (function, leading arguments, selector of the constant branch, selector of an active branch)
     cases = (
-        (nested_global, ()),
-        (nested_global_matrix, ()),
-        (nested_const_arg, (Const([[1.0, 1.0]]),)),
+        (nested_global, (), true, false),
+        (nested_global_matrix, (), true, false),
+        (nested_const_arg, (c,), true, false),
+        (nested_const_arg_flipped, (c,), false, true),
+        (nested_const_arg_switch, (c,), 1, 2),
     )
-    for (f, pre) in cases
+    for (f, pre, constsel, activesel) in cases
         # refused: a Const argument or a global may serve as storage for active data,
         # which static activity analysis cannot track; correctness requires runtime
         # activity (Enzyme FAQ, "Runtime Activity").
         @test_throws Enzyme.Compiler.EnzymeRuntimeActivityError autodiff(
-            Reverse, f, Active, Duplicated(copy(x0), zero(x0)), pre..., Const(true)
+            Reverse, f, Active, Duplicated(copy(x0), zero(x0)), pre..., Const(constsel)
         )
         dx = zero(x0)
-        autodiff(set_runtime_activity(Reverse), f, Active, Duplicated(copy(x0), dx), pre..., Const(true))
+        autodiff(set_runtime_activity(Reverse), f, Active, Duplicated(copy(x0), dx), pre..., Const(constsel))
         @test dx ≈ [0.0, 0.0]
 
-        if VERSION < v"1.11-"
-            # The error is raised before the branch, so the active branch raises too.
-            @test_broken try
-                dx = zero(x0)
-                autodiff(Reverse, f, Active, Duplicated(copy(x0), dx), pre..., Const(false))
-                dx ≈ [2.0, 2.0]
-            catch err
-                err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
-                false
-            end
-            continue
-        end
-
         dx = zero(x0)
-        res = autodiff(ReverseWithPrimal, f, Active, Duplicated(copy(x0), dx), pre..., Const(false))
+        res = autodiff(ReverseWithPrimal, f, Active, Duplicated(copy(x0), dx), pre..., Const(activesel))
         @test res[2] ≈ 6.0
         @test dx ≈ [2.0, 2.0]
 
         d1 = zero(x0)
         d2 = zero(x0)
-        autodiff(Reverse, f, Active, BatchDuplicated(copy(x0), (d1, d2)), pre..., Const(false))
+        autodiff(Reverse, f, Active, BatchDuplicated(copy(x0), (d1, d2)), pre..., Const(activesel))
         @test d1 ≈ [2.0, 2.0]
         @test d2 ≈ [2.0, 2.0]
 
@@ -373,13 +369,18 @@ nested_const_arg(x, c, e) = sum_nested(e ? c : [x .* 2.0])
             Active,
             Duplicated{Vector{Float64}},
             map(typeof, pre)...,
-            Const{Bool},
+            Const{typeof(activesel)},
         )
-        tape, primal, _ = fwd(Const(f), Duplicated(copy(x0), dx), pre..., Const(false))
-        rev(Const(f), Duplicated(copy(x0), dx), pre..., Const(false), 1.0, tape)
+        tape, primal, _ = fwd(Const(f), Duplicated(copy(x0), dx), pre..., Const(activesel))
+        rev(Const(f), Duplicated(copy(x0), dx), pre..., Const(activesel), 1.0, tape)
         @test primal ≈ 6.0
         @test dx ≈ [2.0, 2.0]
 
-        @test autodiff(Forward, f, Duplicated(copy(x0), [1.0, 0.0]), pre..., Const(false))[1] ≈ 2.0
+        @test autodiff(Forward, f, Duplicated(copy(x0), [1.0, 0.0]), pre..., Const(activesel))[1] ≈ 2.0
+    end
+    for k in (3, 4)
+        dx = zero(x0)
+        autodiff(Reverse, nested_const_arg_switch, Active, Duplicated(copy(x0), dx), c, Const(k))
+        @test dx ≈ [k, k]
     end
 end
