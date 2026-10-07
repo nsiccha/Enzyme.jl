@@ -238,3 +238,80 @@ function EnzymeRules.reverse(
     ret = func.val(start.val, stop.val, len.val)
     return (_range_reverse(config, func.val, ret, dret, start, stop)..., nothing)
 end
+
+# `Base.truncbits` clears the low bits of a float so that twice-precision
+# arithmetic (e.g. scaling or summing a `Float64` range) can split a value
+# into exactly representable parts whose sum is the value itself. Its
+# derivative is therefore the identity.
+function EnzymeRules.forward(
+        config::EnzymeRules.FwdConfig,
+        func::Const{typeof(Base.truncbits)},
+        RT,
+        x::Annotation{T},
+        nb::Annotation{<:Integer},
+    ) where {T <: Base.IEEEFloat}
+    ret = func.val(x.val, nb.val)
+    if EnzymeRules.needs_shadow(config)
+        if EnzymeRules.width(config) == 1
+            shadow = _range_dval(x)
+            return EnzymeRules.needs_primal(config) ? Duplicated(ret, shadow) : shadow
+        else
+            shadow = _range_dvals(x, Val(EnzymeRules.width(config)))
+            return EnzymeRules.needs_primal(config) ? BatchDuplicated(ret, shadow) : shadow
+        end
+    elseif EnzymeRules.needs_primal(config)
+        return ret
+    else
+        return nothing
+    end
+end
+
+function EnzymeRules.augmented_primal(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(Base.truncbits)},
+        ::Type{RT},
+        x::Annotation{T},
+        nb::Annotation{<:Integer},
+    ) where {RT <: Union{Active, Const}, T <: Base.IEEEFloat}
+    if EnzymeRules.needs_primal(config)
+        primal = func.val(x.val, nb.val)
+    else
+        primal = nothing
+    end
+    return EnzymeRules.AugmentedReturn(primal, nothing, nothing)
+end
+
+_active_val(x::Active) = x.val
+
+function EnzymeRules.reverse(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(Base.truncbits)},
+        dret::Active,
+        tape,
+        x::Annotation{T},
+        nb::Annotation{<:Integer},
+    ) where {T <: Base.IEEEFloat}
+    return (_range_derivative(x, dret.val), nothing)
+end
+
+function EnzymeRules.reverse(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(Base.truncbits)},
+        dret::NTuple{W, Active},
+        tape,
+        x::Annotation{T},
+        nb::Annotation{<:Integer},
+    ) where {W, T <: Base.IEEEFloat}
+    return (_range_derivative(x, map(_active_val, dret)), nothing)
+end
+
+function EnzymeRules.reverse(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(Base.truncbits)},
+        dret::Type,
+        tape,
+        x::Annotation{T},
+        nb::Annotation{<:Integer},
+    ) where {T <: Base.IEEEFloat}
+    return (_range_zero_derivative(x, Val(EnzymeRules.width(config))), nothing)
+end

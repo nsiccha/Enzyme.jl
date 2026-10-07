@@ -167,3 +167,30 @@ end
     @test Enzyme.autodiff(Reverse, f, Active, Active(0.5))[1][1] == 6.0
     @test Enzyme.autodiff(Forward, f, Duplicated(0.5, 1.0))[1] == 6.0
 end
+
+@testset "Arithmetic on ranges" begin
+    # Twice-precision arithmetic truncates the bits of the range's step
+    summed(x) = sum(x * (1:5))
+    dsummed(x) = 15.0
+    scaled(x) = sum(sin.(x * (0.0:0.5:2.0)))
+    dscaled(x) = sum(k -> 0.5k * cos(0.5k * x), 0:4)
+    divided(x) = sum(abs2, (-1.0:0.5:1.0) / x)
+    ddivided(x) = -5 / x^3
+    added(x) = sum(sin.(range(-1.0; step = x, length = 5) + (0.0:0.25:1.0)))
+    dadded(x) = sum(k -> k * cos(-1.0 + k * (x + 0.25)), 0:4)
+    stop_length(x) = sum(range(-1.0, x; length = 5))
+    dstop_length(x) = 2.5
+    @testset for x in (0.5, -0.25, 2.0943951023931957)
+        @testset for (f, df) in ((summed, dsummed), (scaled, dscaled), (divided, ddivided), (added, dadded), (stop_length, dstop_length))
+            @test Enzyme.autodiff(Reverse, f, Active, Active(x))[1][1] ≈ df(x)
+            @test Enzyme.autodiff(Forward, f, Duplicated(x, 1.0))[1] ≈ df(x)
+            res = Enzyme.autodiff(Forward, f, BatchDuplicated(x, (1.0, 2.0)))[1]
+            @test res[1] ≈ df(x)
+            @test res[2] ≈ 2df(x)
+            res = batch_reverse(f, x)
+            @test res[1] ≈ df(x)
+            @test res[2] ≈ 2df(x)
+        end
+    end
+    @test Enzyme.autodiff(Reverse, x -> sum(0.0:x:1.0), Active, Active(0.25))[1][1] ≈ 10.0
+end
