@@ -924,6 +924,13 @@ end
     return dest
 end
 
+# Sum `f` over a tuple of concatenation operands. The overrides below are often
+# inferred inside a reduction such as `reduce(vcat, xs; init)`. Base's `sum`
+# would enter `mapfoldl_impl` again there, and inference widens that recursive
+# call to `Any`, which makes the reduction's result type `Any`.
+@inline concat_sum(f, ::Tuple{}) = 0
+@inline concat_sum(f, arrays::Tuple) = f(first(arrays)) + concat_sum(f, Base.tail(arrays))
+
 # Iterating over the vararg tuple in Base's dense-vector vcat joins constant
 # and active arrays at the loop phi. Keep each copy tied to its tuple field.
 @inline copy_vcat!(out, offset, ::Tuple{}) = out
@@ -937,7 +944,7 @@ end
 end
 
 @inline function override_vcat(arrays::Vector{T}...) where {T}
-    out = Vector{T}(undef, sum(map(length, arrays)))
+    out = Vector{T}(undef, concat_sum(length, arrays))
     return copy_vcat!(out, 1, arrays)
 end
 

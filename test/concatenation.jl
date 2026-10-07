@@ -108,6 +108,66 @@ concat_alias_loss(f, a, c) = sum(abs2, f(a, c))
     @test c == [2.0, 3.0]
 end
 
+concat_fold_vcat(xs) = reduce(vcat, xs; init = Float64[])
+concat_fold_mapped_vcat(xs) = mapfoldl(reverse, vcat, xs; init = Float64[])
+concat_fold_hcat(xs) = reduce(hcat, xs; init = zeros(2, 0))
+concat_typed_vcat_pair(acc, x) = Float64[acc; x]
+concat_fold_typed_vcat(xs) = reduce(concat_typed_vcat_pair, xs; init = Float64[])
+concat_row_vcat(acc, x) = vcat(acc, permutedims(x))
+concat_fold_row_vcat(xs) = reduce(concat_row_vcat, xs; init = zeros(0, 2))
+concat_block_hvcat(acc, x) = [acc; x x]
+concat_fold_hvcat(xs) = reduce(concat_block_hvcat, xs; init = zeros(0, 2))
+concat_fold_loss(f, xs, w) = sum(f(xs) .* w)
+concat_fold_tuple(a, c) = foldl(vcat, (c, a, c))
+concat_fold_tuple_loss(a, c, w) = sum(concat_fold_tuple(a, c) .* w)
+
+# An interpreter with an empty cache and no rules (so creating it leaves the shared
+# rule tracking alone). Earlier inference results, e.g. of Base's tuple `sum`,
+# would otherwise hide the widening below.
+function concat_fresh_interp()
+    world = Base.get_world_counter()
+    cache = @static if VERSION >= v"1.11.0-DEV.1552"
+        gensym(:concat_fold)
+    else
+        Enzyme.Compiler.GPUCompiler.CodeCache()
+    end
+    return Enzyme.Compiler.Interpreter.EnzymeInterpreter(cache, nothing, world, false, false, false)
+end
+
+# The overrides are inferred inside the reduction's own `mapfoldl_impl` frame.
+# Summing operand sizes with Base's `sum` re-entered that method, and Julia 1.10
+# then widened the reduction's result to `Any`.
+@testset "Dense concatenation inside a reduction keeps its result type" begin
+    interp = concat_fresh_interp()
+    xs = [[0.5, 1.5], [2.5, 3.5]]
+    for f in (
+            concat_fold_vcat, concat_fold_mapped_vcat, concat_fold_hcat,
+            concat_fold_typed_vcat, concat_fold_row_vcat, concat_fold_hvcat,
+        )
+        @testset "$f" begin
+            value = f(xs)
+            @test only(Base.code_typed(f, (typeof(xs),); interp))[2] === typeof(value)
+            w = concat_weights(value)
+            dxs = [zero(x) for x in xs]
+            autodiff(Reverse, concat_fold_loss, Active, Const(f), Duplicated(xs, dxs), Const(w))
+            for i in eachindex(xs), j in eachindex(xs[i])
+                basis = [zero(x) for x in xs]
+                basis[i][j] = 1
+                @test dxs[i][j] == sum(f(basis) .* w)
+            end
+            @test xs == [[0.5, 1.5], [2.5, 3.5]]
+        end
+    end
+
+    a, c = [0.5, 1.5], [7.0, 9.0]
+    @test only(Base.code_typed(concat_fold_tuple, (Vector{Float64}, Vector{Float64}); interp))[2] === Vector{Float64}
+    w = concat_weights(concat_fold_tuple(a, c))
+    da = zero(a)
+    autodiff(Reverse, concat_fold_tuple_loss, Active, Duplicated(a, da), Const(c), Const(w))
+    @test da == w[3:4]
+    @test (a, c) == ([0.5, 1.5], [7.0, 9.0])
+end
+
 function concat_error(f, args...)
     try
         f(args...)

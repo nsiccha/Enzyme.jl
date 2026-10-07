@@ -27,7 +27,7 @@ end
             "number of rows of each array must match (got $heights)",
         )
     )
-    out = similar(first(arrays), T, height, sum(map(concat_cols, arrays)))
+    out = similar(first(arrays), T, height, concat_sum(concat_cols, arrays))
     return copy_hcat!(out, 1, arrays)
 end
 
@@ -48,7 +48,7 @@ end
 end
 
 @inline function override_typed_vcat(::Type{T}, arrays::Tuple{Vararg{Vector}}) where {T}
-    out = similar(first(arrays), T, sum(map(length, arrays)))
+    out = similar(first(arrays), T, concat_sum(length, arrays))
     return copy_hcat!(out, 1, arrays)
 end
 
@@ -60,7 +60,7 @@ end
             "number of columns of each array must match (got $widths)",
         )
     )
-    out = similar(first(arrays), T, sum(map(concat_rows, arrays)), width)
+    out = similar(first(arrays), T, concat_sum(concat_rows, arrays), width)
     return copy_matrix_vcat!(out, 1, arrays)
 end
 
@@ -95,13 +95,16 @@ end
 
 function hvcat_layout(rows, heights, widths)
     @static if VERSION >= v"1.12-"
-        sum(rows) == length(heights) || throw(
+        concat_sum(identity, rows) == length(heights) || throw(
             ArgumentError(
                 "argument count does not match specified block shape",
             )
         )
     end
-    width = sum(widths[1:rows[1]]; init = 0)
+    width = 0
+    for k in 1:rows[1]
+        width += widths[k]
+    end
     height = 0
     a = 1
     for n in rows
@@ -136,7 +139,7 @@ function hvcat_layout(rows, heights, widths)
         r += h
         a += rows[i]
     end
-    resize!(offsets, max(0, sum(rows)))
+    resize!(offsets, max(0, concat_sum(identity, rows)))
     return height, width, offsets
 end
 
