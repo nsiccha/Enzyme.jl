@@ -80,6 +80,37 @@ branch_return(x, e) = e ? zeros(length(x)) : x .* 2.0
     end
 end
 
+# A loop carry starts as a fresh constant array and is replaced by an active value
+# on each step, so the loop-exit phi meets both.
+function carry_loop(x, k)
+    v = zeros(k == 0 ? 0 : length(x))
+    for i in 1:k
+        v = x .* Float64(i) .+ v
+    end
+    return sum(v)
+end
+@noinline carry_step(x, v, i) = x .* Float64(i) .+ v
+function carry_loop_call(x, k)
+    v = zeros(0)
+    for i in 1:k
+        v = carry_step(x, i == 1 ? zeros(length(x)) : v, i)
+    end
+    return sum(abs2, v)
+end
+
+@testset "Loop carry starting as a fresh constant array" begin
+    x0 = [1.0, 2.0]
+    for k in (0, 1, 3)
+        dx = zero(x0)
+        autodiff(Reverse, carry_loop, Active, Duplicated(copy(x0), dx), Const(k))
+        @test dx ≈ fill(Float64(sum(1:k)), 2)
+
+        dx = zero(x0)
+        autodiff(Reverse, carry_loop_call, Active, Duplicated(copy(x0), dx), Const(k))
+        @test dx ≈ 2.0 .* x0 .* sum(1:k)^2
+    end
+end
+
 # Active data reaching the fresh array through an alias makes it active, so these
 # never take the zero-shadow path; their gradients must stay exact.
 alias_store_through_branch(x, e) =
