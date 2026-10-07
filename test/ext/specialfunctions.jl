@@ -185,3 +185,52 @@ end
         Reverse, x -> first(SpecialFunctions.gamma_inc(1.0, x)), Active, Active(0.0)
     )[1][1] == 1.0
 end
+
+@testset "inverse incomplete gamma: implicit partials" begin
+    # The small-q initial guess goes through a Union-returning helper, and for
+    # integer and half-integer a the Newton refinement calls gamma_inc_fsum
+    for a in (0.5, 1.0, 1.5, 2.5, 4.0, 10.0), (p, q) in ((0.1, 0.9), (0.7, 0.3), (1 - 1.0e-3, 1.0e-3))
+        test_scalar(a -> SpecialFunctions.gamma_inc_inv(a, p, q), a)
+    end
+
+    # p partial, through p + q = 1 on either side of the p < 1/2 switch
+    for a in (0.5, 2.5, 10.0), p in (0.1, 0.9)
+        test_scalar(p -> SpecialFunctions.gamma_inc_inv(a, p, 1 - p), p)
+    end
+
+    # tolerances set by the Float32 finite difference, as for gamma_inc above
+    test_scalar(a -> SpecialFunctions.gamma_inc_inv(a, 0.75f0, 0.25f0), 2.5f0; rtol = 1.0e-4, atol = 1.0e-4)
+
+    # P(a, x(a)) = p, so its shape derivative vanishes
+    for a in (1.0, 4.0), (p, q) in ((0.1, 0.9), (1 - 1.0e-3, 1.0e-3))
+        dP = autodiff(
+            Reverse,
+            t -> first(SpecialFunctions.gamma_inc(t, SpecialFunctions.gamma_inc_inv(t, p, q))),
+            Active, Active(a)
+        )[1][1]
+        @test abs(dP) < 1.0e-14
+    end
+
+    # only the smaller of p and q is read, and the two partials agree along p + q = 1
+    for (p, q) in ((0.1, 0.9), (1 - 1.0e-3, 1.0e-3))
+        _, dp, dq = autodiff(
+            Reverse, SpecialFunctions.gamma_inc_inv, Active, Const(2.5), Active(p), Active(q)
+        )[1]
+        dp_line = autodiff(
+            Reverse, s -> SpecialFunctions.gamma_inc_inv(2.5, s, 1 - s), Active, Active(p)
+        )[1][1]
+        # 1 - s is not exactly q, so the line moves q by an ulp
+        @test isapprox(dp - dq, dp_line; rtol = 1.0e-12)
+        @test iszero(p < 0.5 ? dq : dp)
+    end
+
+    # p = 0 and q = 0 return x = 0 and x = Inf for every a
+    for a in (0.5, 2.0)
+        @test autodiff(
+            Reverse, t -> SpecialFunctions.gamma_inc_inv(t, 0.0, 1.0), Active, Active(a)
+        )[1][1] == 0.0
+        @test autodiff(
+            Reverse, t -> SpecialFunctions.gamma_inc_inv(t, 1.0, 0.0), Active, Active(a)
+        )[1][1] == 0.0
+    end
+end

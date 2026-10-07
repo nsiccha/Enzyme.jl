@@ -582,4 +582,54 @@ EnzymeRules.@easy_rule(
     (dQa, -dx, @Constant),
 )
 
+## Inverse incomplete gamma: implicit differentiation
+#
+# `gamma_inc_inv(a, p, q)` returns the x solving P(a, x) = p and Q(a, x) = q. The primal
+# refines a regime-dependent initial guess with a higher-order Newton iteration. Its
+# small-q guess goes through `lambdaeta`, which returns `Union{Float64, Int64}`, so
+# differentiating the primal fails type analysis; for integer and half-integer `a` the
+# iteration would also inherit the zero shape partial of `gamma_inc_fsum`. As the
+# `beta_inc_inv` rule above does, apply the implicit function theorem at the solved x
+# instead: ∂x/∂a = -(∂P/∂a) / (∂P/∂x), where ∂P/∂x is the Gamma(a, 1) density. At the
+# solution P and Q equal the targets p and q, so those scale `_gamma_inc_grad`'s
+# logarithmic shape derivative. The primal reads only the smaller of p and q (it
+# enforces p + q = 1), so that argument carries the probability partial and the other
+# gets zero: ∂x/∂p = 1/(∂P/∂x) for p < 1/2, and otherwise ∂x/∂q = 1/(∂Q/∂x) =
+# -1/(∂P/∂x). Along p + q = 1 both give the same derivative.
+
+@inline function _gamma_inc_inv_grad(a::Real, p::Real, q::Real, x::Real)
+    T = float(promote_type(typeof(a), typeof(p), typeof(q), typeof(x)))
+    return _gamma_inc_inv_grad(T(a), T(p), T(q), T(x))
+end
+
+@inline function _gamma_inc_inv_grad(a::T, p::T, q::T, x::T) where {T <: Union{Float16, Float32}}
+    # Widen, compute, narrow, as `_gamma_inc_grad` and the primal itself do.
+    (dxa, dxp, dxq) = _gamma_inc_inv_grad(Float64(a), Float64(p), Float64(q), Float64(x))
+    return (T(dxa), T(dxp), T(dxq))
+end
+
+@inline function _gamma_inc_inv_grad(a::T, p::T, q::T, x::T) where {T <: AbstractFloat}
+    pcase = p < T(0.5)
+    if iszero(x)
+        # p == 0: x is 0 for every a. Near it x ≈ (p Γ(a+1))^(1/a), whose p-slope is
+        # 0, 1 or Inf as a falls below, equals or exceeds 1.
+        dxp = a < one(T) ? zero(T) : (a == one(T) ? one(T) : T(Inf))
+        return (zero(T), dxp, zero(T))
+    elseif isinf(x)
+        # q == 0: x is Inf for every a. Near it x ≈ -log(q), so ∂x/∂q diverges.
+        return (zero(T), zero(T), -T(Inf))
+    end
+    (dPa, _, dPx) = _gamma_inc_grad(a, x, p, q)
+    inv_dPx = inv(dPx)
+    dxp = pcase ? inv_dPx : zero(T)
+    dxq = pcase ? zero(T) : -inv_dPx
+    return (-dPa * inv_dPx, dxp, dxq)
+end
+
+EnzymeRules.@easy_rule(
+    SpecialFunctions.gamma_inc_inv(a, p, q),
+    @setup((dx_da, dx_dp, dx_dq) = _gamma_inc_inv_grad(a, p, q, Ω)),
+    (dx_da, dx_dp, dx_dq),
+)
+
 end
