@@ -1155,6 +1155,33 @@ function fresh_array_allocation(
     return nothing
 end
 
+# Whether `cur`, an inactive tracked pointer, is loaded from memory reached from a
+# constant argument of the function being differentiated, through casts, GEPs,
+# field extractions, `julia.gc_loaded` and further loads (a closure's captured data
+# is such memory). Such memory has no shadow: activity analysis
+# treats every value loaded from it as constant, and a derivative that flows into it
+# is discarded. When `cur` is stored into active memory, a zero-filled copy of the
+# object it points to is therefore a valid shadow: a derivative accumulated into
+# that copy is discarded too.
+function loaded_from_constant_argument(gutils::GradientUtils, @nospecialize(cur::LLVM.Value))::Bool
+    ty = value_type(cur)
+    (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return false
+    isa(cur, LLVM.LoadInst) || return false
+    ptr = operands(cur)[1]
+    while !isa(ptr, LLVM.Argument)
+        if isa(ptr, LLVM.LoadInst) || isa(ptr, LLVM.GetElementPtrInst) ||
+                isa(ptr, LLVM.BitCastInst) || isa(ptr, LLVM.AddrSpaceCastInst) ||
+                isa(ptr, LLVM.ExtractValueInst)
+            ptr = operands(ptr)[1]
+        elseif called_function_name(ptr) == "julia.gc_loaded"
+            ptr = operands(ptr)[2]
+        else
+            return false
+        end
+    end
+    return is_constant_value(gutils, ptr)
+end
+
 # The shadow of an empty fresh array whose elements may hold references, called at
 # run time from generated code: a non-empty one raises `err`, the runtime activity
 # error that a mixed activity on it raised before.
@@ -1794,9 +1821,9 @@ end
                 end
 
                 alloc = fresh_array_allocation(cur, TT)
-                if alloc !== nothing
+                shadowargs = if alloc !== nothing
                     nalloc = new_from_original(gutils, alloc)
-                    shadowargs = if isbitstype(eltype(TT))
+                    if isbitstype(eltype(TT))
                         LLVM.Value[unsafe_to_llvm(prevbb, make_zero), nalloc]
                     else
                         rttext = mixed_activity_message(
@@ -1819,6 +1846,12 @@ end
                             unsafe_to_llvm(prevbb, rterr),
                         ]
                     end
+                elseif isa(val, LLVM.StoreInst) && loaded_from_constant_argument(gutils, cur)
+                    LLVM.Value[unsafe_to_llvm(prevbb, make_zero), ncur]
+                else
+                    nothing
+                end
+                if shadowargs !== nothing
                     shadowres = if width == 1
                         emit_zero_shadow!(prevbb, shadowargs, value_type(cur), created)
                     else
