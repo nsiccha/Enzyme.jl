@@ -1155,6 +1155,33 @@ function fresh_array_allocation(
     return nothing
 end
 
+# Whether `cur`, an inactive tracked pointer, is loaded from memory reached from a
+# constant argument of the function being differentiated, through casts, GEPs,
+# field extractions, `julia.gc_loaded` and further loads (a closure's captured data
+# is such memory). Such memory has no shadow: activity analysis
+# treats every value loaded from it as constant, and a derivative that flows into it
+# is discarded. When `cur` is stored into active memory, a zero-filled copy of the
+# object it points to is therefore a valid shadow: a derivative accumulated into
+# that copy is discarded too.
+function loaded_from_constant_argument(gutils::GradientUtils, @nospecialize(cur::LLVM.Value))::Bool
+    ty = value_type(cur)
+    (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return false
+    isa(cur, LLVM.LoadInst) || return false
+    ptr = operands(cur)[1]
+    while !isa(ptr, LLVM.Argument)
+        if isa(ptr, LLVM.LoadInst) || isa(ptr, LLVM.GetElementPtrInst) ||
+                isa(ptr, LLVM.BitCastInst) || isa(ptr, LLVM.AddrSpaceCastInst) ||
+                isa(ptr, LLVM.ExtractValueInst)
+            ptr = operands(ptr)[1]
+        elseif called_function_name(ptr) == "julia.gc_loaded"
+            ptr = operands(ptr)[2]
+        else
+            return false
+        end
+    end
+    return is_constant_value(gutils, ptr)
+end
+
 # The shadow of an empty fresh array whose elements may hold references, called at
 # run time from generated code: a non-empty one raises `err`, the runtime activity
 # error that a mixed activity on it raised before.
@@ -1180,6 +1207,26 @@ function emit_zero_shadow!(
         end
     end
     return res
+end
+
+# The shadow emitted by `emit_zero_shadow!` for each of the `width` batch lanes.
+function emit_zero_shadows!(
+        B::LLVM.IRBuilder,
+        args::Vector{LLVM.Value},
+        @nospecialize(ty::LLVM.LLVMType),
+        width::Integer,
+        created::Vector{LLVM.Instruction},
+    )::LLVM.Value
+    width == 1 && return emit_zero_shadow!(B, args, ty, created)
+    sres = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, ty)))
+    for idx in 1:width
+        res = emit_zero_shadow!(B, args, ty, created)
+        sres = insert_value!(B, sres, res, idx - 1)
+        if sres isa LLVM.Instruction
+            push!(created, sres)
+        end
+    end
+    return sres
 end
 
 # How a mixed activity error describes the constant value `obj` of type `TT`.
@@ -1736,6 +1783,10 @@ else
             end
 end
 
+            # The run-time `make_zero` needs no static type, which the walk's loads
+            # (for instance a field of a struct stored inline in an array) may lack.
+            constant_element = isa(val, LLVM.StoreInst) && loaded_from_constant_argument(gutils, cur)
+
             legal, TT, byref = abs_typeof(cur, true)
 
             if legal
@@ -1819,30 +1870,25 @@ end
                             unsafe_to_llvm(prevbb, rterr),
                         ]
                     end
-                    shadowres = if width == 1
-                        emit_zero_shadow!(prevbb, shadowargs, value_type(cur), created)
-                    else
-                        sres = UndefValue(
-                            LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(cur))),
-                        )
-                        for idx in 1:width
-                            res = emit_zero_shadow!(prevbb, shadowargs, value_type(cur), created)
-                            sres = insert_value!(prevbb, sres, res, idx - 1)
-                            if sres isa LLVM.Instruction
-                                push!(created, sres)
-                            end
-                        end
-                        sres
-                    end
+                    shadowres = emit_zero_shadows!(prevbb, shadowargs, value_type(cur), width, created)
                     seen[cur] = shadowres
                     return shadowres
                 end
 
-                badval = mixed_activity_value_description(legal2, obj, obj0, TT)
-                @assert !illegal
-                illegalVal = cur
-                illegal = true
-                return make_batched(ncur, prevbb)
+                if !constant_element
+                    badval = mixed_activity_value_description(legal2, obj, obj0, TT)
+                    @assert !illegal
+                    illegalVal = cur
+                    illegal = true
+                    return make_batched(ncur, prevbb)
+                end
+            end
+
+            if constant_element
+                shadowargs = LLVM.Value[unsafe_to_llvm(prevbb, make_zero), ncur]
+                shadowres = emit_zero_shadows!(prevbb, shadowargs, value_type(cur), width, created)
+                seen[cur] = shadowres
+                return shadowres
             end
 
             if isa(cur, LLVM.PointerNull)
