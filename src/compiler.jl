@@ -2713,6 +2713,8 @@ const DumpPreEnzyme = Ref(false)
 const DumpPostEnzyme = Ref(false)
 const DumpPostWrap = Ref(false)
 
+include("compiler/narrow_tuple_fields.jl")
+
 function enzyme!(
     job::CompilerJob,
     interp,
@@ -2731,6 +2733,7 @@ function enzyme!(
     boxedArgs::Set{Int},
     removedRoots::Set{Int},
 )
+    narrow_tuple_fields!(mod)
     if DumpPreEnzyme[]
         API.EnzymeDumpModuleRef(mod.ref)
     end
@@ -4662,6 +4665,72 @@ function strip_activity_inactive_md!(mod::LLVM.Module)
     return
 end
 
+# Enzyme tags the loads and stores of its caches with `!invariant.group`, which
+# lets LLVM assume that every access to the same cache slot sees the same value.
+# The cache that records which branch a loop iteration took breaks that
+# assumption: the iteration's first block stores a default into the slot and
+# the branch taken overwrites it, all under one tag. That is harmless while LLVM
+# cannot tell that two accesses hit the same slot.
+#
+# An error inserted by `emit_error` into a block that would otherwise continue
+# (for example the runtime-activity error on the constant edge of a phi) makes
+# the rest of that path unreachable. Post-optimization can then prove that a
+# loop runs exactly once, so every slot index is the constant 0. GVN forwards
+# the default to the reverse pass, which takes the wrong branch and silently
+# drops the derivative of the path that does run.
+#
+# So the tags are removed from every function that contains such an error, and
+# from every function that calls one of those (inlining moves the error into
+# the caller). Removing `!invariant.group` only forgoes optimizations.
+function calls_any(f::LLVM.Function, names::Set{String})::Bool
+    for bb in blocks(f), inst in instructions(bb)
+        isa(inst, LLVM.CallInst) || continue
+        callee = called_operand(inst)
+        if isa(callee, LLVM.Function) && LLVM.name(callee) in names
+            return true
+        end
+    end
+    return false
+end
+
+function has_inserted_error(f::LLVM.Function)::Bool
+    for bb in blocks(f), inst in instructions(bb)
+        is_inserted_error(inst) && return true
+    end
+    return false
+end
+
+function strip_invariant_group_after_inserted_errors!(mod::LLVM.Module)
+    tainted = Set{String}()
+    for f in functions(mod)
+        if has_inserted_error(f)
+            push!(tainted, LLVM.name(f))
+        end
+    end
+    isempty(tainted) && return
+    grew = true
+    while grew
+        grew = false
+        for f in functions(mod)
+            LLVM.name(f) in tainted && continue
+            if calls_any(f, tainted)
+                push!(tainted, LLVM.name(f))
+                grew = true
+            end
+        end
+    end
+    for f in functions(mod)
+        LLVM.name(f) in tainted || continue
+        for bb in blocks(f), inst in instructions(bb)
+            md = metadata(inst)
+            if haskey(md, LLVM.MD_invariant_group)
+                delete!(md, LLVM.MD_invariant_group)
+            end
+        end
+    end
+    return
+end
+
 # Modified from GPUCompiler/src/irgen.jl:365 lower_byval
 function lower_convention(
     @nospecialize(functy::Type),
@@ -6474,6 +6543,7 @@ end
             link_split_existing!(mod, otherMod)
         end
         empty!(enzyme_ctx.modules_to_link)
+        strip_invariant_group_after_inserted_errors!(mod)
         toremove = String[]
         # Inline the wrapper
         for f in functions(mod)
