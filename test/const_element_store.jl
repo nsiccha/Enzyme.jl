@@ -10,6 +10,7 @@ using Enzyme, Test
 struct ConstElementRecord
     xs::Vector{Float64}
 end
+Base.:(==)(a::ConstElementRecord, b::ConstElementRecord) = a.xs == b.xs
 
 # One allocation, one contiguous copy per element.
 @noinline function concat_elements(per)
@@ -46,6 +47,8 @@ elements_vcat(r, g) = sum(reduce(vcat, alias_elements(g)) .* r)
 elements_fold(r, g) = sum(concat_elements(alias_elements(g)) .* r)
 elements_map(r, g) = sum(concat_elements(map(identity, g)) .* r)
 elements_fields(r, g) = sum(concat_elements(map(s -> s.xs, ConstElementRecord.(g))) .* r)
+# The argument holds structs stored inline, so each element is a field load.
+elements_record_fields(r, records) = sum(concat_elements(map(s -> s.xs, records)) .* r)
 
 # The container also holds an active array.
 function elements_mixed(x, g)
@@ -68,17 +71,21 @@ elements_global(r) = sum(concat_elements(alias_elements(CONST_ELEMENT_GROUPS)) .
     rates0 = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
     want = reduce(vcat, groups0)
 
-    for f in (elements_vcat, elements_fold, elements_map, elements_fields)
-        g = deepcopy(groups0)
+    records0 = ConstElementRecord.(deepcopy(groups0))
+    for (f, data0) in (
+            (elements_vcat, groups0), (elements_fold, groups0), (elements_map, groups0),
+            (elements_fields, groups0), (elements_record_fields, records0),
+        )
+        data = deepcopy(data0)
         d = zero(rates0)
-        res = autodiff(ReverseWithPrimal, Const(f), Active, Duplicated(copy(rates0), d), Const(g))
-        @test res[2] ≈ f(rates0, groups0)
+        res = autodiff(ReverseWithPrimal, Const(f), Active, Duplicated(copy(rates0), d), Const(data))
+        @test res[2] ≈ f(rates0, data0)
         @test d == want
-        @test g == groups0
+        @test data == data0
 
         d1 = zero(rates0)
         d2 = zero(rates0)
-        autodiff(Reverse, Const(f), Active, BatchDuplicated(copy(rates0), (d1, d2)), Const(deepcopy(groups0)))
+        autodiff(Reverse, Const(f), Active, BatchDuplicated(copy(rates0), (d1, d2)), Const(deepcopy(data0)))
         @test d1 == want
         @test d2 == want
     end
