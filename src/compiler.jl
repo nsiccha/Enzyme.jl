@@ -37,7 +37,8 @@ import Enzyme:
     ismutabletype,
     create_fresh_codeinfo,
     add_edge!,
-    arg_operands_view
+    arg_operands_view,
+    splatcall
 
 using Enzyme
 using ScopedValues: @with
@@ -2297,6 +2298,19 @@ function julia_allocator(B::LLVM.IRBuilder, @nospecialize(LLVMType::LLVM.LLVMTyp
     func = LLVM.parent(position(B))
     mod = LLVM.parent(func)
 
+    # A cache is sized by the trip counts of its enclosing loops, and Enzyme
+    # allocates it before an outer loop when an inner loop's count does not
+    # change across that loop. The count is only meaningful where the inner
+    # loop runs: for a loop that is skipped it can be negative (`for i in 2:m`
+    # with `m == 0` counts `m - 1 == -1`). Such a cache holds no element, so
+    # size it as empty rather than as an `NTuple` of negative length, which
+    # overflows the type's allocation.
+    if !isa(Count, LLVM.ConstantInt)
+        no_elements = LLVM.ConstantInt(value_type(Count), 0)
+        is_negative = icmp!(B, LLVM.API.LLVMIntSLT, Count, no_elements)
+        Count = select!(B, is_negative, no_elements, Count)
+    end
+
     Size = nuwmul!(B, Count, AlignedSize) # should be nsw, nuw
     T_int8 = LLVM.Int8Type()
 
@@ -2713,6 +2727,8 @@ const DumpPreEnzyme = Ref(false)
 const DumpPostEnzyme = Ref(false)
 const DumpPostWrap = Ref(false)
 
+include("compiler/narrow_tuple_fields.jl")
+
 function enzyme!(
     job::CompilerJob,
     interp,
@@ -2731,6 +2747,7 @@ function enzyme!(
     boxedArgs::Set{Int},
     removedRoots::Set{Int},
 )
+    narrow_tuple_fields!(mod)
     if DumpPreEnzyme[]
         API.EnzymeDumpModuleRef(mod.ref)
     end
@@ -4662,6 +4679,72 @@ function strip_activity_inactive_md!(mod::LLVM.Module)
     return
 end
 
+# Enzyme tags the loads and stores of its caches with `!invariant.group`, which
+# lets LLVM assume that every access to the same cache slot sees the same value.
+# The cache that records which branch a loop iteration took breaks that
+# assumption: the iteration's first block stores a default into the slot and
+# the branch taken overwrites it, all under one tag. That is harmless while LLVM
+# cannot tell that two accesses hit the same slot.
+#
+# An error inserted by `emit_error` into a block that would otherwise continue
+# (for example the runtime-activity error on the constant edge of a phi) makes
+# the rest of that path unreachable. Post-optimization can then prove that a
+# loop runs exactly once, so every slot index is the constant 0. GVN forwards
+# the default to the reverse pass, which takes the wrong branch and silently
+# drops the derivative of the path that does run.
+#
+# So the tags are removed from every function that contains such an error, and
+# from every function that calls one of those (inlining moves the error into
+# the caller). Removing `!invariant.group` only forgoes optimizations.
+function calls_any(f::LLVM.Function, names::Set{String})::Bool
+    for bb in blocks(f), inst in instructions(bb)
+        isa(inst, LLVM.CallInst) || continue
+        callee = called_operand(inst)
+        if isa(callee, LLVM.Function) && LLVM.name(callee) in names
+            return true
+        end
+    end
+    return false
+end
+
+function has_inserted_error(f::LLVM.Function)::Bool
+    for bb in blocks(f), inst in instructions(bb)
+        is_inserted_error(inst) && return true
+    end
+    return false
+end
+
+function strip_invariant_group_after_inserted_errors!(mod::LLVM.Module)
+    tainted = Set{String}()
+    for f in functions(mod)
+        if has_inserted_error(f)
+            push!(tainted, LLVM.name(f))
+        end
+    end
+    isempty(tainted) && return
+    grew = true
+    while grew
+        grew = false
+        for f in functions(mod)
+            LLVM.name(f) in tainted && continue
+            if calls_any(f, tainted)
+                push!(tainted, LLVM.name(f))
+                grew = true
+            end
+        end
+    end
+    for f in functions(mod)
+        LLVM.name(f) in tainted || continue
+        for bb in blocks(f), inst in instructions(bb)
+            md = metadata(inst)
+            if haskey(md, LLVM.MD_invariant_group)
+                delete!(md, LLVM.MD_invariant_group)
+            end
+        end
+    end
+    return
+end
+
 # Modified from GPUCompiler/src/irgen.jl:365 lower_byval
 function lower_convention(
     @nospecialize(functy::Type),
@@ -6432,6 +6515,10 @@ end
                         resstr *= "of type " * string(foundv)
                     end
                     emit_error(builder, user, resstr, EnzymeMutabilityException)
+                    # Optimization may have proven the function `nounwind`
+                    # before the throw existed. Left in place, that would
+                    # let LLVM delete the throw and the write it guards.
+                    clear_nounwind!(LLVM.parent(LLVM.parent(user)))
                 end
             end
         end
@@ -6470,6 +6557,7 @@ end
             link_split_existing!(mod, otherMod)
         end
         empty!(enzyme_ctx.modules_to_link)
+        strip_invariant_group_after_inserted_errors!(mod)
         toremove = String[]
         # Inline the wrapper
         for f in functions(mod)
@@ -6663,113 +6751,134 @@ end
 @inline (thunk::PrimalErrorThunk{PT,FA,RT,TT,Width,ReturnPrimal})(
     fn,
     args...,
-) where {PT,FA,RT,TT,Width,ReturnPrimal} = enzyme_call(
-    Val(false),
-    thunk.adjoint,
-    PrimalErrorThunk{PT,FA,RT,TT,Width,ReturnPrimal},
-    Val(Width),
-    Val(ReturnPrimal),
-    TT,
-    RT,
-    fn,
-    Cvoid,
-    args...,
+) where {PT, FA, RT, TT, Width, ReturnPrimal} = splatcall(
+    enzyme_call,
+    (
+        Val(false),
+        thunk.adjoint,
+        PrimalErrorThunk{PT, FA, RT, TT, Width, ReturnPrimal},
+        Val(Width),
+        Val(ReturnPrimal),
+        TT,
+        RT,
+        fn,
+        Cvoid,
+    ),
+    args,
 )
 
 @inline (thunk::CombinedAdjointThunk{PT,FA,RT,TT,Width,ReturnPrimal})(
     fn,
     args...,
-) where {PT,FA,Width,RT,TT,ReturnPrimal} = enzyme_call(
-    Val(false),
-    thunk.adjoint,
-    CombinedAdjointThunk{PT,FA,RT,TT,Width,ReturnPrimal},
-    Val(Width),
-    Val(ReturnPrimal),
-    TT,
-    RT,
-    fn,
-    Cvoid,
-    args...,
+) where {PT, FA, Width, RT, TT, ReturnPrimal} = splatcall(
+    enzyme_call,
+    (
+        Val(false),
+        thunk.adjoint,
+        CombinedAdjointThunk{PT, FA, RT, TT, Width, ReturnPrimal},
+        Val(Width),
+        Val(ReturnPrimal),
+        TT,
+        RT,
+        fn,
+        Cvoid,
+    ),
+    args,
 )
 
 @inline (thunk::ForwardModeThunk{PT,FA,RT,TT,Width,ReturnPrimal})(
     fn,
     args...,
-) where {PT,FA,Width,RT,TT,ReturnPrimal} = enzyme_call(
-    Val(false),
-    thunk.adjoint,
-    ForwardModeThunk{PT,FA,RT,TT,Width,ReturnPrimal},
-    Val(Width),
-    Val(ReturnPrimal),
-    TT,
-    RT,
-    fn,
-    Cvoid,
-    args...,
+) where {PT, FA, Width, RT, TT, ReturnPrimal} = splatcall(
+    enzyme_call,
+    (
+        Val(false),
+        thunk.adjoint,
+        ForwardModeThunk{PT, FA, RT, TT, Width, ReturnPrimal},
+        Val(Width),
+        Val(ReturnPrimal),
+        TT,
+        RT,
+        fn,
+        Cvoid,
+    ),
+    args,
 )
 
 @inline (thunk::AdjointThunk{PT,FA,RT,TT,Width,TapeT})(
     fn,
     args...,
-) where {PT,FA,Width,RT,TT,TapeT} = enzyme_call(
-    Val(false),
-    thunk.adjoint,
-    AdjointThunk{PT,FA,RT,TT,Width,TapeT},
-    Val(Width),
-    Val(false),
-    TT,
-    RT,
-    fn,
-    TapeT,
-    args...,
+) where {PT, FA, Width, RT, TT, TapeT} = splatcall(
+    enzyme_call,
+    (
+        Val(false),
+        thunk.adjoint,
+        AdjointThunk{PT, FA, RT, TT, Width, TapeT},
+        Val(Width),
+        Val(false),
+        TT,
+        RT,
+        fn,
+        TapeT,
+    ),
+    args,
 ) #=ReturnPrimal=#
 @inline raw_enzyme_call(
     thunk::AdjointThunk{PT,FA,RT,TT,Width,TapeT},
     fn::FA,
     args...,
-) where {PT,FA,Width,RT,TT,TapeT} = enzyme_call(
-    Val(true),
-    thunk.adjoint,
-    AdjointThunk{PT,FA,RT,TT,Width,TapeT},
-    Val(Width),
-    Val(false),
-    TT,
-    RT,
-    fn,
-    TapeT,
-    args...,
+) where {PT, FA, Width, RT, TT, TapeT} = splatcall(
+    enzyme_call,
+    (
+        Val(true),
+        thunk.adjoint,
+        AdjointThunk{PT, FA, RT, TT, Width, TapeT},
+        Val(Width),
+        Val(false),
+        TT,
+        RT,
+        fn,
+        TapeT,
+    ),
+    args,
 ) #=ReturnPrimal=#
 
 @inline (thunk::AugmentedForwardThunk{PT,FA,RT,TT,Width,ReturnPrimal,TapeT})(
     fn,
     args...,
-) where {PT,FA,Width,RT,TT,ReturnPrimal,TapeT} = enzyme_call(
-    Val(false),
-    thunk.primal,
-    AugmentedForwardThunk{PT,FA,RT,TT,Width,ReturnPrimal,TapeT},
-    Val(Width),
-    Val(ReturnPrimal),
-    TT,
-    RT,
-    fn,
-    TapeT,
-    args...,
+) where {PT, FA, Width, RT, TT, ReturnPrimal, TapeT} = splatcall(
+    enzyme_call,
+    (
+        Val(false),
+        thunk.primal,
+        AugmentedForwardThunk{PT, FA, RT, TT, Width, ReturnPrimal, TapeT},
+        Val(Width),
+        Val(ReturnPrimal),
+        TT,
+        RT,
+        fn,
+        TapeT,
+    ),
+    args,
 )
 @inline raw_enzyme_call(
     thunk::AugmentedForwardThunk{PT,FA,RT,TT,Width,ReturnPrimal,TapeT},
     fn::FA,
     args...,
-) where {PT,FA,Width,RT,TT,ReturnPrimal,TapeT} = enzyme_call(
-    Val(true),
-    thunk.primal,
-    AugmentedForwardThunk{PT,FA,RT,TT,Width,ReturnPrimal,TapeT},
-    Val(Width),
-    Val(ReturnPrimal),
-    TT,
-    RT,
-    fn,
-    TapeT,
-    args...,
+) where {PT, FA, Width, RT, TT, ReturnPrimal, TapeT} = splatcall(
+    enzyme_call,
+    (
+        Val(true),
+        thunk.primal,
+        AugmentedForwardThunk{PT, FA, RT, TT, Width, ReturnPrimal, TapeT},
+        Val(Width),
+        Val(ReturnPrimal),
+        TT,
+        RT,
+        fn,
+        TapeT,
+    ),
+    args,
 )
 
 include("typeutils/recursive_add.jl")
