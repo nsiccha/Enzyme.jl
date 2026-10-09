@@ -87,6 +87,12 @@ function warm_allocations(call::C) where {C}
     return @allocated call()
 end
 
+# Defined at top level, so that the methods exist in the world the tests run in.
+const MANY_ARGS_F = many_args_objective(MANY_ARGS_N)
+const MANY_ARGS_F1 = many_args_objective(1)
+const MANY_ACTIVE_H = many_active_objective(MANY_ARGS_N)
+const MANY_ACTIVE_H1 = many_active_objective(1)
+
 @testset "Entry points with $(MANY_ARGS_N + 1) annotated arguments" begin
     x = [0.3, -0.7]
     dx = [1.0, 0.0]
@@ -94,8 +100,8 @@ end
     cs = Tuple([0.1i, 0.2i] for i in 1:MANY_ARGS_N)
     expected = [sum(c[1] for c in cs), sum(c[2] for c in cs)]
 
-    f = many_args_objective(MANY_ARGS_N)
-    f1 = many_args_objective(1)
+    f = MANY_ARGS_F
+    f1 = MANY_ARGS_F1
     thunks = many_args_split_thunks(f, x, cs)
     thunks1 = many_args_split_thunks(f1, x, cs[1:1])
 
@@ -116,10 +122,10 @@ end
 
     @testset "Active arguments" begin
         as = Tuple(Float64.(1:MANY_ARGS_N))
-        call = ManyActiveCall(many_active_objective(MANY_ARGS_N), as)
+        call = ManyActiveCall(MANY_ACTIVE_H, as)
         @test only(call()) == as
         @test warm_allocations(call) ==
-            warm_allocations(ManyActiveCall(many_active_objective(1), (1.0,)))
+            warm_allocations(ManyActiveCall(MANY_ACTIVE_H1, (1.0,)))
     end
 end
 
