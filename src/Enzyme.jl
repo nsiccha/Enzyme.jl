@@ -492,12 +492,12 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
                 width == 1 ? Duplicated{rt} : BatchDuplicated{rt, width},
                 (tt′).parameters...
             )
-            res = forward(f, args...)
+            res = splatcall(forward, (f,), args)
             tape = res[1]
             if ReturnPrimal
-                return (adjoint(f, args..., tape)[1], res[2])
+                return (splatcall(adjoint, (f,), args, (tape,))[1], res[2])
             else
-                return adjoint(f, args..., tape)
+                return splatcall(adjoint, (f,), args, (tape,))
             end
         end
     elseif A0 <: Duplicated ||
@@ -539,7 +539,7 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
             end
 
             width = same_or_one(3, args...)
-            args = seed_complex_args(seen, seen2, args...)
+            args = splatcall(seed_complex_args, (seen, seen2), args)
             tt′ = vaTypeof(args...)
 
             thunk = Enzyme.Compiler.thunk(
@@ -558,7 +558,7 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
                 Val(StrongZero)
             ) #=ShadowInit=#
 
-            results = thunk(f, args..., (rt(0), rt(1), rt(im)))
+            results = splatcall(thunk, (f,), args, ((rt(0), rt(1), rt(im)),))
 
             # compute the correct complex derivative in reverse mode by propagating the conjugate return values
             # then subtracting twice the imaginary component to get the correct result
@@ -570,7 +570,7 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
                 Compiler.recursive_accumulate(k, v, Val(false), imfn_seed)
             end
 
-            fused = fuse_complex_results(results, args...)
+            fused = splatcall(fuse_complex_results, (results,), args)
 
             return (fused, results[2:end]...)
         end
@@ -599,9 +599,9 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
     ) #=ShadowInit=#
 
     if A0 <: Active
-        args = (args..., Compiler.default_adjoint(rt, Val(width)))
+        return splatcall(thunk, (f,), args, (Compiler.default_adjoint(rt, Val(width)),))
     end
-    thunk(f, args...)
+    return splatcall(thunk, (f,), args)
 end
 
 """
@@ -614,7 +614,7 @@ Like [`autodiff`](@ref) but will try to extend f to an annotation, if needed.
     f::F,
     args::Vararg{Annotation,Nargs},
 ) where {F,CMode<:Mode,Nargs}
-    autodiff(EnzymeCore.set_err_if_func_written(mode), Const(f), args...)
+    return splatcall(autodiff, (EnzymeCore.set_err_if_func_written(mode), Const(f)), args)
 end
 @inline function autodiff(
     mode::CMode,
@@ -622,7 +622,7 @@ end
     ::Type{RT},
     args::Vararg{Annotation,Nargs},
 ) where {F,RT<:Annotation,CMode<:Mode,Nargs}
-    autodiff(EnzymeCore.set_err_if_func_written(mode), Const(f), RT, args...)
+    return splatcall(autodiff, (EnzymeCore.set_err_if_func_written(mode), Const(f), RT), args)
 end
 
 """
@@ -642,7 +642,7 @@ Like [`autodiff`](@ref) but will try to guess the activity of the return value.
         tt,
     )
     A = guess_activity(rt, mode)
-    autodiff(mode, f, A, args...)
+    return splatcall(autodiff, (mode, f, A), args)
 end
 
 """
@@ -694,7 +694,7 @@ f(x) = x*x
     FA<:Annotation,
     A<:Annotation,
 } where {ReturnPrimal,RABI<:ABI,Nargs,ErrIfFuncWritten,RuntimeActivity,StrongZero}
-    if any_active(args...)
+    if splatcall(any_active, args)
         throw(ErrorException("Active arguments not allowed in forward mode"))
     end
     tt′ = vaTypeof(args...)
@@ -753,7 +753,7 @@ f(x) = x*x
         Val(RuntimeActivity),
         Val(StrongZero)
     ) #=ShadowInit=#
-    thunk(f, args...)
+    return splatcall(thunk, (f,), args)
 end
 
 """
@@ -832,12 +832,12 @@ code, as well as high-order differentiation.
                 rt_annotation,
                 (tt′).parameters...
             )
-            res = forward(f, args...)
+            res = splatcall(forward, (f,), args)
             tape = res[1]
             if ReturnPrimal
-                return (adjoint(f, args..., tape)[1], res[2])
+                return (splatcall(adjoint, (f,), args, (tape,))[1], res[2])
             else
-                return adjoint(f, args..., tape)
+                return splatcall(adjoint, (f,), args, (tape,))
             end
         end
     elseif A <: Duplicated ||
@@ -882,14 +882,14 @@ code, as well as high-order differentiation.
     thunk =
         Compiler.CombinedAdjointThunk{Ptr{Cvoid},FA,A2,tt′,width,ReturnPrimal}(adjoint_ptr)
     if A <: Active
-        args = (args..., Compiler.default_adjoint(rt, Val(width)))
+        return splatcall(thunk, (f,), args, (Compiler.default_adjoint(rt, Val(width)),))
     elseif A <: Duplicated ||
            A <: DuplicatedNoNeed ||
            A <: BatchDuplicated ||
            A <: BatchDuplicatedNoNeed
         throw(ErrorException("Duplicated Returns not yet handled"))
     end
-    thunk(f, args...)
+    return splatcall(thunk, (f,), args)
 end
 
 """
@@ -913,7 +913,7 @@ code, as well as high-order differentiation.
     RuntimeActivity,
     StrongZero
 }
-    if any_active(args...)
+    if splatcall(any_active, args)
         throw(ErrorException("Active arguments not allowed in forward mode"))
     end
     tt′ = vaTypeof(args...)
@@ -983,7 +983,7 @@ code, as well as high-order differentiation.
         Val(StrongZero)
     ) #=ShadowInit=#
     thunk = Compiler.ForwardModeThunk{Ptr{Cvoid},FA,rt,tt′,width,ReturnPrimal}(adjoint_ptr)
-    thunk(f, args...)
+    return splatcall(thunk, (f,), args)
 end
 
 """
@@ -1130,14 +1130,14 @@ end
     ::Type{A},
     args::Vararg{Annotation,Nargs},
 ) where {A<:Annotation,Nargs,MMode<:Mode}
-    autodiff(m, f, A, args...)
+    return splatcall(autodiff, (m, f, A), args)
 end
 @inline function autodiff(
     f::Function,
     m::MMode,
     args::Vararg{Annotation,Nargs},
 ) where {Nargs,MMode<:Mode}
-    autodiff(m, f, args...)
+    return splatcall(autodiff, (m, f), args)
 end
 
 """
