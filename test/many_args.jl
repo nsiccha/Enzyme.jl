@@ -19,7 +19,7 @@ end
 function many_active_objective(n)
     as = [Symbol(:a, i) for i in 1:n]
     body = foldl((a, b) -> :($a + $b), [:($(as[i]) * $i) for i in 1:n])
-    return @eval ($(as...)) -> $body
+    return Core.eval(@__MODULE__, Expr(:->, Expr(:tuple, as...), body))
 end
 
 const MANY_ARGS_CALLS = (
