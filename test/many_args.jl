@@ -122,3 +122,25 @@ end
             warm_allocations(ManyActiveCall(many_active_objective(1), (1.0,)))
     end
 end
+
+many_args_width(args...) = Val(Enzyme.same_or_one(1, args...))
+many_args_dynamic_width(T::DataType) = Enzyme.same_or_one(1, T)
+
+@testset "Batch width of $(MANY_ARGS_N + 1) annotated arguments" begin
+    x = [1.0]
+    b2 = BatchDuplicated(x, (x, x))
+    b3 = BatchDuplicated(x, (x, x, x))
+    cs = ntuple(Returns(Const(x)), MANY_ARGS_N)
+    @test Enzyme.same_or_one(1, cs...) == 1
+    @test Enzyme.same_or_one(3, cs...) == 3
+    @test Enzyme.same_or_one(1, cs..., b2) == 2
+    @test Enzyme.same_or_one(1, typeof(b2), map(typeof, cs)...) == 2
+    @test_throws ErrorException Enzyme.same_or_one(1, b2, cs..., b3)
+    @test_throws ErrorException Enzyme.same_or_one(1, typeof(b2), typeof(b3))
+    # The width is a compile-time constant, which every thunk type depends on.
+    @test only(Base.return_types(many_args_width, typeof((b2, cs...)))) === Val{2}
+    @test only(Base.return_types(many_args_width, typeof(cs))) === Val{1}
+    # A type of unknown identity is resolved at run time.
+    @test many_args_dynamic_width(typeof(b3)) == 3
+    @test many_args_dynamic_width(Float64) == 1
+end

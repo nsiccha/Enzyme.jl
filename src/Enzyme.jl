@@ -275,47 +275,58 @@ end
     )...}
 end
 
+# The batch width fixed by an argument of type `T` (an annotation, or an annotation type
+# passed as a value, whose `Core.Typeof` is `Type{A}`), or -1 if it fixes none.
+@inline same_or_one_width(::Type) = -1
+@inline same_or_one_width(::Type{<:BatchMixedDuplicated{<:Any, N}}) where {N} = N
+@inline same_or_one_width(::Type{<:BatchDuplicatedFunc{<:Any, N}}) where {N} = N
+@inline same_or_one_width(::Type{<:BatchDuplicated{<:Any, N}}) where {N} = N
+@inline same_or_one_width(::Type{<:BatchDuplicatedNoNeed{<:Any, N}}) where {N} = N
+@inline same_or_one_width(::Type{Type{A}}) where {A} = A isa DataType ? same_or_one_width(A) : -1
+
+# Whether `same_or_one_width` can read the width from the type `T` alone: not for a type
+# passed as a value of unknown identity (`DataType`, `UnionAll`, ...).
+same_or_one_known(::Type) = true
+same_or_one_known(::Type{<:Type}) = false
+same_or_one_known(::Type{Type{A}}) where {A} = true
+
+# Combines the width found so far with the next argument's (-1: none yet, -2: conflict).
 @inline function same_or_one_helper(current, next)
-    if current == -1
-        return next
-    elseif current == next
+    if next == -1 || current == next || current == -2
+        return current
+    elseif current == -1
         return next
     else
+        return -2
+    end
+end
+
+@inline function same_or_one_result(defaultVal, width)
+    if width == -2
         error("Multiple distinct batch sizes")
+    elseif width == -1
+        return defaultVal
+    else
+        return width
     end
 end
 
 @inline same_or_one_rec(current) = current
-@inline same_or_one_rec(current, arg::BatchMixedDuplicated{T,N}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(
-    current,
-    arg::Type{BatchMixedDuplicated{T,N}},
-    args...,
-) where {T,N} = same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::BatchDuplicatedFunc{T,N}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::Type{BatchDuplicatedFunc{T,N}}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::BatchDuplicated{T,N}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::Type{BatchDuplicated{T,N}}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::BatchDuplicatedNoNeed{T,N}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(
-    current,
-    arg::Type{BatchDuplicatedNoNeed{T,N}},
-    args...,
-) where {T,N} = same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg, args...) = same_or_one_rec(current, args...)
+@inline same_or_one_rec(current, arg, args...) =
+    same_or_one_rec(same_or_one_helper(current, same_or_one_width(Core.Typeof(arg))), args...)
 
-@inline function same_or_one(defaultVal, args...)
-    local_soo_res = same_or_one_rec(-1, args...)
-    if local_soo_res == -1
-        defaultVal
+# The batch width shared by the arguments, or `defaultVal` if none is batched. It is read
+# from the argument types when the method is generated: a recursion over the arguments
+# stops inferring to a constant beyond about 33 of them on Julia 1.12, which would leave
+# the width, and with it every thunk type, to run time.
+@inline function same_or_one(defaultVal, args::Vararg{Any, N}) where {N}
+    if @generated
+        all(same_or_one_known, args) ||
+            return :(same_or_one_result(defaultVal, same_or_one_rec(-1, args...)))
+        width = foldl(same_or_one_helper, map(same_or_one_width, args); init = -1)
+        return :(same_or_one_result(defaultVal, $width))
     else
-        local_soo_res
+        return same_or_one_result(defaultVal, same_or_one_rec(-1, args...))
     end
 end
 
