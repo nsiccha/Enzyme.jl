@@ -37,16 +37,12 @@ const ACTIVITIES = (Const, Duplicated, BatchDuplicated)
 end
 
 # The triangular matrix is built inside, as W(P(M)) with P one of identity, transpose and
-# adjoint. W is a function rather than the wrapper type: test_forward with a type passed as a
-# Const argument gives the copy of a Const array a nonzero tangent, for any function body.
+# adjoint.
 ldiv_2arg(W, P, M, B) = ldiv!(W(P(M)), copy(B))
 ldiv_3arg(W, P, M, B) = ldiv!(similar(B), W(P(M)), B)
-lower(M) = LowerTriangular(M)
-upper(M) = UpperTriangular(M)
-unit_lower(M) = UnitLowerTriangular(M)
-unit_upper(M) = UnitUpperTriangular(M)
 
-@testset "ldiv! with $W ($T)" for T in (Float64, ComplexF64), W in (lower, upper, unit_lower, unit_upper)
+@testset "ldiv! with $W ($T)" for T in (Float64, ComplexF64),
+        W in (LowerTriangular, UpperTriangular, UnitLowerTriangular, UnitUpperTriangular)
     M = trtrs_matrix(T, 3)
     B = rand(T, 3)
     @testset "$f, wrapping $P(M)" for f in (ldiv_2arg, ldiv_3arg), P in (identity, transpose, adjoint)
