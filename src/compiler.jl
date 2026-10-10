@@ -7852,6 +7852,25 @@ function split_thunks(
 end
 
 """
+    LazyCompiled{V}
+
+What a [`LazyThunk`](@ref) or [`LazySplitThunks`](@ref) compiled, `value`, and the
+`CodeInstance` that says whether it is still valid: [`track_validity`](@ref) gave it the
+compilation's edges, so Julia invalidates it exactly when it would have invalidated a
+derivative compiled inside the generator.
+"""
+struct LazyCompiled{V}
+    value::V
+    validity::Core.CodeInstance
+end
+
+@static if Base.isfieldatomic(Core.CodeInstance, :max_world)
+    @inline lazy_valid(compiled::LazyCompiled) = getfield(compiled.validity, :max_world, :acquire) == typemax(UInt)
+else
+    @inline lazy_valid(compiled::LazyCompiled) = compiled.validity.max_world == typemax(UInt)
+end
+
+"""
     LazyThunk{T}
 
 A derivative of thunk type `T` whose compilation is deferred from type inference to the
@@ -7865,13 +7884,16 @@ the generator then keeps every other thread from compiling or inferring anything
 is done. For the modes whose thunk type is known before compiling (see
 [`untaped_thunk_type`](@ref)), the generator emits a call to [`lazy_thunk`](@ref) on one of
 these instead, which compiles the derivative in the calling task the first time it runs.
+
+What the compiled derivative depends on (rules, natively compiled callees, nested
+derivatives) is only known once it is compiled, so it cannot be an edge of the generated
+code. The cell keeps it in a [`LazyCompiled`](@ref) instead, and compiles again when that
+is invalidated.
 """
 mutable struct LazyThunk{T}
-    @atomic adjoint::Ptr{Cvoid}
+    @atomic compiled::Union{Nothing, LazyCompiled{Ptr{Cvoid}}}
     const job::CompilerJob
-    # Made while precompiling, so possibly loaded from a package image into a later session.
-    const precompiling::Bool
-    LazyThunk{T}(job::CompilerJob) where {T} = new{T}(C_NULL, job, generating_output())
+    LazyThunk{T}(job::CompilerJob) where {T} = new{T}(nothing, job)
 end
 
 """
@@ -7884,9 +7906,8 @@ these gets them untyped. Only Enzyme's run-time rules ask for them, which use th
 through dynamic dispatch anyway.
 """
 mutable struct LazySplitThunks
-    @atomic thunks::Any
+    @atomic compiled::Union{Nothing, LazyCompiled{Any}}
     const job::CompilerJob
-    const precompiling::Bool
     const run_enzyme::Bool
     const FA::Type
     const RT::Type
@@ -7902,67 +7923,153 @@ mutable struct LazySplitThunks
             width::Int,
             ReturnPrimal::Bool,
         )
-        return new(nothing, job, generating_output(), run_enzyme, FA, RT, TT, width, ReturnPrimal)
+        return new(nothing, job, run_enzyme, FA, RT, TT, width, ReturnPrimal)
     end
 end
 
 generating_output() = ccall(:jl_generating_output, Cint, ()) != 0
 
 @inline function lazy_thunk(cell::LazyThunk{T}) where {T}
-    adjoint = @atomic :acquire cell.adjoint
-    if adjoint == C_NULL
-        adjoint = compile_lazy_thunk!(cell)
+    compiled = @atomic :acquire cell.compiled
+    if compiled === nothing || !lazy_valid(compiled)
+        return T(compile_lazy_thunk!(cell))
     end
-    return T(adjoint)
+    return T(compiled.value)
 end
 
 @inline function lazy_split_thunks(cell::LazySplitThunks)::Tuple{Any, Any}
-    thunks = @atomic :acquire cell.thunks
-    if thunks === nothing
-        thunks = compile_lazy_thunk!(cell)
+    compiled = @atomic :acquire cell.compiled
+    if compiled === nothing || !lazy_valid(compiled)
+        return compile_lazy_thunk!(cell)
     end
-    return thunks
+    return compiled.value
 end
 
-@noinline function compile_lazy_thunk!(cell::LazyThunk)
-    adjoint = lazy_compilation(cell.job, cell.precompiling).adjoint::Ptr{Cvoid}
-    # While precompiling, the cell can be serialized into a package image along with the
-    # code that holds it, and an address in this process's JIT means nothing to the session
-    # that loads it. Leave the cell empty so that session compiles its own.
-    if !generating_output()
-        @atomic :release cell.adjoint = adjoint
+# Both kinds of cell compile one at a time, so that two first calls compile once.
+const LAZY_THUNK_LOCK = ReentrantLock()
+
+@noinline function compile_lazy_thunk!(cell::LazyThunk)::Ptr{Cvoid}
+    # NOTE: no use of lock(::Function)/@lock to keep stack traces clean
+    lock(LAZY_THUNK_LOCK)
+    try
+        compiled = @atomic :acquire cell.compiled
+        if compiled !== nothing && lazy_valid(compiled)
+            return compiled.value
+        end
+        compile_result, validity = lazy_compilation(cell.job)
+        adjoint = compile_result.adjoint::Ptr{Cvoid}
+        if validity !== nothing
+            @atomic :release cell.compiled = LazyCompiled{Ptr{Cvoid}}(adjoint, validity)
+        end
+        return adjoint
+    finally
+        unlock(LAZY_THUNK_LOCK)
     end
-    return adjoint
 end
 
-@noinline function compile_lazy_thunk!(cell::LazySplitThunks)
-    compile_result = lazy_compilation(cell.job, cell.precompiling)
-    thunks = split_thunks(compile_result, cell.run_enzyme, cell.FA, cell.RT, cell.TT, cell.width, cell.ReturnPrimal)
-    # Never kept while precompiling, as for `LazyThunk`.
-    if !generating_output()
-        @atomic :release cell.thunks = thunks
+@noinline function compile_lazy_thunk!(cell::LazySplitThunks)::Tuple{Any, Any}
+    lock(LAZY_THUNK_LOCK)
+    try
+        compiled = @atomic :acquire cell.compiled
+        if compiled !== nothing && lazy_valid(compiled)
+            return compiled.value
+        end
+        compile_result, validity = lazy_compilation(cell.job)
+        thunks = split_thunks(compile_result, cell.run_enzyme, cell.FA, cell.RT, cell.TT, cell.width, cell.ReturnPrimal)
+        if validity !== nothing
+            @atomic :release cell.compiled = LazyCompiled{Any}(thunks, validity)
+        end
+        return thunks
+    finally
+        unlock(LAZY_THUNK_LOCK)
     end
-    return thunks
 end
 
-function lazy_compilation(job::CompilerJob, precompiling::Bool)
-    if precompiling
-        # The job's world is one of the process that precompiled, which means nothing to a
-        # session that loaded the cell from its image. The code calling this is valid in the
-        # world it runs in, so compile in that one.
-        world = GPUCompiler.tls_world_age()
-        check_activity_cache_invalidations(world)
-        job = CompilerJob(job.source, job.config, world)
-    end
+"""
+    lazy_compilation(job) -> (compile_result, validity)
+
+Compile `job` in the world the calling task runs in, and register what the result depends
+on (see [`track_validity`](@ref)).
+
+The job's own world is the one its caller was inferred in, which may be long gone: a
+method change since then that left the caller's code valid is one the derivative is free
+to see, and in a session that loaded the caller from a package image it is a world of the
+process that precompiled it. `validity` is `nothing` while precompiling, where nothing
+compiled may be kept (an address in this process's JIT means nothing to the session that
+loads the image), and when the result was invalidated before it could be tracked.
+"""
+function lazy_compilation(job::CompilerJob)
+    world = GPUCompiler.tls_world_age()
+    check_activity_cache_invalidations(world)
+    job = CompilerJob(job.source, job.config, world)
     ts_ctx = JuliaContext()
     ctx = context(ts_ctx)
     activate(ctx)
-    try
-        return cached_compilation(job)
+    compile_result = try
+        cached_compilation(job)
     finally
         deactivate(ctx)
         dispose(ts_ctx)
     end
+    validity = generating_output() ? nothing : track_validity(compile_result.edges)
+    return compile_result, validity
+end
+
+const LAZY_VALIDITY_EDGES = Dict{UInt, Vector{Any}}()
+const LAZY_VALIDITY_EDGES_LOCK = Threads.SpinLock()
+const LAZY_VALIDITY_ID = Threads.Atomic{UInt}(0)
+
+function lazy_validity end
+
+# A generator may not switch tasks, so the edges are handed over under a spin lock.
+function lazy_validity_generator(world::UInt, source::Union{Method, LineNumberNode}, id::UInt, @nospecialize(self), @nospecialize(idtype))
+    @nospecialize
+    lock(LAZY_VALIDITY_EDGES_LOCK)
+    edges = try
+        get(LAZY_VALIDITY_EDGES, id, nothing)
+    finally
+        unlock(LAZY_VALIDITY_EDGES_LOCK)
+    end
+    slotnames = Core.svec(Symbol("#self#"), :id)
+    ci = create_fresh_codeinfo(lazy_validity, source, world, slotnames, Any[Core.Compiler.ReturnNode(nothing)])
+    ci.edges = edges === nothing ? Any[] : edges
+    return ci
+end
+
+"""
+    track_validity(edges) -> Union{Nothing, Core.CodeInstance}
+
+A `CodeInstance` that Julia invalidates when any of `edges` is invalidated: that of a fresh
+specialization of the generated `lazy_validity`, whose generator gives its code exactly
+these edges. `nothing` if it was invalidated before it could be looked up.
+"""
+function track_validity(edges::Vector{Any})::Union{Nothing, Core.CodeInstance}
+    id = Threads.atomic_add!(LAZY_VALIDITY_ID, UInt(1))
+    lock(LAZY_VALIDITY_EDGES_LOCK)
+    try
+        LAZY_VALIDITY_EDGES[id] = edges
+    finally
+        unlock(LAZY_VALIDITY_EDGES_LOCK)
+    end
+    try
+        Base.invokelatest(lazy_validity, Val(id))
+    finally
+        lock(LAZY_VALIDITY_EDGES_LOCK)
+        try
+            delete!(LAZY_VALIDITY_EDGES, id)
+        finally
+            unlock(LAZY_VALIDITY_EDGES_LOCK)
+        end
+    end
+    world = Base.get_world_counter()
+    method = which(lazy_validity, Tuple{Val{id}})
+    mi = Core.Compiler.specialize_method(method, Tuple{typeof(lazy_validity), Val{id}}, Core.svec(id))
+    ci = @static if VERSION >= v"1.12-"
+        ccall(:jl_rettype_inferred, Any, (Any, Any, UInt, UInt), nothing, mi, world, world)
+    else
+        ccall(:jl_rettype_inferred, Any, (Any, UInt, UInt), mi, world, world)
+    end
+    return ci isa Core.CodeInstance ? ci : nothing
 end
 
 @inline function thunk(

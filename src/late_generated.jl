@@ -91,6 +91,11 @@ end
     $(Expr(:meta, :generated, Compiler.runtime_thunk_generator))
 end
 
+@eval function Compiler.lazy_validity(id::Val{ID}) where {ID}
+    $(Expr(:meta, :generated_only))
+    $(Expr(:meta, :generated, Compiler.lazy_validity_generator))
+end
+
 @eval @inline function Compiler.deferred_id_codegen(
         fa::Type{FA},
         a::Type{A},

@@ -92,3 +92,26 @@ end
     @test primal ≈ lazy_shared(0.3)
     @test rev(Const(lazy_shared), Active(0.3), 1.0, tape)[1][1] ≈ 5 * 0.3^4 - sin(0.3)
 end
+
+# What a derivative depends on beyond the primal (here the rule it calls, and a helper only
+# that rule calls) is known only once it is compiled. A lazily compiled derivative still
+# compiles again when that changes.
+lazy_ruled(x) = x^2
+lazy_ruled_helper(x) = 10.0
+EnzymeRules.forward(config, ::Const{typeof(lazy_ruled)}, ::Type{<:Duplicated}, x::Duplicated) =
+    Duplicated(lazy_ruled(x.val), lazy_ruled_helper(x.val) + 2 * x.val * x.dval)
+EnzymeRules.forward(config, ::Const{typeof(lazy_ruled)}, ::Type{<:DuplicatedNoNeed}, x::Duplicated) =
+    lazy_ruled_helper(x.val) + 2 * x.val * x.dval
+lazy_ruled_tangent(x) = autodiff(Forward, lazy_ruled, Duplicated(x, 1.0))[1]
+
+@testset "Changes the compiled derivative depends on recompile it" begin
+    @test lazy_ruled_tangent(1.0) ≈ 12.0
+    @eval lazy_ruled_helper(x) = 20.0
+    @test Base.invokelatest(lazy_ruled_tangent, 1.0) ≈ 22.0
+    while !isempty(methods(EnzymeRules.forward, Tuple{Any, Const{typeof(lazy_ruled)}, Vararg{Any}}))
+        for m in methods(EnzymeRules.forward, Tuple{Any, Const{typeof(lazy_ruled)}, Vararg{Any}})
+            Base.delete_method(m)
+        end
+    end
+    @test Base.invokelatest(lazy_ruled_tangent, 1.0) ≈ 2.0
+end
