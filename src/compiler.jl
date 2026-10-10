@@ -7805,32 +7805,50 @@ end
         end
     end
     if Mode == API.DEM_ReverseModePrimal || Mode == API.DEM_ReverseModeGradient
-        if !run_enzyme
-            ErrT = PrimalErrorThunk{typeof(compile_result.adjoint), FA, rt2, TT, width, ReturnPrimal}
-            return (ErrT(compile_result.adjoint), ErrT(compile_result.adjoint))
-        end
-        TapeType = compile_result.TapeType
-        AugT = AugmentedForwardThunk{
-            typeof(compile_result.primal),
-            FA,
-            rt2,
-            Tuple{TT.parameters...},
-            width,
-            ReturnPrimal,
-            TapeType,
-        }
-        AdjT = AdjointThunk{
-            typeof(compile_result.adjoint),
-            FA,
-            rt2,
-            Tuple{TT.parameters...},
-            width,
-            TapeType,
-        }
-        return (AugT(compile_result.primal), AdjT(compile_result.adjoint))
+        return split_thunks(compile_result, run_enzyme, FA, rt2, TT, width, ReturnPrimal)
     end
     ThunkT = untaped_thunk_type(Mode, run_enzyme, typeof(compile_result.adjoint), FA, rt2, TT, width, ReturnPrimal)
     return ThunkT(compile_result.adjoint)
+end
+
+"""
+    split_thunks(compile_result, run_enzyme, FA, RT, TT, width, ReturnPrimal)
+
+The augmented forward and adjoint thunks of a split-mode derivative, typed with the tape
+type its compilation found.
+"""
+function split_thunks(
+        compile_result::CompileResult,
+        run_enzyme::Bool,
+        @nospecialize(FA::Type),
+        @nospecialize(RT::Type),
+        @nospecialize(TT::Type),
+        width::Int,
+        ReturnPrimal::Bool,
+    )
+    if !run_enzyme
+        ErrT = PrimalErrorThunk{typeof(compile_result.adjoint), FA, RT, TT, width, ReturnPrimal}
+        return (ErrT(compile_result.adjoint), ErrT(compile_result.adjoint))
+    end
+    TapeType = compile_result.TapeType
+    AugT = AugmentedForwardThunk{
+        typeof(compile_result.primal),
+        FA,
+        RT,
+        Tuple{TT.parameters...},
+        width,
+        ReturnPrimal,
+        TapeType,
+    }
+    AdjT = AdjointThunk{
+        typeof(compile_result.adjoint),
+        FA,
+        RT,
+        Tuple{TT.parameters...},
+        width,
+        TapeType,
+    }
+    return (AugT(compile_result.primal), AdjT(compile_result.adjoint))
 end
 
 """
@@ -7856,6 +7874,38 @@ mutable struct LazyThunk{T}
     LazyThunk{T}(job::CompilerJob) where {T} = new{T}(C_NULL, job, generating_output())
 end
 
+"""
+    LazySplitThunks
+
+The split-mode counterpart of [`LazyThunk`](@ref), for `runtime_thunk`: the augmented
+forward and adjoint thunks of a derivative, compiled the first time they are asked for.
+Their type carries the tape type, which only compiling finds, so the code holding one of
+these gets them untyped. Only Enzyme's run-time rules ask for them, which use the thunks
+through dynamic dispatch anyway.
+"""
+mutable struct LazySplitThunks
+    @atomic thunks::Any
+    const job::CompilerJob
+    const precompiling::Bool
+    const run_enzyme::Bool
+    const FA::Type
+    const RT::Type
+    const TT::Type
+    const width::Int
+    const ReturnPrimal::Bool
+    function LazySplitThunks(
+            job::CompilerJob,
+            run_enzyme::Bool,
+            @nospecialize(FA::Type),
+            @nospecialize(RT::Type),
+            @nospecialize(TT::Type),
+            width::Int,
+            ReturnPrimal::Bool,
+        )
+        return new(nothing, job, generating_output(), run_enzyme, FA, RT, TT, width, ReturnPrimal)
+    end
+end
+
 generating_output() = ccall(:jl_generating_output, Cint, ()) != 0
 
 @inline function lazy_thunk(cell::LazyThunk{T}) where {T}
@@ -7866,9 +7916,37 @@ generating_output() = ccall(:jl_generating_output, Cint, ()) != 0
     return T(adjoint)
 end
 
+@inline function lazy_split_thunks(cell::LazySplitThunks)::Tuple{Any, Any}
+    thunks = @atomic :acquire cell.thunks
+    if thunks === nothing
+        thunks = compile_lazy_thunk!(cell)
+    end
+    return thunks
+end
+
 @noinline function compile_lazy_thunk!(cell::LazyThunk)
-    job = cell.job
-    if cell.precompiling
+    adjoint = lazy_compilation(cell.job, cell.precompiling).adjoint::Ptr{Cvoid}
+    # While precompiling, the cell can be serialized into a package image along with the
+    # code that holds it, and an address in this process's JIT means nothing to the session
+    # that loads it. Leave the cell empty so that session compiles its own.
+    if !generating_output()
+        @atomic :release cell.adjoint = adjoint
+    end
+    return adjoint
+end
+
+@noinline function compile_lazy_thunk!(cell::LazySplitThunks)
+    compile_result = lazy_compilation(cell.job, cell.precompiling)
+    thunks = split_thunks(compile_result, cell.run_enzyme, cell.FA, cell.RT, cell.TT, cell.width, cell.ReturnPrimal)
+    # Never kept while precompiling, as for `LazyThunk`.
+    if !generating_output()
+        @atomic :release cell.thunks = thunks
+    end
+    return thunks
+end
+
+function lazy_compilation(job::CompilerJob, precompiling::Bool)
+    if precompiling
         # The job's world is one of the process that precompiled, which means nothing to a
         # session that loaded the cell from its image. The code calling this is valid in the
         # world it runs in, so compile in that one.
@@ -7879,20 +7957,12 @@ end
     ts_ctx = JuliaContext()
     ctx = context(ts_ctx)
     activate(ctx)
-    compile_result = try
-        cached_compilation(job)
+    try
+        return cached_compilation(job)
     finally
         deactivate(ctx)
         dispose(ts_ctx)
     end
-    adjoint = compile_result.adjoint::Ptr{Cvoid}
-    # While precompiling, the cell can be serialized into a package image along with the
-    # code that holds it, and an address in this process's JIT means nothing to the session
-    # that loads it. Leave the cell empty so that session compiles its own.
-    if !generating_output()
-        @atomic :release cell.adjoint = adjoint
-    end
-    return adjoint
 end
 
 @inline function thunk(
@@ -7953,25 +8023,52 @@ end
 function thunk end
 
 """
-    compiles_lazily(Mode, ABI)
+    runtime_thunk(fakeworld, fa, a, tt, mode, width, modifiedbetween, returnprimal, shadowinit,
+                  abi, erriffuncwritten, runtimeactivity, strongzero)
 
-Say if `thunk_generator` defers compiling the derivative to its first call (see
-[`LazyThunk`](@ref)) instead of compiling it while the call is inferred.
+`thunk` for Enzyme's run-time rules, which build a derivative for a callee they reach by
+dynamic dispatch and use what they get back through dynamic dispatch too. It differs from
+`thunk` only in split mode, where it compiles the derivative at its first call (see
+[`LazySplitThunks`](@ref)) and so returns the thunks untyped.
+"""
+function runtime_thunk end
 
-Only thunks whose type is known before compiling qualify, and only for the FFI ABI, whose
-thunk holds the derivative's address as a run-time value. Inference by an
+"""
+    compiles_lazily(Mode, ABI, untyped_split)
+
+Say if the generator of `thunk` (or, with `untyped_split`, of `runtime_thunk`) defers
+compiling the derivative to its first call (see [`LazyThunk`](@ref)) instead of compiling it
+while the call is inferred.
+
+Combined reverse mode and forward mode qualify, since their thunk type is known before
+compiling; split mode only when its thunks may be returned untyped. Only the FFI ABI does,
+whose thunk holds the derivative's address as a run-time value. Inference by an
 `EnzymeInterpreter` always compiles in place: that is Enzyme differentiating code that
 itself calls `autodiff`, and the outer derivative needs the inner one's address as a
 constant to differentiate through it.
 """
-function compiles_lazily(Mode::API.CDerivativeMode, @nospecialize(ABI::Type))
-    (Mode == API.DEM_ReverseModeCombined || Mode == API.DEM_ForwardMode) || return false
+function compiles_lazily(Mode::API.CDerivativeMode, @nospecialize(ABI::Type), untyped_split::Bool)
+    if Mode == API.DEM_ReverseModePrimal || Mode == API.DEM_ReverseModeGradient
+        untyped_split || return false
+    elseif !(Mode == API.DEM_ReverseModeCombined || Mode == API.DEM_ForwardMode)
+        return false
+    end
     ABI <: FFIABI || return false
     return !Interpreter.in_enzyme_inference()
 end
 
 function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where N)), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Bool, RuntimeActivity::Bool, StrongZero::Bool, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type))
     @nospecialize
+    return thunk_codeinfo(thunk, false, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero)
+end
+
+function runtime_thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Bool, RuntimeActivity::Bool, StrongZero::Bool, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type))
+    @nospecialize
+    return thunk_codeinfo(runtime_thunk, true, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero)
+end
+
+# The body of the generators of `thunk` and `runtime_thunk`.
+function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Bool, RuntimeActivity::Bool, StrongZero::Bool)
     
     slotnames = Core.svec(Symbol("#self#"), 
                     :fakeworld, :fa, :a, :tt, :mode, :width,
@@ -7995,7 +8092,7 @@ function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @no
     edges = Any[]
     add_edge!(edges, mi)
 
-    code = if compiles_lazily(Mode, ABI)
+    code = if compiles_lazily(Mode, ABI, untyped_split)
         job, rt2, run_enzyme = thunk_job(
             mi,
             world,
@@ -8012,11 +8109,14 @@ function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @no
             RuntimeActivity,
             StrongZero,
         )
-        ThunkT = untaped_thunk_type(Mode, run_enzyme, Ptr{Cvoid}, FA, rt2, TT, Width, ReturnPrimal)
-        Any[
-            Expr(:call, GlobalRef(Compiler, :lazy_thunk), LazyThunk{ThunkT}(job)),
-            Core.Compiler.ReturnNode(Core.SSAValue(1)),
-        ]
+        call = if Mode == API.DEM_ReverseModePrimal || Mode == API.DEM_ReverseModeGradient
+            cell = LazySplitThunks(job, run_enzyme, FA, rt2, TT, Width, ReturnPrimal)
+            Expr(:call, GlobalRef(Compiler, :lazy_split_thunks), cell)
+        else
+            ThunkT = untaped_thunk_type(Mode, run_enzyme, Ptr{Cvoid}, FA, rt2, TT, Width, ReturnPrimal)
+            Expr(:call, GlobalRef(Compiler, :lazy_thunk), LazyThunk{ThunkT}(job))
+        end
+        Any[call, Core.Compiler.ReturnNode(Core.SSAValue(1))]
     else
         ts_ctx = JuliaContext()
         ctx = context(ts_ctx)
@@ -8045,7 +8145,7 @@ function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @no
         end
         Any[Core.Compiler.ReturnNode(result)]
     end
-    ci = create_fresh_codeinfo(thunk, source, world, slotnames, code)
+    ci = create_fresh_codeinfo(fn, source, world, slotnames, code)
 
 
 
@@ -8075,7 +8175,7 @@ function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @no
     return ci
 end
 
-# The generated wrapper `thunk` is defined in src/late_generated.jl; see the note there.
+# The generated wrappers `thunk` and `runtime_thunk` are defined in src/late_generated.jl; see the note there.
 
 import GPUCompiler: deferred_codegen_jobs
 

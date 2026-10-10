@@ -62,3 +62,33 @@ lazy_shared_grad(x) = autodiff(Reverse, lazy_shared, Active, Active(x))[1][1]
     results = fetch.([Threads.@spawn lazy_shared_grad(0.5) for _ in 1:8])
     @test all(r -> r ≈ 5 * 0.5^4 - sin(0.5), results)
 end
+
+# A callee reached by dynamic dispatch is differentiated through Enzyme's run-time rules,
+# which build a split-mode derivative for it when the gradient first runs.
+const lazy_dynamic_cube = Ref{Any}(lazy_cube)
+const lazy_dynamic_quartic = Ref{Any}(lazy_quartic)
+lazy_dynamic3(x) = lazy_dynamic_cube[](x)::Float64 * 2
+lazy_dynamic4(x) = lazy_dynamic_quartic[](x)::Float64 * 2
+lazy_dynamic_grad(f, x) = autodiff(Reverse, f, Active, Active(x))[1][1]
+
+@testset "Dynamic dispatch to a lazily compiled callee" begin
+    @test lazy_dynamic_grad(lazy_dynamic3, 0.7) ≈ 2 * lazy_dcube(0.7)
+    @test lazy_dynamic_grad(lazy_dynamic3, 0.8) ≈ 2 * lazy_dcube(0.8)
+    @test lazy_dynamic_grad(lazy_dynamic4, 2.0) ≈ 2 * 32.0
+end
+
+@testset "runtime_thunk compiles split mode at its first call" begin
+    args = (
+        Val(0), Const{typeof(lazy_shared)}, Active{Float64}, Tuple{Active{Float64}},
+        Val(Enzyme.API.DEM_ReverseModePrimal), Val(1), Val((true, true)), Val(true), Val(false),
+        Enzyme.FFIABI, Val(false), Val(false), Val(false),
+    )
+    n = length(Enzyme.Compiler.cache)
+    code_typed(Enzyme.Compiler.runtime_thunk, map(Core.Typeof, args))
+    @test length(Enzyme.Compiler.cache) == n
+    fwd, rev = Enzyme.Compiler.runtime_thunk(args...)
+    @test length(Enzyme.Compiler.cache) > n
+    tape, primal, _ = fwd(Const(lazy_shared), Active(0.3))
+    @test primal ≈ lazy_shared(0.3)
+    @test rev(Const(lazy_shared), Active(0.3), 1.0, tape)[1][1] ≈ 5 * 0.3^4 - sin(0.3)
+end
