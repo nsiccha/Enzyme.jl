@@ -7627,23 +7627,30 @@ shadow-return ABI in `create_abi_wrapper` and `enzyme_call` asserts.
     end
 end
 
-@inline function thunkbase(
-    mi::Core.MethodInstance,
-    World::Union{UInt, Nothing},
-    @nospecialize(FA::Type{<:Annotation}),
-    @nospecialize(A::Type{<:Annotation}),
-    @nospecialize(TT::Type),
-    Mode::API.CDerivativeMode,
-    width::Int,
-    @nospecialize(ModifiedBetween::(NTuple{N, Bool} where N)),
-    ReturnPrimal::Bool,
-    ShadowInit::Bool,
-    @nospecialize(ABI::Type),
-    ErrIfFuncWritten::Bool,
-    RuntimeActivity::Bool,
-    StrongZero::Bool,
-    edges::Union{Nothing, Vector{Any}}
-)
+"""
+    thunk_job(mi, World, FA, A, TT, Mode, width, ModifiedBetween, ReturnPrimal, ShadowInit,
+              ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero)
+
+Infer the primal return type of `mi` and build the `CompilerJob` that compiles its
+derivative. Return the job, the return annotation the thunk is typed with, and whether
+Enzyme runs at all (it does not when the primal never returns).
+"""
+function thunk_job(
+        mi::Core.MethodInstance,
+        World::Union{UInt, Nothing},
+        @nospecialize(FA::Type{<:Annotation}),
+        @nospecialize(A::Type{<:Annotation}),
+        @nospecialize(TT::Type),
+        Mode::API.CDerivativeMode,
+        width::Int,
+        @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})),
+        ReturnPrimal::Bool,
+        ShadowInit::Bool,
+        @nospecialize(ABI::Type),
+        ErrIfFuncWritten::Bool,
+        RuntimeActivity::Bool,
+        StrongZero::Bool,
+    )
     target = Compiler.EnzymeTarget()
     params = Compiler.EnzymeCompilerParams(
         Tuple{FA,TT.parameters...},
@@ -7685,7 +7692,7 @@ end
 
     if run_enzyme && !(A2 <: Const) && (World isa Nothing ? guaranteed_const(rrt) : guaranteed_const_nongen(rrt, World))
         estr = "Return type `$rrt` not marked Const, but type is guaranteed to be constant"
-        return error(estr)
+        error(estr)
     end
 
     rt2 = if !run_enzyme
@@ -7725,7 +7732,71 @@ end
     # This is counter-intuitive since we would expect the cache to be split
     # by the primal, but we want the generated code to be invalidated by
     # invalidations of the primal, which is managed by GPUCompiler.
+    return job, rt2, run_enzyme
+end
 
+"""
+    untaped_thunk_type(Mode, run_enzyme, PT, FA, RT, TT, width, ReturnPrimal)
+
+The type of the single thunk returned for `Mode` when its compiled entry point has type
+`PT`, for the modes whose thunk carries no tape: combined reverse mode and forward mode,
+and any mode in which Enzyme does not run. It does not depend on anything but the entry
+point's type, so it is known before the derivative is compiled (see [`LazyThunk`](@ref)).
+"""
+function untaped_thunk_type(
+        Mode::API.CDerivativeMode,
+        run_enzyme::Bool,
+        @nospecialize(PT::Type),
+        @nospecialize(FA::Type),
+        @nospecialize(RT::Type),
+        @nospecialize(TT::Type),
+        width::Int,
+        ReturnPrimal::Bool,
+    )
+    if !run_enzyme
+        return PrimalErrorThunk{PT, FA, RT, TT, width, ReturnPrimal}
+    elseif Mode == API.DEM_ReverseModeCombined
+        return CombinedAdjointThunk{PT, FA, RT, Tuple{TT.parameters...}, width, ReturnPrimal}
+    elseif Mode == API.DEM_ForwardMode
+        return ForwardModeThunk{PT, FA, RT, Tuple{TT.parameters...}, width, ReturnPrimal}
+    else
+        throw(AssertionError("mode $Mode has a tape or no single thunk"))
+    end
+end
+
+@inline function thunkbase(
+        mi::Core.MethodInstance,
+        World::Union{UInt, Nothing},
+        @nospecialize(FA::Type{<:Annotation}),
+        @nospecialize(A::Type{<:Annotation}),
+        @nospecialize(TT::Type),
+        Mode::API.CDerivativeMode,
+        width::Int,
+        @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})),
+        ReturnPrimal::Bool,
+        ShadowInit::Bool,
+        @nospecialize(ABI::Type),
+        ErrIfFuncWritten::Bool,
+        RuntimeActivity::Bool,
+        StrongZero::Bool,
+        edges::Union{Nothing, Vector{Any}}
+    )
+    job, rt2, run_enzyme = thunk_job(
+        mi,
+        World,
+        FA,
+        A,
+        TT,
+        Mode,
+        width,
+        ModifiedBetween,
+        ReturnPrimal,
+        ShadowInit,
+        ABI,
+        ErrIfFuncWritten,
+        RuntimeActivity,
+        StrongZero,
+    )
 
     compile_result = cached_compilation(job)
     if edges !== nothing
@@ -7733,20 +7804,17 @@ end
             push!(edges, e)
         end
     end
-    if !run_enzyme
-        ErrT = PrimalErrorThunk{typeof(compile_result.adjoint),FA,rt2,TT,width,ReturnPrimal}
-        if Mode == API.DEM_ReverseModePrimal || Mode == API.DEM_ReverseModeGradient
+    if Mode == API.DEM_ReverseModePrimal || Mode == API.DEM_ReverseModeGradient
+        if !run_enzyme
+            ErrT = PrimalErrorThunk{typeof(compile_result.adjoint), FA, rt2, TT, width, ReturnPrimal}
             return (ErrT(compile_result.adjoint), ErrT(compile_result.adjoint))
-        else
-            return ErrT(compile_result.adjoint)
         end
-    elseif Mode == API.DEM_ReverseModePrimal || Mode == API.DEM_ReverseModeGradient
         TapeType = compile_result.TapeType
         AugT = AugmentedForwardThunk{
             typeof(compile_result.primal),
             FA,
             rt2,
-            Tuple{params.TT.parameters[2:end]...},
+            Tuple{TT.parameters...},
             width,
             ReturnPrimal,
             TapeType,
@@ -7755,34 +7823,76 @@ end
             typeof(compile_result.adjoint),
             FA,
             rt2,
-            Tuple{params.TT.parameters[2:end]...},
+            Tuple{TT.parameters...},
             width,
             TapeType,
         }
         return (AugT(compile_result.primal), AdjT(compile_result.adjoint))
-    elseif Mode == API.DEM_ReverseModeCombined
-        CAdjT = CombinedAdjointThunk{
-            typeof(compile_result.adjoint),
-            FA,
-            rt2,
-            Tuple{params.TT.parameters[2:end]...},
-            width,
-            ReturnPrimal,
-        }
-        return CAdjT(compile_result.adjoint)
-    elseif Mode == API.DEM_ForwardMode
-        FMT = ForwardModeThunk{
-            typeof(compile_result.adjoint),
-            FA,
-            rt2,
-            Tuple{params.TT.parameters[2:end]...},
-            width,
-            ReturnPrimal,
-        }
-        return FMT(compile_result.adjoint)
-    else
-        @assert false
     end
+    ThunkT = untaped_thunk_type(Mode, run_enzyme, typeof(compile_result.adjoint), FA, rt2, TT, width, ReturnPrimal)
+    return ThunkT(compile_result.adjoint)
+end
+
+"""
+    LazyThunk{T}
+
+A derivative of thunk type `T` whose compilation is deferred from type inference to the
+first call that needs it.
+
+[`thunk_generator`](@ref) runs while Julia infers a call to `thunk`. When the runtime
+triggers that inference (the first call of a function that differentiates something, or a
+dynamic dispatch to one), Julia holds a process-wide lock for its whole duration: the
+codegen lock on 1.10, the type-inference lock on 1.11 to 1.13. A derivative compiled inside
+the generator then keeps every other thread from compiling or inferring anything until it
+is done. For the modes whose thunk type is known before compiling (see
+[`untaped_thunk_type`](@ref)), the generator emits a call to [`lazy_thunk`](@ref) on one of
+these instead, which compiles the derivative in the calling task the first time it runs.
+"""
+mutable struct LazyThunk{T}
+    @atomic adjoint::Ptr{Cvoid}
+    const job::CompilerJob
+    # Made while precompiling, so possibly loaded from a package image into a later session.
+    const precompiling::Bool
+    LazyThunk{T}(job::CompilerJob) where {T} = new{T}(C_NULL, job, generating_output())
+end
+
+generating_output() = ccall(:jl_generating_output, Cint, ()) != 0
+
+@inline function lazy_thunk(cell::LazyThunk{T}) where {T}
+    adjoint = @atomic :acquire cell.adjoint
+    if adjoint == C_NULL
+        adjoint = compile_lazy_thunk!(cell)
+    end
+    return T(adjoint)
+end
+
+@noinline function compile_lazy_thunk!(cell::LazyThunk)
+    job = cell.job
+    if cell.precompiling
+        # The job's world is one of the process that precompiled, which means nothing to a
+        # session that loaded the cell from its image. The code calling this is valid in the
+        # world it runs in, so compile in that one.
+        world = GPUCompiler.tls_world_age()
+        check_activity_cache_invalidations(world)
+        job = CompilerJob(job.source, job.config, world)
+    end
+    ts_ctx = JuliaContext()
+    ctx = context(ts_ctx)
+    activate(ctx)
+    compile_result = try
+        cached_compilation(job)
+    finally
+        deactivate(ctx)
+        dispose(ts_ctx)
+    end
+    adjoint = compile_result.adjoint::Ptr{Cvoid}
+    # While precompiling, the cell can be serialized into a package image along with the
+    # code that holds it, and an address in this process's JIT means nothing to the session
+    # that loads it. Leave the cell empty so that session compiles its own.
+    if !generating_output()
+        @atomic :release cell.adjoint = adjoint
+    end
+    return adjoint
 end
 
 @inline function thunk(
@@ -7842,6 +7952,24 @@ end
 
 function thunk end
 
+"""
+    compiles_lazily(Mode, ABI)
+
+Say if `thunk_generator` defers compiling the derivative to its first call (see
+[`LazyThunk`](@ref)) instead of compiling it while the call is inferred.
+
+Only thunks whose type is known before compiling qualify, and only for the FFI ABI, whose
+thunk holds the derivative's address as a run-time value. Inference by an
+`EnzymeInterpreter` always compiles in place: that is Enzyme differentiating code that
+itself calls `autodiff`, and the outer derivative needs the inner one's address as a
+constant to differentiate through it.
+"""
+function compiles_lazily(Mode::API.CDerivativeMode, @nospecialize(ABI::Type))
+    (Mode == API.DEM_ReverseModeCombined || Mode == API.DEM_ForwardMode) || return false
+    ABI <: FFIABI || return false
+    return !Interpreter.in_enzyme_inference()
+end
+
 function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where N)), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Bool, RuntimeActivity::Bool, StrongZero::Bool, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type))
     @nospecialize
     
@@ -7866,12 +7994,9 @@ function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @no
 
     edges = Any[]
     add_edge!(edges, mi)
-    
-    ts_ctx = JuliaContext()
-    ctx = context(ts_ctx)
-    activate(ctx)
-    result = try
-        thunkbase(
+
+    code = if compiles_lazily(Mode, ABI)
+        job, rt2, run_enzyme = thunk_job(
             mi,
             world,
             FA,
@@ -7886,14 +8011,40 @@ function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @no
             ErrIfFuncWritten,
             RuntimeActivity,
             StrongZero,
-            edges
         )
-    finally
-        deactivate(ctx)
-        dispose(ts_ctx)
+        ThunkT = untaped_thunk_type(Mode, run_enzyme, Ptr{Cvoid}, FA, rt2, TT, Width, ReturnPrimal)
+        Any[
+            Expr(:call, GlobalRef(Compiler, :lazy_thunk), LazyThunk{ThunkT}(job)),
+            Core.Compiler.ReturnNode(Core.SSAValue(1)),
+        ]
+    else
+        ts_ctx = JuliaContext()
+        ctx = context(ts_ctx)
+        activate(ctx)
+        result = try
+            thunkbase(
+                mi,
+                world,
+                FA,
+                A,
+                TT,
+                Mode,
+                Width,
+                ModifiedBetween,
+                ReturnPrimal,
+                ShadowInit,
+                ABI,
+                ErrIfFuncWritten,
+                RuntimeActivity,
+                StrongZero,
+                edges
+            )
+        finally
+            deactivate(ctx)
+            dispose(ts_ctx)
+        end
+        Any[Core.Compiler.ReturnNode(result)]
     end
-
-    code = Any[Core.Compiler.ReturnNode(result)]
     ci = create_fresh_codeinfo(thunk, source, world, slotnames, code)
 
 
