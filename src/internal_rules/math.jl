@@ -1,6 +1,6 @@
-_hypotforward(x::Const) = zero(x.val)
+_hypotforward(x::Const) = zero(real(x.val))
 _hypotforward(x) = real(conj(x.val) * x.dval)
-_hypotforward(x::Const, i) = zero(x.val)
+_hypotforward(x::Const, i) = zero(real(x.val))
 _hypotforward(x, i) = real(conj(x.val) * x.dval[i])
 
 function EnzymeRules.forward(
