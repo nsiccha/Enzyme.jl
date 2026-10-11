@@ -59,6 +59,43 @@ end
     $(Expr(:meta, :generated, Compiler.thunk_generator))
 end
 
+@eval @inline function Compiler.runtime_thunk(
+        fakeworld::Val{0},
+        fa::Type{FA},
+        a::Type{A},
+        tt::Type{TT},
+        mode::Val{Mode},
+        width::Val{Width},
+        modifiedbetween::Val{ModifiedBetween},
+        returnprimal::Val{ReturnPrimal},
+        shadowinit::Val{ShadowInit},
+        abi::Type{ABI},
+        erriffuncwritten::Val{ErrIfFuncWritten},
+        runtimeactivity::Val{RuntimeActivity},
+        strongzero::Val{StrongZero}
+    ) where {
+        FA <: Annotation,
+        A <: Annotation,
+        TT,
+        Mode,
+        Width,
+        ModifiedBetween,
+        ReturnPrimal,
+        ShadowInit,
+        ABI,
+        ErrIfFuncWritten,
+        RuntimeActivity,
+        StrongZero,
+    }
+    $(Expr(:meta, :generated_only))
+    $(Expr(:meta, :generated, Compiler.runtime_thunk_generator))
+end
+
+@eval function Compiler.lazy_validity(id::Val{ID}) where {ID}
+    $(Expr(:meta, :generated_only))
+    $(Expr(:meta, :generated, Compiler.lazy_validity_generator))
+end
+
 @eval @inline function Compiler.deferred_id_codegen(
         fa::Type{FA},
         a::Type{A},
