@@ -128,3 +128,37 @@ elements_global(r) = sum(concat_elements(alias_elements(CONST_ELEMENT_GROUPS)) .
         dg == want
     end
 end
+
+# Constant data in a struct boxed for a dynamically dispatched call, in a loop.
+dyncall_uninferred(t, a) = Base.inferencebarrier(t .* exp(a))
+dyncall_lpdf(y, m) = -0.5 * (y - m)^2
+
+struct DynCallWrap{T}
+    x::T
+end
+@noinline dyncall_wread(w::DynCallWrap, i) = w.x[i]
+
+# The element's zero-filled copy is computed before the box is allocated, so a
+# garbage collection that it triggers never sees the box with its field
+# uninitialized.
+function dyncall_loaded_box(a, t, yy)
+    m = dyncall_uninferred(t, a)
+    s = 0.0
+    for i in eachindex(m)
+        w = DynCallWrap(yy[1])
+        s += dyncall_lpdf(dyncall_wread(w, Base.inferencebarrier(i)), m[i])
+    end
+    return s
+end
+
+@testset "Shadow copies computed outside object initialization" begin
+    t = collect(range(0.5, 4.0; length = 512))
+    y = 1.3 .* t .+ 0.1 .* sin.(1:512)
+    want_loaded = autodiff(
+        set_runtime_activity(Reverse), dyncall_loaded_box, Active, Active(0.1), Const(t), Const([y])
+    )[1][1]
+    for _ in 1:50
+        @test autodiff(Reverse, dyncall_loaded_box, Active, Active(0.1), Const(t), Const([y]))[1][1] ≈
+            want_loaded
+    end
+end
