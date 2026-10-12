@@ -1155,17 +1155,31 @@ function fresh_array_allocation(
     return nothing
 end
 
-# Whether `cur`, an inactive tracked pointer, is loaded from memory reached from a
-# constant argument of the function being differentiated, through casts, GEPs,
-# field extractions, `julia.gc_loaded` and further loads (a closure's captured data
-# is such memory). Such memory has no shadow: activity analysis
-# treats every value loaded from it as constant, and a derivative that flows into it
-# is discarded. When `cur` is stored into active memory, a zero-filled copy of the
+# Whether `v` casts a tracked pointer to another tracked pointer type, so that it
+# points to the same Julia object.
+is_object_cast(@nospecialize(v::LLVM.Value))::Bool = false
+function is_object_cast(v::Union{LLVM.BitCastInst, LLVM.AddrSpaceCastInst})::Bool
+    ty = value_type(operands(v)[1])
+    return isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked
+end
+
+# Whether `cur`, an inactive tracked pointer, is constant argument data of the
+# function being differentiated: a constant argument itself (looking through casts
+# and field extractions), or a value loaded from memory reached from one, through
+# casts, GEPs, field extractions, `julia.gc_loaded` and further loads (a closure's
+# captured data is such memory). Such data has no shadow: activity analysis treats
+# the argument and every value loaded from it as constant, and a derivative that
+# flows into it is discarded. When `cur` is stored into active memory, inserted into
+# an active aggregate or returned as an active value, a zero-filled copy of the
 # object it points to is therefore a valid shadow: a derivative accumulated into
 # that copy is discarded too.
-function loaded_from_constant_argument(gutils::GradientUtils, @nospecialize(cur::LLVM.Value))::Bool
+function constant_argument_data(gutils::GradientUtils, @nospecialize(cur::LLVM.Value))::Bool
     ty = value_type(cur)
     (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return false
+    while is_object_cast(cur) || isa(cur, LLVM.ExtractValueInst)
+        cur = operands(cur)[1]
+    end
+    isa(cur, LLVM.Argument) && return is_constant_value(gutils, cur)
     isa(cur, LLVM.LoadInst) || return false
     ptr = operands(cur)[1]
     while !isa(ptr, LLVM.Argument)
@@ -1373,6 +1387,14 @@ function mixed_activity_method(@nospecialize(val))
     mi, _ = enzyme_custom_extract_mi(f, false) #=error=#
     return mi, enzyme_world()
 end
+
+# Whether the mixed activity site `val` moves its constant value into active data:
+# a store into active memory, an insertion into an active aggregate, or an active
+# return, rather than a phi or select merging it with active values. A moved
+# constant argument datum has a zero-filled shadow (`constant_argument_data`); a
+# merged one keeps the runtime activity error (test/constant_array_branch.jl).
+moves_into_active(@nospecialize(val::LLVM.Value))::Bool = true
+moves_into_active(::Union{LLVM.PHIInst, LLVM.SelectInst})::Bool = false
 
 # The condition under which the runtime activity error for the mixed activity at
 # `val` must be raised, emitted with `B`; `nothing` if always. A constant incoming
@@ -1867,7 +1889,7 @@ end
 
             # The run-time `make_zero` needs no static type, which the walk's loads
             # (for instance a field of a struct stored inline in an array) may lack.
-            constant_element = isa(val, LLVM.StoreInst) && loaded_from_constant_argument(gutils, cur)
+            constant_element = moves_into_active(val) && constant_argument_data(gutils, cur)
 
             legal, TT, byref = abs_typeof(cur, true)
 

@@ -129,7 +129,11 @@ elements_global(r) = sum(concat_elements(alias_elements(CONST_ELEMENT_GROUPS)) .
     end
 end
 
-# Constant data in a struct boxed for a dynamically dispatched call, in a loop.
+# Constant argument data passed through dynamically dispatched calls, as arises
+# downstream of a value that Julia infers as `Any`. The argument itself is stored
+# into a box for the call or inserted into an aggregate that a call returns, and an
+# element loaded from it is returned from a call. Each place needs a shadow for
+# constant data, and a zero-filled copy serves, as for the elements above.
 dyncall_uninferred(t, a) = Base.inferencebarrier(t .* exp(a))
 dyncall_lpdf(y, m) = -0.5 * (y - m)^2
 
@@ -137,10 +141,101 @@ struct DynCallWrap{T}
     x::T
 end
 @noinline dyncall_wread(w::DynCallWrap, i) = w.x[i]
+@noinline dyncall_eread(x, i) = x[i]
+@noinline dyncall_ident(x) = x
+@noinline dyncall_wwrite!(w::DynCallWrap, v) = (w.x[1] = v; nothing)
 
-# The element's zero-filled copy is computed before the box is allocated, so a
-# garbage collection that it triggers never sees the box with its field
-# uninitialized.
+dyncall_inferred(a, t, y) = sum(dyncall_lpdf.(y, t .* exp(a)))
+# A broadcast of the constant argument with an uninferred active array.
+dyncall_broadcast(a, t, y) = sum(dyncall_lpdf.(y, dyncall_uninferred(t, a)))
+# The constant argument in a struct boxed for a dynamic call.
+function dyncall_wrapper(a, t, y)
+    m = dyncall_uninferred(t, a)
+    w = DynCallWrap(y)
+    s = 0.0
+    for i in eachindex(y)
+        s += dyncall_lpdf(dyncall_wread(w, Base.inferencebarrier(i)), m[i])
+    end
+    return s
+end
+# A dynamic call returning an element of the constant argument.
+function dyncall_element(a, ts, ys)
+    s = 0.0
+    for i in eachindex(ys)
+        m = dyncall_uninferred(ts[i], a)
+        yi = dyncall_eread(ys, Base.inferencebarrier(i))
+        s += sum(dyncall_lpdf.(yi, m))
+    end
+    return s
+end
+# A dynamic call returning the constant argument itself.
+dyncall_returned(a, y) = sum(dyncall_ident(Base.inferencebarrier(y)) .* a)
+# An element of a constant tuple argument, which is passed as an aggregate.
+function dyncall_tuple(a, cs)
+    w = DynCallWrap(cs[2])
+    s = 0.0
+    for i in eachindex(cs[2])
+        s += dyncall_lpdf(dyncall_wread(w, Base.inferencebarrier(i)), a * i)
+    end
+    return s
+end
+dyncall_first(x, f, args...) = f(x[1], args...)
+# Active data written into the constant argument through the box.
+function dyncall_storage(a, y)
+    w = DynCallWrap(y)
+    dyncall_wwrite!(Base.inferencebarrier(w), 2a)
+    return dyncall_wread(Base.inferencebarrier(w), 1)
+end
+
+@testset "Constant argument data through dynamic calls" begin
+    t = collect(range(0.5, 4.0; length = 7))
+    y = 1.3 .* t .+ 0.1 .* sin.(1:7)
+    ts = [t[1:3], t[4:7]]
+    ys = [y[1:3], y[4:7]]
+    want = autodiff(Reverse, dyncall_inferred, Active, Active(0.1), Const(t), Const(y))[1][1]
+
+    for (f, args) in ((dyncall_broadcast, (t, y)), (dyncall_wrapper, (t, y)), (dyncall_element, (ts, ys)))
+        data = deepcopy(args)
+        @test autodiff(Reverse, f, Active, Active(0.1), map(Const, data)...)[1][1] ≈ want
+        @test autodiff(set_runtime_activity(Reverse), f, Active, Active(0.1), map(Const, data)...)[1][1] ≈ want
+        @test data == args
+
+        d1 = [0.0]
+        d2 = [0.0]
+        autodiff(Reverse, dyncall_first, Active, BatchDuplicated([0.1], (d1, d2)), Const(f), map(Const, data)...)
+        @test d1[1] ≈ want
+        @test d2[1] ≈ want
+
+        @test autodiff(Forward, f, Duplicated(0.1, 1.0), map(Const, data)...)[1] ≈ want
+        bres = autodiff(Forward, f, BatchDuplicated(0.1, (1.0, 2.0)), map(Const, data)...)[1]
+        @test bres[1] ≈ want
+        @test bres[2] ≈ 2 * want
+        @test data == args
+    end
+
+    y2 = [1.0, 2.0]
+    @test autodiff(Reverse, dyncall_returned, Active, Active(0.3), Const(y2))[1][1] ≈ 3.0
+    @test y2 == [1.0, 2.0]
+
+    # sum_i (c_i - a i) i at a = 0.3 with c = [1, 2, 3].
+    cs = ([1.0], [1.0, 2.0, 3.0])
+    @test autodiff(Reverse, dyncall_tuple, Active, Active(0.3), Const(cs))[1][1] ≈ 9.8
+
+    # A closure's captured data is a field of the constant closure argument.
+    captured = let t = t, y = y
+        a -> dyncall_wrapper(a, t, y)
+    end
+    @test autodiff(Reverse, Const(captured), Active, Active(0.1))[1][1] ≈ want
+
+    # Active data written into constant memory is not differentiated (Enzyme FAQ,
+    # "Activity of temporary storage"); runtime activity gives the same zero.
+    @test autodiff(Reverse, dyncall_storage, Active, Active(0.3), Const([1.0, 2.0]))[1][1] == 0.0
+    @test autodiff(set_runtime_activity(Reverse), dyncall_storage, Active, Active(0.3), Const([1.0, 2.0]))[1][1] == 0.0
+end
+
+# The constant data boxed in a loop: the copy is computed before the box is
+# allocated, so a garbage collection that it triggers never sees the box with its
+# field uninitialized.
 function dyncall_loaded_box(a, t, yy)
     m = dyncall_uninferred(t, a)
     s = 0.0
@@ -154,10 +249,12 @@ end
 @testset "Shadow copies computed outside object initialization" begin
     t = collect(range(0.5, 4.0; length = 512))
     y = 1.3 .* t .+ 0.1 .* sin.(1:512)
+    want = autodiff(set_runtime_activity(Reverse), dyncall_wrapper, Active, Active(0.1), Const(t), Const(y))[1][1]
     want_loaded = autodiff(
         set_runtime_activity(Reverse), dyncall_loaded_box, Active, Active(0.1), Const(t), Const([y])
     )[1][1]
     for _ in 1:50
+        @test autodiff(Reverse, dyncall_wrapper, Active, Active(0.1), Const(t), Const(y))[1][1] ≈ want
         @test autodiff(Reverse, dyncall_loaded_box, Active, Active(0.1), Const(t), Const([y]))[1][1] ≈
             want_loaded
     end
