@@ -1422,26 +1422,43 @@ moves_into_active(::Union{LLVM.PHIInst, LLVM.SelectInst})::Bool = false
 # value of a phi only matters when control takes its edge: `B` is positioned
 # before the terminator of the incoming block, which may branch elsewhere too.
 mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(val)) = nothing
-mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, val::LLVM.PHIInst) =
-    edge_condition(B, LLVM.terminator(position(B)), new_from_original(gutils, LLVM.parent(val)))
 
-# The condition under which the terminator `term` branches to `dest`, emitted with
-# `B`; `nothing` if always.
-edge_condition(B::LLVM.IRBuilder, @nospecialize(term), @nospecialize(dest::LLVM.Value)) = nothing
+# The condition under which the original function reaches the phi `val` from the block that
+# `B` is positioned in. The condition is read from the ORIGINAL predecessor's terminator and
+# looked up: in a split reverse pass the new function's terminator holds a placeholder for
+# the primal value, which Enzyme can only replace through a cache or recomputation it was
+# asked for (`lookup_value`), never on its own.
+function mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, val::LLVM.PHIInst)
+    cur = position(B)
+    for (_, pred) in LLVM.incoming(val)
+        new_from_original(gutils, pred) == cur || continue
+        return edge_condition(B, gutils, LLVM.terminator(pred), LLVM.parent(val))
+    end
+    return nothing
+end
 
-function edge_condition(B::LLVM.IRBuilder, term::LLVM.BrInst, @nospecialize(dest::LLVM.Value))
+# The new-function value of the original value `v`, usable where `B` is positioned in
+# either pass.
+usable_value(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(v::LLVM.Value)) =
+    isa(v, LLVM.Constant) ? v : lookup_value(gutils, new_from_original(gutils, v), B)
+
+# The condition under which the original terminator `term` branches to the original block
+# `dest`, emitted with `B` from looked-up values; `nothing` if always.
+edge_condition(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(term), @nospecialize(dest::LLVM.Value)) = nothing
+
+function edge_condition(B::LLVM.IRBuilder, gutils::GradientUtils, term::LLVM.BrInst, @nospecialize(dest::LLVM.Value))
     LLVM.isconditional(term) || return nothing
     iftrue, iffalse = LLVM.successors(term)
     iftrue == iffalse && return nothing
-    cond = LLVM.condition(term)
+    cond = usable_value(B, gutils, LLVM.condition(term))
     return iftrue == dest ? cond : not!(B, cond)
 end
 
 # A switch reaches `dest` through the cases that name it, or through the default
 # when no other case matches.
-function edge_condition(B::LLVM.IRBuilder, term::LLVM.SwitchInst, @nospecialize(dest::LLVM.Value))
+function edge_condition(B::LLVM.IRBuilder, gutils::GradientUtils, term::LLVM.SwitchInst, @nospecialize(dest::LLVM.Value))
     ops = operands(term)
-    val = ops[1]
+    val = usable_value(B, gutils, ops[1])
     todefault = ops[2] == dest
     cond = nothing
     for i in 3:2:length(ops)

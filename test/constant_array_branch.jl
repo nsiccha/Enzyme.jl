@@ -384,3 +384,21 @@ end
         @test dx ≈ [k, k]
     end
 end
+
+# In split mode the inserted mixed-activity error must look its edge condition up: here the
+# condition is a value loaded from a `Const` array, which the reverse pass can only recover
+# through a cache. Before, the condition was read from the reverse function's own terminator,
+# whose placeholder phi Enzyme could not replace ("Illegal replace ficticious phi").
+branch_loaded_flag(x, flags) = sum(flags[1] ? Float64[] : x .* 2.0)
+
+@testset "Split mode: mixed-activity error condition is a loaded value" begin
+    x = [1.0, 2.0, 3.0]
+    for mode in (ReverseSplitWithPrimal, set_runtime_activity(ReverseSplitWithPrimal))
+        fwd, rev = autodiff_thunk(mode, Const{typeof(branch_loaded_flag)}, Active, Duplicated{Vector{Float64}}, Const{Vector{Bool}})
+        dx = zero(x)
+        tape, primal, _ = fwd(Const(branch_loaded_flag), Duplicated(x, dx), Const([false]))
+        @test primal ≈ 12.0
+        rev(Const(branch_loaded_flag), Duplicated(x, dx), Const([false]), 1.0, tape)
+        @test dx ≈ [2.0, 2.0, 2.0]
+    end
+end
