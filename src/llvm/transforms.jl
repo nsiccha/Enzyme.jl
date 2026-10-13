@@ -1697,9 +1697,28 @@ end
 # "Illegal cached pointer".
 #
 # A set of phis whose operands are each other or one value `V` (undef or poison aside)
-# can only ever hold `V`, and `V` dominates every one of them: each path to one of the phis
-# reaches it with `V`, or with another of them, which it reached before.
+# can only ever hold `V`. Without undef or poison operands `V` also dominates every one of
+# them: each path to one of the phis reaches it with `V`, or with another of them, which it
+# reached before. An undef or poison operand breaks that argument, since its path need not
+# pass `V`. Under `--check-bounds=yes`, for instance, Julia 1.10's `matmul3x3` reaches a
+# block from seven bounds-checked paths, and only one of them carries the array whose data
+# pointer the phi carries; the other six bring undef, and `V`, that load, does not dominate
+# the phi. So only the phis that `V` dominates are replaced, and any other stays a phi,
+# which then takes `V` instead of the replaced ones (an operand of a phi dominates the end of
+# its incoming block, and `V` dominates the block of each replaced phi).
 function fold_redundant_nodecayed_phis!(live::Set{LLVM.PHIInst})
+    isempty(live) && return
+    # `live` holds the phis created in one function.
+    domtree = LLVM.DomTree(LLVM.parent(LLVM.parent(first(live))))
+    fold_redundant_nodecayed_phis!(domtree, live)
+    dispose(domtree)
+    return
+end
+
+nodecayed_dominates(domtree::LLVM.DomTree, @nospecialize(v::LLVM.Value), q::LLVM.PHIInst)::Bool =
+    !isa(v, LLVM.Instruction) || LLVM.dominates(domtree, v, q)
+
+function fold_redundant_nodecayed_phis!(domtree::LLVM.DomTree, live::Set{LLVM.PHIInst})
     changed = true
     while changed
         changed = false
@@ -1736,6 +1755,7 @@ function fold_redundant_nodecayed_phis!(live::Set{LLVM.PHIInst})
             end
             castable || continue
             for q in group
+                nodecayed_dominates(domtree, same, q) || continue
                 repl = same
                 if value_type(repl) != value_type(q)
                     b = IRBuilder()
@@ -1745,8 +1765,8 @@ function fold_redundant_nodecayed_phis!(live::Set{LLVM.PHIInst})
                 replace_uses!(q, repl)
                 LLVM.API.LLVMInstructionEraseFromParent(q)
                 delete!(live, q)
+                changed = true
             end
-            changed = true
         end
     end
     return
