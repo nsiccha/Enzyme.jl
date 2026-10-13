@@ -49,3 +49,29 @@ end
     @test ReverseMode{false, false, false, EnzymeCore.DefaultABI, false, false}() === Reverse
     @test ReverseModeSplit{false, true, false, false, 0, true, EnzymeCore.DefaultABI, false, false, false}() === ReverseSplitNoPrimal
 end
+
+@testset "Strong zero" begin
+    using EnzymeCore: set_strong_zero, clear_strong_zero, strong_zero
+    using EnzymeCore.EnzymeRules: FwdConfig, RevConfig
+
+    for mode in (Forward, Reverse)
+        @test strong_zero(set_strong_zero(mode))
+        @test !strong_zero(clear_strong_zero(set_strong_zero(mode)))
+        @test set_strong_zero(mode, true) === set_strong_zero(mode)
+        @test set_strong_zero(set_strong_zero(mode), false) === mode
+        @test set_strong_zero(mode, set_strong_zero(mode)) === set_strong_zero(mode)
+    end
+
+    # Take the setting from a rule config, independently of runtime activity
+    for (config_sz, config_rt) in ((FwdConfig{false, true, 1, false, true}(),
+                                    FwdConfig{false, true, 1, true, false}()),
+                                   (RevConfig{false, true, 1, (), false, true}(),
+                                    RevConfig{false, true, 1, (), true, false}()))
+        for mode in (Forward, Reverse)
+            @test set_strong_zero(mode, config_sz) === set_strong_zero(mode)
+            @test set_strong_zero(mode, config_rt) === mode
+            @test set_runtime_activity(mode, config_rt) === set_runtime_activity(mode)
+            @test set_runtime_activity(mode, config_sz) === mode
+        end
+    end
+end

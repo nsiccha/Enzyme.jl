@@ -1,25 +1,6 @@
-# Identify a runtime type test of a checked field from an immutable tuple.
-function tuple_field_type_test(term::LLVM.Instruction)
-    if term isa LLVM.SwitchInst
-        cond = operands(term)[1]
-    elseif term isa LLVM.BrInst && LLVM.API.LLVMGetNumSuccessors(term) == 2
-        # Julia can lower a two-way type test to an equality branch instead
-        # of a switch (notably with Julia 1.12).
-        cmp = LLVM.Value(LLVM.API.LLVMGetCondition(term))
-        cmp isa LLVM.ICmpInst || return nothing
-        LLVM.API.LLVMGetICmpPredicate(cmp) in
-            (LLVM.API.LLVMIntEQ, LLVM.API.LLVMIntNE) || return nothing
-        lhs, rhs = operands(cmp)
-        if rhs isa LLVM.Constant
-            cond = lhs
-        elseif lhs isa LLVM.Constant
-            cond = rhs
-        else
-            return nothing
-        end
-    else
-        return nothing
-    end
+# If `cond` is (a cast of) the type of a checked field read from an immutable
+# tuple, return that read.
+function checked_tuple_field_typeof(@nospecialize(cond::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})
     while true
         if cond isa LLVM.PtrToIntInst || cond isa LLVM.AddrSpaceCastInst || cond isa LLVM.BitCastInst
             cond = operands(cond)[1]
@@ -38,9 +19,31 @@ function tuple_field_type_test(term::LLVM.Instruction)
     sf = called_operand(source)
     sf isa LLVM.Function || return nothing
     name(sf) in ("jl_get_nth_field_checked", "ijl_get_nth_field_checked") || return nothing
-    legal, tuplety, _ = abs_typeof(first(arg_operands_view(source)))
+    legal, tuplety, _ = abs_typeof(first(arg_operands_view(source)), enzyme_ctx)
     legal && tuplety <: Tuple && isconcretetype(tuplety) || return nothing
     return source
+end
+
+# Identify a runtime type test of a checked field from an immutable tuple.
+function tuple_field_type_test(term::LLVM.Instruction, enzyme_ctx::Union{EnzymeContext, Nothing})
+    if term isa LLVM.SwitchInst
+        return checked_tuple_field_typeof(operands(term)[1], enzyme_ctx)
+    elseif term isa LLVM.BrInst && LLVM.API.LLVMGetNumSuccessors(term) == 2
+        # Julia can lower a two-way type test to an equality branch instead
+        # of a switch (notably with Julia 1.12).
+        cmp = LLVM.Value(LLVM.API.LLVMGetCondition(term))
+        cmp isa LLVM.ICmpInst || return nothing
+        LLVM.API.LLVMGetICmpPredicate(cmp) in
+            (LLVM.API.LLVMIntEQ, LLVM.API.LLVMIntNE) || return nothing
+        # The other operand is the type tested against: a constant, or a load
+        # of the global that holds it while Julia values stay symbolic until
+        # the module is linked.
+        lhs, rhs = operands(cmp)
+        source = checked_tuple_field_typeof(lhs, enzyme_ctx)
+        source === nothing || return source
+        return checked_tuple_field_typeof(rhs, enzyme_ctx)
+    end
+    return nothing
 end
 
 # Give each runtime type arm its own read from an immutable tuple. A boxed
@@ -49,7 +52,7 @@ end
 # Preserve the original checked read and type test; only rematerialize the
 # already-checked field where the original read strictly dominates the type arm,
 # and only redirect uses that the new read dominates.
-function narrow_tuple_fields!(mod::LLVM.Module)
+function narrow_tuple_fields!(mod::LLVM.Module, enzyme_ctx::Union{EnzymeContext, Nothing})
     changed = 0
     for f in functions(mod)
         bbs = collect(blocks(f))
@@ -58,7 +61,7 @@ function narrow_tuple_fields!(mod::LLVM.Module)
         for bb in bbs
             term = terminator(bb)
             term === nothing && continue
-            source = tuple_field_type_test(term)
+            source = tuple_field_type_test(term, enzyme_ctx)
             source === nothing && continue
             push!(tests, term => source)
         end

@@ -1050,7 +1050,9 @@ else
     # fresh genericmemory allocation, the shared zero-length instance (which has no
     # elements), or a phi/select of such values. Memory reached through an
     # argument, a global or a loaded field is excluded.
-    function is_fresh_memory(@nospecialize(mem::LLVM.Value), seen::Set{LLVM.Value})::Bool
+    function is_fresh_memory(
+            @nospecialize(mem::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing}, seen::Set{LLVM.Value}
+        )::Bool
         mem, off = get_base_and_offset(mem; offsetAllowed = false)
         off == 0 || return false
         mem in seen && return true
@@ -1058,16 +1060,16 @@ else
         if isa(mem, LLVM.PHIInst)
             push!(seen, mem)
             for (v, _) in LLVM.incoming(mem)
-                is_fresh_memory(v, seen) || return false
+                is_fresh_memory(v, enzyme_ctx, seen) || return false
             end
             return true
         end
         if isa(mem, LLVM.SelectInst)
             push!(seen, mem)
-            return is_fresh_memory(operands(mem)[2], seen) &&
-                is_fresh_memory(operands(mem)[3], seen)
+            return is_fresh_memory(operands(mem)[2], enzyme_ctx, seen) &&
+                is_fresh_memory(operands(mem)[3], enzyme_ctx, seen)
         end
-        legal, obj = absint(mem)
+        legal, obj = absint(mem, enzyme_ctx)
         return legal && is_memory_instance(unbind(obj))
     end
 
@@ -1097,7 +1099,9 @@ else
     # Whether the Array object allocated by `alloc` wraps memory allocated by the
     # function being differentiated: every store to its `ref.mem` field writes such
     # memory, and the object reaches no call that could store other memory there.
-    function array_wrapper_owns_fresh_memory(alloc::LLVM.CallInst)::Bool
+    function array_wrapper_owns_fresh_memory(
+            alloc::LLVM.CallInst, enzyme_ctx::Union{EnzymeContext, Nothing}
+        )::Bool
         memoff = Int(fieldoffset(Vector{Float64}, 1) + fieldoffset(MemoryRef{Float64}, 2))
         found = false
         todo = LLVM.Value[alloc]
@@ -1116,7 +1120,7 @@ else
                     base, off = get_base_and_offset(operands(user)[2])
                     base == alloc || return false
                     if off == memoff
-                        is_fresh_memory(operands(user)[1], Set{LLVM.Value}()) || return false
+                        is_fresh_memory(operands(user)[1], enzyme_ctx, Set{LLVM.Value}()) || return false
                         found = true
                     end
                 elseif isa(user, LLVM.CallInst) && writes_beside_memory_field(user, cur, alloc, memoff)
@@ -1139,6 +1143,7 @@ end
 function fresh_array_allocation(
         @nospecialize(cur::LLVM.Value),
         @nospecialize(TT),
+        enzyme_ctx::Union{EnzymeContext, Nothing},
     )::Union{Nothing, LLVM.CallInst}
     is_array_type(TT) || return nothing
     ty = value_type(cur)
@@ -1148,7 +1153,7 @@ function fresh_array_allocation(
     nm = called_function_name(base)
     nm in FRESH_STORAGE_ALLOCATORS && return base
     @static if VERSION >= v"1.11-"
-        if nm in GC_OBJECT_ALLOCATORS && TT <: Array && array_wrapper_owns_fresh_memory(base)
+        if nm in GC_OBJECT_ALLOCATORS && TT <: Array && array_wrapper_owns_fresh_memory(base, enzyme_ctx)
             return base
         end
     end
@@ -1445,9 +1450,12 @@ function julia_error(
     B::LLVM.API.LLVMBuilderRef,
 )::LLVM.API.LLVMValueRef
     msg = Base.unsafe_string(cstr)
-    julia_error(msg, val, errtype, data, data2, B)
+    # Enzyme also reports from passes that run after the compilation is over (`post_optimize!`).
+    enzyme_ctx = isassigned(ENZYME_CONTEXT) ? ENZYME_CONTEXT[] : nothing
+    julia_error(msg, val, errtype, data, data2, B, enzyme_ctx)
 end
 
+# `enzyme_ctx` is the compilation that ran into the error, `nothing` once it is over.
 function julia_error(
     msg::String,
     val::LLVM.API.LLVMValueRef,
@@ -1455,6 +1463,7 @@ function julia_error(
     data::Ptr{Cvoid},
     data2::LLVM.API.LLVMValueRef,
     B::LLVM.API.LLVMBuilderRef,
+    enzyme_ctx::Union{EnzymeContext, Nothing},
 )::LLVM.API.LLVMValueRef
     bt = nothing
     ir = nothing
@@ -1565,7 +1574,7 @@ function julia_error(
                 print(io, "Current scope: \n")
                 print(io, scope)
             end
-	    legal, obj = absint(val)
+            legal, obj = absint(val, enzyme_ctx)
 	    if legal
 		obj0 = obj
 		obj = unbind(obj)
@@ -1863,7 +1872,7 @@ function julia_error(
 else   
             if isa(cur, LLVM.ConstantExpr)
                 larg, off = get_base_and_offset(operands(cur)[1]; inst=first(instructions(position(prevbb))))
-                legal2, obj = absint(larg)
+                    legal2, obj = absint(larg, enzyme_ctx)
                 obj = unbind(obj)
                 if legal2 && is_memory_instance(obj)
                     return make_batched(ncur, prevbb)
@@ -1872,13 +1881,13 @@ else
 
             if isa(cur, LLVM.LoadInst)
                 larg, off = get_base_and_offset(operands(cur)[1]; inst=cur)
-                legal2, obj = absint(larg)
+                    legal2, obj = absint(larg, enzyme_ctx)
                 obj = unbind(obj)
                 if legal2 && is_memory_instance(obj)
                     return make_batched(ncur, prevbb)
                 end
                 if isa(larg, LLVM.LoadInst)
-                    legal2, obj = absint(larg)
+                        legal2, obj = absint(larg, enzyme_ctx)
                     obj = unbind(obj)
                     if legal2 && is_memory_instance(obj)
                         return make_batched(ncur, prevbb)
@@ -1891,14 +1900,14 @@ end
             # (for instance a field of a struct stored inline in an array) may lack.
             constant_element = moves_into_active(val) && constant_argument_data(gutils, cur)
 
-            legal, TT, byref = abs_typeof(cur, true)
+            legal, TT, byref = abs_typeof(cur, enzyme_ctx, true)
 
             if legal
                 if guaranteed_const_nongen(TT, world)
                     return make_batched(ncur, prevbb)
                 end
 
-                legal2, obj = absint(cur)
+                legal2, obj = absint(cur, enzyme_ctx)
 		obj0 = obj
                 # Only do so for the immediate operand/etc to a phi, since otherwise we will make multiple
                 if legal2
@@ -1948,7 +1957,7 @@ end
 
                 end
 
-                alloc = fresh_array_allocation(cur, TT)
+                alloc = fresh_array_allocation(cur, TT, enzyme_ctx)
                 if alloc !== nothing
                     nalloc = new_from_original(gutils, alloc)
                     shadowargs = if isbitstype(eltype(TT))
