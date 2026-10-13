@@ -1,4 +1,4 @@
-using Enzyme, Test
+using Enzyme, LinearAlgebra, Test
 
 # A branch selects a freshly allocated array with constant contents against an
 # active array. Activity analysis proves the fresh array inactive, so its shadow
@@ -138,27 +138,46 @@ alias_vec(x, e) = (m = zeros(length(x), 1); v = e ? vec(m) : x .* 2.0; m[2, 1] =
     end
 end
 
+# Whether `f()` returns rather than raising the runtime activity error; any other
+# error propagates.
+function differentiates(f)
+    try
+        f()
+        return true
+    catch err
+        err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
+        return false
+    end
+end
+
 const BRANCH_GLOBAL = [1.0, 2.0]
 branch_const_arg(x, c, e) = sum(e ? c : x .* 2.0)
 branch_global(x, e) = sum(e ? BRANCH_GLOBAL : x .* 2.0)
 
+# A `Const` argument merged with an active array has a zero-filled copy as its
+# shadow, as when it is stored into active memory (test/const_element_store.jl): the
+# gradient equals runtime activity's, and the argument is left unchanged.
 @testset "Constant memory that is not a fresh allocation" begin
     x0 = [1.0, 2.0]
-    # refused: a Const argument or a global may serve as storage for active data,
-    # which static activity analysis cannot track; correctness requires runtime
-    # activity (Enzyme FAQ, "Runtime Activity").
-    @test_throws Enzyme.Compiler.EnzymeRuntimeActivityError autodiff(
-        Reverse, branch_const_arg, Active, Duplicated(copy(x0), zero(x0)), Const([5.0, 6.0]), Const(true)
-    )
-    @test_throws Enzyme.Compiler.EnzymeRuntimeActivityError autodiff(
-        Reverse, branch_global, Active, Duplicated(copy(x0), zero(x0)), Const(true)
-    )
-    dx = zero(x0)
-    autodiff(
-        set_runtime_activity(Reverse), branch_const_arg, Active,
-        Duplicated(copy(x0), dx), Const([5.0, 6.0]), Const(true),
-    )
-    @test dx ≈ [0.0, 0.0]
+    for e in (true, false)
+        c = [5.0, 6.0]
+        dx = zero(x0)
+        autodiff(Reverse, branch_const_arg, Active, Duplicated(copy(x0), dx), Const(c), Const(e))
+        @test dx ≈ (e ? [0.0, 0.0] : [2.0, 2.0])
+        @test c == [5.0, 6.0]
+        drt = zero(x0)
+        autodiff(
+            set_runtime_activity(Reverse), branch_const_arg, Active,
+            Duplicated(copy(x0), drt), Const(c), Const(e),
+        )
+        @test dx ≈ drt
+        @test autodiff(Forward, branch_const_arg, Duplicated(copy(x0), [1.0, 0.0]), Const(c), Const(e))[1] ≈
+            (e ? 0.0 : 2.0)
+    end
+    # Not built: a global merged with an active array keeps the runtime activity
+    # error, because `constant_argument_data` recognizes only memory reached from an
+    # argument.
+    @test_broken differentiates(() -> autodiff(Reverse, branch_global, Active, Duplicated(copy(x0), zero(x0)), Const(true)))
 end
 
 # The fresh constant array holds references (arrays, or immutable structs with
@@ -304,11 +323,12 @@ end
     @test dx ≈ [0.0, 0.0]
 end
 
-# The constant branch is a global or a `Const` argument holding arrays, which keeps
-# the runtime activity error. Taking another branch must still return its
-# derivative. The error used to be raised in the block that branches to the merge,
-# so it also fired for the other branches (Julia 1.10), or it let post-optimization
-# prove that the loop runs once and then drop the derivative (Julia 1.12).
+# The constant branch is a global, which keeps the runtime activity error, or a
+# `Const` argument holding arrays, whose shadow is a zero-filled copy. Taking another
+# branch must still return its derivative. The error, or the copy, used to be made
+# in the block that branches to the merge, so it also fired for the other branches
+# (Julia 1.10), or the error let post-optimization prove that the loop runs once and
+# then drop the derivative (Julia 1.12).
 const NESTED_GLOBAL = [[1.0, 1.0]]
 const NESTED_GLOBAL_MATRIX = reshape([[1.0, 1.0]], 1, 1)
 nested_global(x, e) = sum_nested(e ? NESTED_GLOBAL : [x .* 2.0])
@@ -332,21 +352,28 @@ end
 @testset "Other branches beside a constant array of arrays" begin
     x0 = [1.0, 2.0]
     c = Const([[1.0, 1.0]])
-    # (function, leading arguments, selector of the constant branch, selector of an active branch)
+    # (function, leading arguments, selector of the constant branch, selector of an
+    # active branch, whether the constant branch is a global)
     cases = (
-        (nested_global, (), true, false),
-        (nested_global_matrix, (), true, false),
-        (nested_const_arg, (c,), true, false),
-        (nested_const_arg_flipped, (c,), false, true),
-        (nested_const_arg_switch, (c,), 1, 2),
+        (nested_global, (), true, false, true),
+        (nested_global_matrix, (), true, false, true),
+        (nested_const_arg, (c,), true, false, false),
+        (nested_const_arg_flipped, (c,), false, true, false),
+        (nested_const_arg_switch, (c,), 1, 2, false),
     )
-    for (f, pre, constsel, activesel) in cases
-        # refused: a Const argument or a global may serve as storage for active data,
-        # which static activity analysis cannot track; correctness requires runtime
-        # activity (Enzyme FAQ, "Runtime Activity").
-        @test_throws Enzyme.Compiler.EnzymeRuntimeActivityError autodiff(
-            Reverse, f, Active, Duplicated(copy(x0), zero(x0)), pre..., Const(constsel)
-        )
+    for (f, pre, constsel, activesel, isglobal) in cases
+        if isglobal || VERSION >= v"1.11-"
+            # Not built: a global keeps the runtime activity error, because
+            # `constant_argument_data` recognizes only memory reached from an argument.
+            # From Julia 1.11 the loop merges the argument's untracked data pointer
+            # (`memoryref_data`), which has no zero-filled copy either.
+            @test_broken differentiates(() -> autodiff(Reverse, f, Active, Duplicated(copy(x0), zero(x0)), pre..., Const(constsel)))
+        else
+            dx = zero(x0)
+            autodiff(Reverse, f, Active, Duplicated(copy(x0), dx), pre..., Const(constsel))
+            @test dx ≈ [0.0, 0.0]
+            @test pre[1].val == [[1.0, 1.0]]
+        end
         dx = zero(x0)
         autodiff(set_runtime_activity(Reverse), f, Active, Duplicated(copy(x0), dx), pre..., Const(constsel))
         @test dx ≈ [0.0, 0.0]
@@ -385,20 +412,62 @@ end
     end
 end
 
-# In split mode the inserted mixed-activity error must look its edge condition up: here the
-# condition is a value loaded from a `Const` array, which the reverse pass can only recover
-# through a cache. Before, the condition was read from the reverse function's own terminator,
-# whose placeholder phi Enzyme could not replace ("Illegal replace ficticious phi").
-branch_loaded_flag(x, flags) = sum(flags[1] ? Float64[] : x .* 2.0)
+# A `Const` argument is merged with a fresh copy of itself, and the merged value goes
+# with active data to a call that is not inlined, which activity analysis assumes
+# may write active data into it. `getproperty(::Cholesky, :L)` returns
+# `LowerTriangular(uplo == 'L' ? factors : copy(factors'))`, and on Julia 1.12 that
+# copy goes through `Base.unalias` (`mightalias(dest, src) ? unaliascopy(src) : src`).
+@noinline function scale_by_diagonal!(b, A)
+    for i in eachindex(b)
+        @inbounds b[i] *= A[i, i]
+    end
+    return b
+end
+copy_or_alias(A, e) = e ? A : copy(A')
+copy_or_alias_scaled(x, A, e) = sum(abs2, scale_by_diagonal!(copy(x), copy_or_alias(A, e)))
 
-@testset "Split mode: mixed-activity error condition is a loaded value" begin
-    x = [1.0, 2.0, 3.0]
-    for mode in (ReverseSplitWithPrimal, set_runtime_activity(ReverseSplitWithPrimal))
-        fwd, rev = autodiff_thunk(mode, Const{typeof(branch_loaded_flag)}, Active, Duplicated{Vector{Float64}}, Const{Vector{Bool}})
-        dx = zero(x)
-        tape, primal, _ = fwd(Const(branch_loaded_flag), Duplicated(x, dx), Const([false]))
-        @test primal ≈ 12.0
-        rev(Const(branch_loaded_flag), Duplicated(x, dx), Const([false]), 1.0, tape)
-        @test dx ≈ [2.0, 2.0, 2.0]
+cholesky_lower_solve(x, F, y) = sum(abs2, F.L \ (y .- x))
+cholesky_upper_adjoint_solve(x, F, y) = sum(abs2, F.U' \ (y .- x))
+
+@testset "Const argument merged with a fresh copy of itself" begin
+    A = [2.0 1.0; 1.0 3.0]
+    x0 = [1.0, 2.0]
+    for e in (true, false)
+        dx = zero(x0)
+        autodiff(Reverse, copy_or_alias_scaled, Active, Duplicated(copy(x0), dx), Const(A), Const(e))
+        @test dx ≈ 2 .* x0 .* [4.0, 9.0]
+        @test A == [2.0 1.0; 1.0 3.0]
+    end
+
+    n = 4
+    M = [sin(i + 2j) for i in 1:n, j in 1:n]
+    S = M * M' + n * I
+    y = collect(range(-1.0, 1.0; length = n))
+    x1 = fill(0.1, n)
+    expected = -2 .* (S \ (y .- x1))
+    for F in (cholesky(S), cholesky(Hermitian(S, :L))),
+            f in (cholesky_lower_solve, cholesky_upper_adjoint_solve)
+        factors = copy(F.factors)
+        dx = zero(x1)
+        autodiff(Reverse, f, Active, Duplicated(copy(x1), dx), Const(F), Const(y))
+        @test dx ≈ expected
+        @test F.factors == factors
+        @test autodiff(Forward, f, Duplicated(copy(x1), [1.0, 0.0, 0.0, 0.0]), Const(F), Const(y))[1] ≈ expected[1]
+
+        d1 = zero(x1)
+        d2 = zero(x1)
+        autodiff(Reverse, f, Active, BatchDuplicated(copy(x1), (d1, d2)), Const(F), Const(y))
+        @test d1 ≈ expected
+        @test d2 ≈ expected
+
+        dx = zero(x1)
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal, Const{typeof(f)}, Active,
+            Duplicated{typeof(x1)}, Const{typeof(F)}, Const{typeof(y)},
+        )
+        tape, primal, _ = fwd(Const(f), Duplicated(copy(x1), dx), Const(F), Const(y))
+        rev(Const(f), Duplicated(copy(x1), dx), Const(F), Const(y), 1.0, tape)
+        @test primal ≈ f(x1, F, y)
+        @test dx ≈ expected
     end
 end
