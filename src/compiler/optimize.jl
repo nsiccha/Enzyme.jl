@@ -506,10 +506,6 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
 
     removeDeadArgs!(mod, tm, #=post_gc_fixup=# true)
 
-    # After `removeDeadArgs!`, whose attributor and `EnzymeDetectReadonlyOrThrow`
-    # infer `readonly` through `julia.safepoint` again, and before GC lowering.
-    restore_safepoint_effects!(mod)
-
     @dispose pb = NewPMPassBuilder() begin
         if tti !== nothing
             LLVM.target_transform_info!(pb, tti)
@@ -519,6 +515,7 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
         register!(pb, SafeAtomicToRegularStorePass())
         register!(pb, RestoreAllocaType())
         register!(pb, RemoveAlwaysInlineRootsPass())
+        register!(pb, RestoreSafepointEffectsPass())
         add!(pb, NewPMAAManager()) do aam
             add!(aam, ScopedNoAliasAA())
             add!(aam, TypeBasedAA())
@@ -526,6 +523,7 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
         end
         add!(pb, NewPMModulePassManager()) do mpm
             addOptimizationPasses!(mpm)
+            add!(mpm, RestoreSafepointEffectsPass())
             if machine
                 # TODO enable validate_return_roots
                 # validate_return_roots!(mod)
@@ -667,9 +665,11 @@ Replace the attributes of `f` that tell GC lowering it cannot reach a safepoint
 memory but add inaccessible memory: `readnone` becomes `inaccessiblememonly`,
 `argmemonly` becomes `inaccessiblemem_or_argmemonly`, `readonly` is dropped, and
 on LLVM 16+ the `memory` effect gains inaccessible read-write access. The same
-attributes are removed from, or widened on, every call site of `f`.
+attributes are removed from, or widened on, every call site of `f`. Returns
+whether it changed anything.
 """
-function restore_safepoint_effects!(f::LLVM.Function)
+function restore_safepoint_effects!(f::LLVM.Function)::Bool
+    changed = false
     attrs = function_attributes(f)
     if LLVM.version().major <= 15
         readnone = false
@@ -685,6 +685,7 @@ function restore_safepoint_effects!(f::LLVM.Function)
             readnone |= kind(attr) == READNONE_ATTR_KIND
             argmemonly |= kind(attr) == kind(EnumAttribute("argmemonly"))
             delete!(attrs, attr)
+            changed = true
         end
         if argmemonly
             delete!(attrs, EnumAttribute("inaccessiblememonly"))
@@ -697,6 +698,7 @@ function restore_safepoint_effects!(f::LLVM.Function)
             excludes_safepoint(attr) || continue
             delete!(attrs, attr)
             push!(attrs, safepoint_effects(attr))
+            changed = true
         end
     end
 
@@ -707,9 +709,10 @@ function restore_safepoint_effects!(f::LLVM.Function)
             if LLVM.version().major > 15
                 LLVM.API.LLVMAddCallSiteAttribute(call, FUNCTION_ATTRIBUTE_INDEX, safepoint_effects(attr))
             end
+            changed = true
         end
     end
-    return nothing
+    return changed
 end
 
 """
@@ -734,12 +737,14 @@ A function may reach a safepoint when its body has a call that GC lowering takes
 as one (see [`calls_safepoint`](@ref)), or calls a function defined here that
 may.
 
-This must run after the last pass that infers memory effects and before GC
-lowering: Enzyme's attributor and `EnzymeDetectReadonlyOrThrow` (run by
-`removeDeadArgs!`) take `julia.safepoint` as read-only and mark such functions
-`readonly` again.
+It runs as [`RestoreSafepointEffectsPass`](@ref) at the end of the optimization
+passes of `post_optimize!`, right before GC lowering: after `removeDeadArgs!`,
+whose attributor and `EnzymeDetectReadonlyOrThrow` take `julia.safepoint` as
+read-only and mark such functions `readonly` again, and after the optimizations
+that the original effects allow, such as merging the forward and reverse calls
+of `tanh(x)`. Returns whether it changed anything.
 """
-function restore_safepoint_effects!(mod::LLVM.Module)
+function restore_safepoint_effects!(mod::LLVM.Module)::Bool
     reaching = Set{LLVM.Function}()
     todo = LLVM.Function[]
     for f in functions(mod)
@@ -758,8 +763,11 @@ function restore_safepoint_effects!(mod::LLVM.Module)
             push!(todo, caller)
         end
     end
+    changed = false
     for f in reaching
-        restore_safepoint_effects!(f)
+        changed |= restore_safepoint_effects!(f)
     end
-    return nothing
+    return changed
 end
+
+RestoreSafepointEffectsPass() = NewPMModulePass("restore_safepoint_effects", restore_safepoint_effects!)
