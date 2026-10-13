@@ -1175,9 +1175,12 @@ end
 # captured data is such memory). Such data has no shadow: activity analysis treats
 # the argument and every value loaded from it as constant, and a derivative that
 # flows into it is discarded. When `cur` is stored into active memory, inserted into
-# an active aggregate or returned as an active value, a zero-filled copy of the
-# object it points to is therefore a valid shadow: a derivative accumulated into
-# that copy is discarded too.
+# an active aggregate, returned as an active value, or merged with active values by
+# a phi or select (`cond ? factors : copy(factors')` in `getproperty(::Cholesky,
+# :L)`, or Base's `unalias`), a zero-filled copy of the object it points to is
+# therefore a valid shadow: a derivative accumulated into that copy is discarded
+# too, and active data written through the merged value is read back through the
+# same copy.
 function constant_argument_data(gutils::GradientUtils, @nospecialize(cur::LLVM.Value))::Bool
     ty = value_type(cur)
     (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return false
@@ -1209,8 +1212,14 @@ function empty_array_shadow(prim, err::EnzymeRuntimeActivityError)
     return make_zero(prim)
 end
 
+# The shadow `f(prim, rest...)` of a constant value that a phi merges, called at run
+# time only when control takes that value's edge (`taken`). On the other edges the
+# phi never uses the value, so `prim` stands in for it and nothing is allocated.
+shadow_if_taken(taken::Bool, f, prim, rest...) = taken ? f(prim, rest...) : prim
+
 # Emit the run-time call `args` (`make_zero` or `empty_array_shadow` applied to a
-# fresh array) returning a zero-filled array of the same shape, cast to `ty`.
+# fresh array or to constant argument data) returning a zero-filled object of the
+# same shape, cast to `ty`.
 function emit_zero_shadow!(
         B::LLVM.IRBuilder,
         args::Vector{LLVM.Value},
@@ -1230,15 +1239,24 @@ end
 
 # The shadow emitted by `emit_zero_shadow!` for each of the `width` batch lanes, or
 # `nothing` if it cannot be computed outside the initialization of a fresh object
-# (`hoist_before_initialization!`).
+# (`hoist_before_initialization!`). With an `i1` condition `taken`, the call runs
+# only under that condition (`shadow_if_taken`).
 function emit_zero_shadows!(
         B::LLVM.IRBuilder,
         args::Vector{LLVM.Value},
         @nospecialize(ty::LLVM.LLVMType),
         width::Integer,
         created::Vector{LLVM.Instruction},
+        @nospecialize(taken::Union{Nothing, LLVM.Value}) = nothing,
     )::Union{Nothing, LLVM.Value}
     start = length(created) + 1
+    if taken !== nothing
+        flag = select!(B, taken, unsafe_to_llvm(B, true), unsafe_to_llvm(B, false))
+        if flag isa LLVM.Instruction
+            push!(created, flag)
+        end
+        args = LLVM.Value[unsafe_to_llvm(B, shadow_if_taken), flag, args...]
+    end
     sres = if width == 1
         emit_zero_shadow!(B, args, ty, created)
     else
@@ -1393,21 +1411,22 @@ function mixed_activity_method(@nospecialize(val))
     return mi, enzyme_world()
 end
 
-# Whether the mixed activity site `val` moves its constant value into active data:
-# a store into active memory, an insertion into an active aggregate, or an active
-# return, rather than a phi or select merging it with active values. A moved
-# constant argument datum has a zero-filled shadow (`constant_argument_data`); a
-# merged one keeps the runtime activity error (test/constant_array_branch.jl).
-moves_into_active(@nospecialize(val::LLVM.Value))::Bool = true
-moves_into_active(::Union{LLVM.PHIInst, LLVM.SelectInst})::Bool = false
-
-# The condition under which the runtime activity error for the mixed activity at
-# `val` must be raised, emitted with `B`; `nothing` if always. A constant incoming
+# The condition under which the constant value at the mixed activity site `val`
+# reaches it, emitted with `B`; `nothing` if always. The runtime activity error, or
+# the zero-filled shadow that replaces it, is needed only then. A constant incoming
 # value of a phi only matters when control takes its edge: `B` is positioned
 # before the terminator of the incoming block, which may branch elsewhere too.
 mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(val)) = nothing
 mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, val::LLVM.PHIInst) =
     edge_condition(B, LLVM.terminator(position(B)), new_from_original(gutils, LLVM.parent(val)))
+
+# The condition under which a zero-filled shadow emitted with `B` is needed. Emitted
+# with the mixed activity site's own builder `b`, it replaces the site's value and
+# is needed only when that value reaches the site (`mixed_activity_condition`).
+# Emitted elsewhere, for a value nested in the site's value, it is needed wherever
+# that value is computed.
+zero_shadow_condition(B::LLVM.IRBuilder, b::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(val)) =
+    B === b ? mixed_activity_condition(B, gutils, val) : nothing
 
 # The condition under which the terminator `term` branches to `dest`, emitted with
 # `B`; `nothing` if always.
@@ -1827,6 +1846,9 @@ function julia_error(
 
         illegalVal = nothing
         mode = get_mode(gutils)
+        # Positioned at the mixed activity site: for a phi, before the terminator of
+        # the incoming block (`mixed_activity_condition`).
+        b = IRBuilder(B)
 
         function make_replacement(@nospecialize(cur::LLVM.Value), prevbb::LLVM.IRBuilder)::LLVM.Value
             ncur = new_from_original(gutils, cur)
@@ -1898,7 +1920,7 @@ end
 
             # The run-time `make_zero` needs no static type, which the walk's loads
             # (for instance a field of a struct stored inline in an array) may lack.
-            constant_element = moves_into_active(val) && constant_argument_data(gutils, cur)
+            constant_element = constant_argument_data(gutils, cur)
 
             legal, TT, byref = abs_typeof(cur, enzyme_ctx, true)
 
@@ -1983,7 +2005,10 @@ end
                             unsafe_to_llvm(prevbb, rterr),
                         ]
                     end
-                    shadowres = emit_zero_shadows!(prevbb, shadowargs, value_type(cur), width, created)
+                    shadowres = emit_zero_shadows!(
+                        prevbb, shadowargs, value_type(cur), width, created,
+                        zero_shadow_condition(prevbb, b, gutils, val),
+                    )
                     if shadowres !== nothing
                         seen[cur] = shadowres
                         return shadowres
@@ -2001,7 +2026,10 @@ end
 
             if constant_element
                 shadowargs = LLVM.Value[unsafe_to_llvm(prevbb, make_zero), ncur]
-                shadowres = emit_zero_shadows!(prevbb, shadowargs, value_type(cur), width, created)
+                shadowres = emit_zero_shadows!(
+                    prevbb, shadowargs, value_type(cur), width, created,
+                    zero_shadow_condition(prevbb, b, gutils, val),
+                )
                 if shadowres !== nothing
                     seen[cur] = shadowres
                     return shadowres
@@ -2233,7 +2261,6 @@ end
             return ncur
         end
 
-        b = IRBuilder(B)
         replacement = make_replacement(data2, b)
 
         if !illegal
