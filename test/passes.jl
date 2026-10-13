@@ -563,6 +563,89 @@ end # VERSION >= v"1.12"
     end
 end
 
+# Julia 1.10 reloads an addrspace(13) pointer phi from a phi of its parent objects. When
+# those only ever hold the one argument, the parent phis are folded away, so that the
+# reload comes straight from the argument (see test/data_pointer_phi.jl).
+@static if VERSION < v"1.11-"
+    @testset "nodecayed_phis! folds parent phis that only hold one object" begin
+        @test @filecheck begin
+            # The header and latch reload the data pointer straight from %y.
+            @check_label "@kernel_reload"
+            @check_not "nodecayed"
+            @check "loop:"
+            @check_not "nodecayed"
+            @check_not "phi {} addrspace(10)*"
+            @check "bitcast {} addrspace(10)* %y"
+            @check_not "nodecayed"
+            @check "load i8 addrspace(13)*"
+            @check_not "nodecayed"
+            @check "latch:"
+            @check_not "nodecayed"
+            @check_not "phi {} addrspace(10)*"
+            @check "bitcast {} addrspace(10)* %y"
+            @check_not "nodecayed"
+            @check "load i8 addrspace(13)*"
+            @check_not "nodecayed"
+            @check "ret double"
+            LLVM.Context() do ctx
+                mod = parse(
+                    LLVM.Module, """
+                    source_filename = "start"
+                    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+                    target triple = "x86_64-linux-gnu"
+
+                    declare double @g(double)
+
+                    define double @kernel_reload({} addrspace(10)* nocapture readonly %y, i64 %n) #0 {
+                    top:
+                      %hdr = addrspacecast {} addrspace(10)* %y to { i8 addrspace(13)*, i64, i16, i16, i32 } addrspace(11)*
+                      %fld = getelementptr inbounds { i8 addrspace(13)*, i64, i16, i16, i32 }, { i8 addrspace(13)*, i64, i16, i16, i32 } addrspace(11)* %hdr, i64 0, i32 0
+                      %data.pre = load i8 addrspace(13)*, i8 addrspace(13)* addrspace(11)* %fld, align 8
+                      br label %loop
+
+                    loop:
+                      %iv = phi i64 [ 0, %top ], [ %iv.next, %latch ]
+                      %acc = phi double [ 0.0, %top ], [ %acc.next, %latch ]
+                      %data = phi i8 addrspace(13)* [ %data.pre, %top ], [ %data.latch, %latch ]
+                      %p = bitcast i8 addrspace(13)* %data to double addrspace(13)*
+                      %e = getelementptr inbounds double, double addrspace(13)* %p, i64 %iv
+                      %x = load double, double addrspace(13)* %e, align 8
+                      %c = fcmp ogt double %x, 0.0
+                      br i1 %c, label %call, label %latch
+
+                    call:
+                      %r = call double @g(double %x)
+                      %data.re = load i8 addrspace(13)*, i8 addrspace(13)* addrspace(11)* %fld, align 8
+                      br label %latch
+
+                    latch:
+                      %data.latch = phi i8 addrspace(13)* [ %data.re, %call ], [ %data, %loop ]
+                      %v = phi double [ %r, %call ], [ 0.0, %loop ]
+                      %p2 = bitcast i8 addrspace(13)* %data.latch to double addrspace(13)*
+                      %e2 = getelementptr inbounds double, double addrspace(13)* %p2, i64 %iv
+                      %x2 = load double, double addrspace(13)* %e2, align 8
+                      %w = fadd double %v, %x2
+                      %acc.next = fadd double %acc, %w
+                      %iv.next = add i64 %iv, 1
+                      %done = icmp eq i64 %iv.next, %n
+                      br i1 %done, label %exit, label %loop
+
+                    exit:
+                      ret double %acc.next
+                    }
+
+                    attributes #0 = { "enzymejl_world"="1" }
+                    """
+                )
+
+                Enzyme.Compiler.nodecayed_phis!(mod)
+                LLVM.verify(mod)
+                string(mod)
+            end
+        end
+    end
+end
+
 
 # --- fix_decayaddr! -----------------------------------------------------------
 
