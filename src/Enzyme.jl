@@ -52,13 +52,15 @@ import EnzymeCore:
     clear_runtime_activity,
     set_strong_zero,
     clear_strong_zero,
+    set_atomic_add,
     within_autodiff,
     ignore_derivatives,
     WithPrimal,
     NoPrimal,
     needs_primal,
     runtime_activity,
-    strong_zero
+    strong_zero,
+    atomic_add
 export Annotation,
     Const,
     Active,
@@ -77,12 +79,14 @@ export Annotation,
     clear_runtime_activity,
     set_strong_zero,
     clear_strong_zero,
+    set_atomic_add,
     WithPrimal,
     NoPrimal,
     within_autodiff,
     needs_primal,
     runtime_activity,
-    strong_zero
+    strong_zero,
+    atomic_add
 
 import EnzymeCore: BatchDuplicatedFunc
 export BatchDuplicatedFunc
@@ -449,11 +453,12 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
     point values, but cannot do so for integer values in tuples and structs.
 """
 @inline function autodiff(
-    mode::ReverseMode{ReturnPrimal,RuntimeActivity,StrongZero,RABI,Holomorphic,ErrIfFuncWritten},
+        mode::ReverseMode{ReturnPrimal, RuntimeActivity, StrongZero, RABI, Holomorphic, ErrIfFuncWritten, AtomicAdd},
     f::FA,
     ::Type{A0},
     args::Vararg{Annotation,Nargs},
 ) where {
+        AtomicAdd,
     FA<:Annotation,
     A0<:Annotation,
     ReturnPrimal,
@@ -497,7 +502,8 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
                     RABI,
                     Holomorphic,
                     ErrIfFuncWritten,
-                    #=ShadowInit=#true
+                    #=ShadowInit=# true,
+                    AtomicAdd,
                 }(),
                 FA,
                 width == 1 ? Duplicated{rt} : BatchDuplicated{rt, width},
@@ -566,7 +572,8 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
                 RABI,
                 Val(ErrIfFuncWritten),
                 Val(RuntimeActivity),
-                Val(StrongZero)
+                Val(StrongZero),
+                Val(AtomicAdd)
             ) #=ShadowInit=#
 
             results = splatcall(thunk, (f,), args, ((rt(0), rt(1), rt(im)),))
@@ -606,7 +613,8 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
         RABI,
         Val(ErrIfFuncWritten),
         Val(RuntimeActivity),
-        Val(StrongZero)
+        Val(StrongZero),
+        Val(AtomicAdd)
     ) #=ShadowInit=#
 
     if A0 <: Active
@@ -774,11 +782,12 @@ Same as [`autodiff`](@ref) but uses deferred compilation to support usage in GPU
 code, as well as high-order differentiation.
 """
 @inline function autodiff_deferred(
-    mode::ReverseMode{ReturnPrimal,RuntimeActivity,StrongZero,RABI,Holomorphic,ErrIfFuncWritten},
+        mode::ReverseMode{ReturnPrimal, RuntimeActivity, StrongZero, RABI, Holomorphic, ErrIfFuncWritten, AtomicAdd},
     f::FA,
     ::Type{A},
     args::Vararg{Annotation,Nargs},
 ) where {
+        AtomicAdd,
     FA<:Annotation,
     A<:Annotation,
     ReturnPrimal,
@@ -830,7 +839,8 @@ code, as well as high-order differentiation.
                     RABI,
                     Holomorphic,
                     ErrIfFuncWritten,
-                    #=ShadowInit=#true
+                #=ShadowInit=# true,
+                AtomicAdd,
                 }()
             rt_annotation = width == 1 ? Duplicated{rt} : BatchDuplicated{rt, width}
             TapeType = tape_type(
@@ -887,7 +897,8 @@ code, as well as high-order differentiation.
         UnknownTapeType,
         Val(ErrIfFuncWritten),
         Val(RuntimeActivity),
-        Val(StrongZero)
+        Val(StrongZero),
+        Val(AtomicAdd)
     ) #=ShadowInit=#
 
     thunk =
@@ -1051,12 +1062,14 @@ result, ∂v, ∂A
         RABI,
         #=Holomorphic=#false,
         ErrIfFuncWritten,
-        ShadowInit
+            ShadowInit,
+            AtomicAdd,
     },
     ::Type{FA},
     ::Type{A0},
     args::Vararg{Type{<:Annotation},Nargs},
 ) where {
+        AtomicAdd,
     FA<:Annotation,
     A0<:Annotation,
     ReturnPrimal,
@@ -1114,7 +1127,8 @@ result, ∂v, ∂A
         RABI,
         Val(ErrIfFuncWritten),
         Val(RuntimeActivity),
-        Val(StrongZero)
+        Val(StrongZero),
+        Val(AtomicAdd)
     ) #=ShadowInit=#
 end
 
@@ -1264,11 +1278,13 @@ end
         #=Holomorphic=#false,
         ErrIfFuncWritten,
         ShadowInit,
+            AtomicAdd,
     },
     ::Type{FA},
     ::Type{A},
     args::Vararg{Type{<:Annotation},Nargs},
 ) where {
+        AtomicAdd,
     FA<:Annotation,
     A<:Annotation,
     ReturnPrimal,
@@ -1319,7 +1335,8 @@ end
         RABI,
         Val(ErrIfFuncWritten),
         Val(RuntimeActivity),
-        Val(StrongZero)
+        Val(StrongZero),
+        Val(AtomicAdd)
     )
     if nondef[1] isa Enzyme.Compiler.PrimalErrorThunk
         return Nothing
@@ -1348,11 +1365,13 @@ import .Compiler: remove_innerty, UnknownTapeType
         #=Holomorphic=#false,
         #=ErrIfFuncWritten=#false,
         #=ShadowInit=#false,
+            AtomicAdd,
     },
     ::Type{FA},
     ::Type{A},
     args::Vararg{Type{<:Annotation},Nargs},
 ) where {
+        AtomicAdd,
     FA<:Annotation,
     A<:Annotation,
     ReturnPrimal,
@@ -1402,7 +1421,8 @@ import .Compiler: remove_innerty, UnknownTapeType
         RABI,
         false, #=errifwritte=#
         RuntimeActivity,
-        StrongZero
+        StrongZero,
+        AtomicAdd
     )
 
     if parent_job !== nothing
@@ -1504,12 +1524,14 @@ result, ∂v, ∂A
         #=Holomorphic=#false,
         ErrIfFuncWritten,
         ShadowInit,
+            AtomicAdd,
     },
     tt::Type{TapeType},
     fa::Type{FA},
     a2::Type{A2},
     args::Vararg{Type{<:Annotation},Nargs},
 ) where {
+        AtomicAdd,
     FA<:Annotation,
     A2<:Annotation,
     TapeType,
@@ -1563,7 +1585,8 @@ result, ∂v, ∂A
         TapeType,
         Val(ErrIfFuncWritten),
         Val(RuntimeActivity),
-        Val(StrongZero)
+        Val(StrongZero),
+        Val(AtomicAdd)
     ) #=ShadowInit=#
     adjoint_ptr = Compiler.deferred_codegen(
         FA,
@@ -1577,7 +1600,8 @@ result, ∂v, ∂A
         TapeType,
         Val(ErrIfFuncWritten),
         Val(RuntimeActivity),
-        Val(StrongZero)
+        Val(StrongZero),
+        Val(AtomicAdd)
     ) #=ShadowInit=#
 
     RT = if A2 <: Duplicated && width != 1
