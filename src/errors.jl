@@ -1017,6 +1017,256 @@ parent_scope(@nospecialize(val::LLVM.Value), depth = 0) = parent_scope(LLVM.pare
 parent_scope(val::LLVM.Argument, depth = 0) =
     parent_scope(LLVM.Function(LLVM.API.LLVMGetParamParent(val)), depth + 1)
 
+const GC_OBJECT_ALLOCATORS = ("julia.gc_alloc_obj", "jl_gc_alloc_typed", "ijl_gc_alloc_typed")
+
+function called_function_name(@nospecialize(inst::LLVM.Value))::String
+    isa(inst, LLVM.CallInst) || return ""
+    fn = LLVM.called_operand(inst)
+    return isa(fn, LLVM.Function) ? LLVM.name(fn) : ""
+end
+
+# Whether `v` casts a tracked pointer to another tracked pointer type, so that it
+# points to the same Julia object.
+is_object_cast(@nospecialize(v::LLVM.Value))::Bool = false
+function is_object_cast(v::Union{LLVM.BitCastInst, LLVM.AddrSpaceCastInst})::Bool
+    ty = value_type(operands(v)[1])
+    return isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked
+end
+
+# Whether `cur`, an inactive tracked pointer, is constant argument data of the
+# function being differentiated: a constant argument itself (looking through casts
+# and field extractions), or a value loaded from memory reached from one, through
+# casts, GEPs, field extractions, `julia.gc_loaded` and further loads (a closure's
+# captured data is such memory). Such data has no shadow: activity analysis treats
+# the argument and every value loaded from it as constant, and a derivative that
+# flows into it is discarded. When `cur` is merged with active values by
+# a phi or select (`cond ? factors : copy(factors')` in `getproperty(::Cholesky,
+# :L)`, or Base's `unalias`), a zero-filled copy of the object it points to is
+# therefore a valid shadow: a derivative accumulated into that copy is discarded
+# too, and active data written through the merged value is read back through the
+# same copy.
+function constant_argument_data(gutils::GradientUtils, @nospecialize(cur::LLVM.Value))::Bool
+    ty = value_type(cur)
+    (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return false
+    while is_object_cast(cur) || isa(cur, LLVM.ExtractValueInst)
+        cur = operands(cur)[1]
+    end
+    isa(cur, LLVM.Argument) && return is_constant_value(gutils, cur)
+    isa(cur, LLVM.LoadInst) || return false
+    ptr = operands(cur)[1]
+    while !isa(ptr, LLVM.Argument)
+        if isa(ptr, LLVM.LoadInst) || isa(ptr, LLVM.GetElementPtrInst) ||
+                isa(ptr, LLVM.BitCastInst) || isa(ptr, LLVM.AddrSpaceCastInst) ||
+                isa(ptr, LLVM.ExtractValueInst)
+            ptr = operands(ptr)[1]
+        elseif called_function_name(ptr) == "julia.gc_loaded"
+            ptr = operands(ptr)[2]
+        else
+            return false
+        end
+    end
+    return is_constant_value(gutils, ptr)
+end
+
+# The shadow `f(prim, rest...)` of a constant value that a phi merges, called at run
+# time only when control takes that value's edge (`taken`). On the other edges the
+# phi never uses the value, so `prim` stands in for it and nothing is allocated.
+shadow_if_taken(taken::Bool, f, prim, rest...) = taken ? f(prim, rest...) : prim
+
+# Emit the run-time call `args` (`make_zero` applied to constant argument data),
+# returning a zero-filled object of the same shape, cast to `ty`.
+function emit_zero_shadow!(
+        B::LLVM.IRBuilder,
+        args::Vector{LLVM.Value},
+        @nospecialize(ty::LLVM.LLVMType),
+        created::Vector{LLVM.Instruction},
+    )::LLVM.Value
+    res = emit_apply_generic!(B, args)
+    push!(created, res)
+    if value_type(res) != ty
+        res = bitcast!(B, res, ty)
+        if res isa LLVM.Instruction
+            push!(created, res)
+        end
+    end
+    return res
+end
+
+# The shadow emitted by `emit_zero_shadow!` for each of the `width` batch lanes, or
+# `nothing` if it cannot be computed outside the initialization of a fresh object
+# (`hoist_before_initialization!`). With an `i1` condition `taken`, the call runs
+# only under that condition (`shadow_if_taken`).
+function emit_zero_shadows!(
+        B::LLVM.IRBuilder,
+        args::Vector{LLVM.Value},
+        @nospecialize(ty::LLVM.LLVMType),
+        width::Integer,
+        created::Vector{LLVM.Instruction},
+        @nospecialize(taken::Union{Nothing, LLVM.Value}) = nothing,
+    )::Union{Nothing, LLVM.Value}
+    start = length(created) + 1
+    if taken !== nothing
+        flag = select!(B, taken, unsafe_to_llvm(B, true), unsafe_to_llvm(B, false))
+        if flag isa LLVM.Instruction
+            push!(created, flag)
+        end
+        args = LLVM.Value[unsafe_to_llvm(B, shadow_if_taken), flag, args...]
+    end
+    sres = if width == 1
+        emit_zero_shadow!(B, args, ty, created)
+    else
+        agg = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, ty)))
+        for idx in 1:width
+            res = emit_zero_shadow!(B, args, ty, created)
+            agg = insert_value!(B, agg, res, idx - 1)
+            if agg isa LLVM.Instruction
+                push!(created, agg)
+            end
+        end
+        agg
+    end
+    emitted = created[start:end]
+    hoist_before_initialization!(B, emitted) && return sres
+    for inst in reverse(emitted)
+        LLVM.API.LLVMInstructionEraseFromParent(inst)
+    end
+    resize!(created, start - 1)
+    return nothing
+end
+
+# Calls that neither allocate nor run the garbage collector, besides LLVM intrinsics.
+const NONCOLLECTING_JULIA_CALLS = (
+    "julia.gc_loaded", "julia.pointer_from_objref", "julia.write_barrier",
+    "julia.typeof", "julia.get_pgcstack",
+)
+
+# Whether the instruction `inst` may run the garbage collector.
+may_collect(@nospecialize(inst::LLVM.Instruction))::Bool = false
+function may_collect(inst::LLVM.CallInst)::Bool
+    nm = called_function_name(inst)
+    return !(startswith(nm, "llvm.") || nm in NONCOLLECTING_JULIA_CALLS)
+end
+
+# The pointer that `inst` writes through: a store, or a memory intrinsic.
+written_pointer(@nospecialize(inst::LLVM.Instruction)) = nothing
+written_pointer(inst::LLVM.StoreInst) = operands(inst)[2]
+function written_pointer(inst::LLVM.CallInst)
+    nm = called_function_name(inst)
+    (
+        startswith(nm, "llvm.memcpy.") || startswith(nm, "llvm.memmove.") ||
+            startswith(nm, "llvm.memset.")
+    ) || return nothing
+    return operands(inst)[1]
+end
+
+# A run-time call may run the garbage collector, so it must not execute between a GC
+# object allocation and the stores that initialize the object: Julia emits no
+# safepoint there, and the collector would scan the uninitialized fields. A shadow
+# needed by such a store (for example the field of a struct boxed for a dynamic
+# call) is emitted inside that window. Move the instructions `emitted` before the
+# earliest allocation that precedes them in their block, with no call that may
+# collect in between, and that is still written to after them. Return `false`
+# (moving nothing) if an operand of `emitted` is computed after that allocation.
+function hoist_before_initialization!(B::LLVM.IRBuilder, emitted::Vector{LLVM.Instruction})::Bool
+    isempty(emitted) && return true
+    written = Set{LLVM.Value}()
+    ref = LLVM.API.LLVMGetNextInstruction(last(emitted))
+    while ref != C_NULL
+        inst = LLVM.Instruction(ref)
+        ptr = written_pointer(inst)
+        if ptr !== nothing
+            push!(written, first(get_base_and_offset(ptr)))
+        end
+        ref = LLVM.API.LLVMGetNextInstruction(inst)
+    end
+    window = LLVM.Instruction[]
+    earliest = 0
+    ref = LLVM.API.LLVMGetPreviousInstruction(first(emitted))
+    while ref != C_NULL
+        inst = LLVM.Instruction(ref)
+        if called_function_name(inst) in GC_OBJECT_ALLOCATORS
+            inst in written && (earliest = length(window) + 1)
+        elseif may_collect(inst)
+            break
+        end
+        push!(window, inst)
+        ref = LLVM.API.LLVMGetPreviousInstruction(inst)
+    end
+    earliest == 0 && return true
+    later = Set{LLVM.Value}(view(window, 1:earliest))
+    for inst in emitted, op in operands(inst)
+        op in later && return false
+    end
+    for inst in emitted
+        API.moveBefore(inst, window[earliest], B)
+    end
+    return true
+end
+
+# The condition under which the constant value at the mixed activity site `val`
+# reaches it, emitted with `B`; `nothing` if always. The zero-filled shadow is
+# needed only then. A constant incoming
+# value of a phi only matters when control takes its edge: `B` is positioned
+# before the terminator of the incoming block, which may branch elsewhere too.
+mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(val)) = nothing
+function mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, val::LLVM.PHIInst)
+    term = LLVM.terminator(position(B))
+    dest = new_from_original(gutils, LLVM.parent(val))
+    # The augmented forward pass has already executed any throwing branch. When
+    # restoring the tape, Enzyme removes edges to unreachable blocks from the
+    # split reverse pass, and may discard their condition. Use the surviving edge
+    # here too: retaining that condition would keep a fictitious phi alive.
+    if get_mode(gutils) == API.DEM_ReverseModeGradient && term isa LLVM.BrInst && LLVM.isconditional(term)
+        iftrue, iffalse = LLVM.successors(term)
+        if LLVM.terminator(iffalse) isa LLVM.UnreachableInst
+            return LLVM.ConstantInt(LLVM.Int1Type(), iftrue == dest)
+        elseif LLVM.terminator(iftrue) isa LLVM.UnreachableInst
+            return LLVM.ConstantInt(LLVM.Int1Type(), iffalse == dest)
+        end
+    end
+    return edge_condition(B, term, dest)
+end
+
+# The condition under which a zero-filled shadow emitted with `B` is needed. Emitted
+# with the mixed activity site's own builder `b`, it replaces the site's value and
+# is needed only when that value reaches the site (`mixed_activity_condition`).
+# Emitted elsewhere, for a value nested in the site's value, it is needed wherever
+# that value is computed.
+zero_shadow_condition(B::LLVM.IRBuilder, b::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(val)) =
+    B === b ? mixed_activity_condition(B, gutils, val) : nothing
+
+# The condition under which the terminator `term` branches to `dest`, emitted with
+# `B`; `nothing` if always.
+edge_condition(B::LLVM.IRBuilder, @nospecialize(term), @nospecialize(dest::LLVM.Value)) = nothing
+
+function edge_condition(B::LLVM.IRBuilder, term::LLVM.BrInst, @nospecialize(dest::LLVM.Value))
+    LLVM.isconditional(term) || return nothing
+    iftrue, iffalse = LLVM.successors(term)
+    iftrue == iffalse && return nothing
+    cond = LLVM.condition(term)
+    return iftrue == dest ? cond : not!(B, cond)
+end
+
+# A switch reaches `dest` through the cases that name it, or through the default
+# when no other case matches.
+function edge_condition(B::LLVM.IRBuilder, term::LLVM.SwitchInst, @nospecialize(dest::LLVM.Value))
+    ops = operands(term)
+    val = ops[1]
+    todefault = ops[2] == dest
+    cond = nothing
+    for i in 3:2:length(ops)
+        (ops[i + 1] == dest) == todefault && continue
+        if todefault
+            c = icmp!(B, LLVM.API.LLVMIntNE, val, ops[i])
+            cond = cond === nothing ? c : and!(B, cond, c)
+        else
+            c = icmp!(B, LLVM.API.LLVMIntEQ, val, ops[i])
+            cond = cond === nothing ? c : or!(B, cond, c)
+        end
+    end
+    return cond
+end
+
 function julia_error(
     cstr::Cstring,
     val::LLVM.API.LLVMValueRef,
@@ -1472,6 +1722,9 @@ else
             end
 end
 
+            constant_element = (val isa LLVM.PHIInst || val isa LLVM.SelectInst) &&
+                constant_argument_data(gutils, cur)
+
             legal, TT, byref = abs_typeof(cur, enzyme_ctx, true)
 
             if legal
@@ -1529,19 +1782,37 @@ end
 
                 end
 
-                badval = if legal2
-                    sv = string(obj) * " of type" * " " * string(TT)
-		    if obj0 isa Core.Binding
-			sv = sv *" binded at "*string(obj0)
-		    end
-		    sv
-                else
-                    "Unknown object of type" * " " * string(TT)
+                if !constant_element
+                    badval = if legal2
+                        sv = string(obj) * " of type" * " " * string(TT)
+                        if obj0 isa Core.Binding
+                            sv = sv * " binded at " * string(obj0)
+                        end
+                        sv
+                    else
+                        "Unknown object of type" * " " * string(TT)
+                    end
+                    @assert !illegal
+                    illegalVal = cur
+                    illegal = true
+                    return make_batched(ncur, prevbb)
+                end
+            end
+
+            if constant_element
+                shadowargs = LLVM.Value[unsafe_to_llvm(prevbb, make_zero), ncur]
+                shadowres = emit_zero_shadows!(
+                    prevbb, shadowargs, value_type(cur), width, created,
+                    zero_shadow_condition(prevbb, b, gutils, val),
+                )
+                if shadowres !== nothing
+                    seen[cur] = shadowres
+                    return shadowres
                 end
                 @assert !illegal
                 illegalVal = cur
                 illegal = true
-                return make_batched(ncur, prevbb)
+                return ncur
             end
 
             if isa(cur, LLVM.PointerNull)
