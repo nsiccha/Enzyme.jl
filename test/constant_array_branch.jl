@@ -460,18 +460,14 @@ cholesky_upper_adjoint_solve(x, F, y) = sum(abs2, F.U' \ (y .- x))
         @test d1 ≈ expected
         @test d2 ≈ expected
 
-        # Julia 1.12 split mode stops earlier, with or without this shadow: "Illegal
-        # replace ficticious phi" for the size comparison in `checksquare`.
-        if VERSION < v"1.11-"
-            dx = zero(x1)
-            fwd, rev = autodiff_thunk(
-                ReverseSplitWithPrimal, Const{typeof(f)}, Active,
-                Duplicated{typeof(x1)}, Const{typeof(F)}, Const{typeof(y)},
-            )
-            tape, primal, _ = fwd(Const(f), Duplicated(copy(x1), dx), Const(F), Const(y))
-            rev(Const(f), Duplicated(copy(x1), dx), Const(F), Const(y), 1.0, tape)
-            @test primal ≈ f(x1, F, y)
-            @test dx ≈ expected
-        end
+        dx = zero(x1)
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal, Const{typeof(f)}, Active,
+            Duplicated{typeof(x1)}, Const{typeof(F)}, Const{typeof(y)},
+        )
+        tape, primal, _ = fwd(Const(f), Duplicated(copy(x1), dx), Const(F), Const(y))
+        rev(Const(f), Duplicated(copy(x1), dx), Const(F), Const(y), 1.0, tape)
+        @test primal ≈ f(x1, F, y)
+        @test dx ≈ expected
     end
 end
