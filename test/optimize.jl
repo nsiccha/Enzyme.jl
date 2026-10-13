@@ -334,6 +334,10 @@ end
     # Value names are kept (the reverse blocks are named `invert...`), so the
     # absence of LLVM's `stride.check` below is meaningful.
     @test occursin("invert", ir)
+    # The inner loop is vectorized at all. Without this the test would also
+    # pass if the reverse loop were never vectorized, as it was before the
+    # post-AD pipeline unrolled after vectorizing.
+    @test occursin("vector.body", ir)
     @test !occursin("stride.check", ir)
 
     # Julia's own code keeps LLVM's setting.

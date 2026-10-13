@@ -534,18 +534,42 @@ end
 const HoistRuntimeChecksLock = ReentrantLock()
 const HoistRuntimeChecksUsers = Ref(0)
 const HoistRuntimeChecksDefault = Ref(false)
+const HoistRuntimeChecksWarned = Ref(false)
 
 # The address of `llvm::VectorizerParams::HoistRuntimeChecks`, or `C_NULL` if
-# Julia's LLVM predates the option (LLVM 16 and earlier).
+# Julia's LLVM predates the option (LLVM 16 and earlier) or does not export it.
 function hoist_runtime_checks_ptr()
     handle = Libdl.dlopen(String(Base.libllvm_path()))
     ptr = Libdl.dlsym(handle, :_ZN4llvm16VectorizerParams18HoistRuntimeChecksE; throw_error = false)
     return ptr === nothing ? Ptr{Bool}(C_NULL) : Ptr{Bool}(ptr)
 end
 
+# LLVM 18 and later have the option, so a failed lookup there means this build
+# of Julia's LLVM does not export it. Say so once rather than silently keeping
+# the hoisting on. Nothing is said while precompiling: the flag would be
+# serialized as spent and every later session would stay silent.
+function warn_missing_runtime_check_hoisting!()
+    if LLVM.version().major < 18 || generating_output()
+        return
+    end
+    lock(HoistRuntimeChecksLock)
+    warned = true
+    try
+        warned = HoistRuntimeChecksWarned[]
+        HoistRuntimeChecksWarned[] = true
+    finally
+        unlock(HoistRuntimeChecksLock)
+    end
+    if !warned
+        @safe_warn "Enzyme could not find llvm::VectorizerParams::HoistRuntimeChecks in Julia's LLVM $(LLVM.version()); runtime-check hoisting stays on, so reverse-mode derivatives of loop nests may always take the scalar fallback of their vectorized inner loops"
+    end
+    return
+end
+
 function disable_runtime_check_hoisting!()
     ptr = hoist_runtime_checks_ptr()
     if ptr == C_NULL
+        warn_missing_runtime_check_hoisting!()
         return ptr
     end
     lock(HoistRuntimeChecksLock)
