@@ -401,3 +401,89 @@ end
     @test !occursin("masked.gather", ir)
     @test !occursin("masked.scatter", ir)
 end
+
+mutable struct TypeNamesPair
+    a::Vector{Float64}
+    b::Float64
+end
+typenames_loss(p::TypeNamesPair) = sum(abs2, p.a) * p.b
+
+@testset "EmitTypeNames" begin
+    # The printed type names are debug output only; turning them on must not change
+    # the derivative.
+    Enzyme.Compiler.EmitTypeNames[] = true
+    try
+        p = TypeNamesPair([1.0, 2.0], 3.0)
+        dp = TypeNamesPair([0.0, 0.0], 0.0)
+        autodiff(Reverse, typenames_loss, Active, Duplicated(p, dp))
+        @test dp.a ≈ [6.0, 12.0]
+        @test dp.b ≈ 5.0
+    finally
+        Enzyme.Compiler.EmitTypeNames[] = false
+    end
+end
+
+# The fake use that keeps the argument of a function with a custom rule alive
+# must survive in a nounwind function, or the Attributor drops stores of fields
+# the primal body does not read but the rule does (#3733).
+struct FakeUseCache
+    du::Vector{Float64}
+    dual_du::Vector{Float64}
+end
+fakeuse_tmp(c::FakeUseCache) = c.du
+
+fakeuse_shadow(c::FakeUseCache) = FakeUseCache(zero(c.du), zero(c.dual_du))
+
+function Enzyme.EnzymeRules.forward(
+        config::Enzyme.EnzymeRules.FwdConfig, ::Const{typeof(fakeuse_tmp)},
+        ::Type{<:Annotation}, c::Const{FakeUseCache}
+    )
+    s = fakeuse_shadow(c.val).du
+    return Enzyme.EnzymeRules.needs_primal(config) ? Duplicated(c.val.du, s) : s
+end
+
+function fakeuse_square!(du, u, c)
+    o = fakeuse_tmp(c)
+    o .= u .* u
+    du .= o
+    return nothing
+end
+
+@testset "Fake use survives in a nounwind function" begin
+    c = FakeUseCache(zeros(3), zeros(3))
+    x = [1.0, 2.0, 3.0]
+    dx = zeros(3)
+    ddx = zeros(3)
+    autodiff(Forward, fakeuse_square!, Duplicated(dx, ddx), Duplicated(x, [1.0, 0, 0]), Const(c))
+    @test ddx == [2.0, 0.0, 0.0]
+end
+
+# A temporary large enough that its buffer is malloc'd rather than pooled.
+function scaled_first(a)
+    t = similar(a)
+    t .= a .* 2
+    return t[1]
+end
+
+function scaled_first_grads!(dx, x, n)
+    for _ in 1:n
+        fill!(dx, 0)
+        autodiff(Reverse, Const(scaled_first), Active, Duplicated(x, dx))
+    end
+    return nothing
+end
+
+@static if VERSION >= v"1.11"
+    @testset "Shadow memory length is set before the next safepoint" begin
+        x = randn(1000)
+        dx = zeros(1000)
+        scaled_first_grads!(dx, x, 10)
+        @test dx[1] == 2.0
+        GC.gc()
+        before = Base.gc_num()
+        scaled_first_grads!(dx, x, 100_000)
+        # An unset length makes the GC account a huge malloc'd buffer as
+        # promoted, which forces full collections.
+        @test Base.GC_Diff(Base.gc_num(), before).full_sweep == 0
+    end
+end

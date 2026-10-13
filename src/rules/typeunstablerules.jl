@@ -443,7 +443,7 @@ set_fn_max_args(runtime_tuple_rev)
 
 
 # returns if legal and completed
-function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR)
+function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR, enzyme_ctx::EnzymeContext)
     width = get_width(gutils)
 
     world = enzyme_world()
@@ -451,9 +451,9 @@ function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR)
     @assert is_constant_value(gutils, operands(orig)[offset])
     ops = @view arg_operands_view(orig)[offset+1:end]
     icvs = [is_constant_value(gutils, v) for v in ops]
-    abs_partial = [abs_typeof(v, true) for v in ops]
-    abs = [abs_typeof(v) for v in ops]
-    legalRT, structRT = abs_typeof(orig)
+    abs_partial = [abs_typeof(v, enzyme_ctx, true) for v in ops]
+    abs = [abs_typeof(v, enzyme_ctx) for v in ops]
+    legalRT, structRT = abs_typeof(orig, enzyme_ctx)
 
     @assert length(icvs) == length(abs)
     for (icv, (found_partial, typ_partial, byref_partial), (found, typ, byref), idx) in
@@ -556,6 +556,7 @@ end
 
 
 function common_newstructv_fwd(offset, B, orig, gutils, normalR, shadowR)
+    enzyme_ctx = enzyme_context()
     needsShadowP = Ref{UInt8}(0)
     needsPrimalP = Ref{UInt8}(0)
     activep = API.EnzymeGradientUtilsGetReturnDiffeType(
@@ -571,10 +572,10 @@ function common_newstructv_fwd(offset, B, orig, gutils, normalR, shadowR)
         return true
     end
 
-    if !newstruct_common(true, true, offset, B, orig, gutils, normalR, shadowR) #=run=#
+    if !newstruct_common(true, true, offset, B, orig, gutils, normalR, shadowR, enzyme_ctx) #=run=#
         origops = arg_operands_view(orig)
         ops = origops[offset+1:end]
-        abs_partial = [abs_typeof(v, true) for v in ops]
+        abs_partial = [abs_typeof(v, enzyme_ctx, true) for v in ops]
         icvs = [is_constant_value(gutils, v) for v in ops]
         emit_error(
             B,
@@ -594,6 +595,7 @@ function common_newstructv_fwd(offset, B, orig, gutils, normalR, shadowR)
 end
 
 function common_newstructv_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)::Bool
+    enzyme_ctx = enzyme_context()
     needsShadowP = Ref{UInt8}(0)
     needsPrimalP = Ref{UInt8}(0)
     activep = API.EnzymeGradientUtilsGetReturnDiffeType(
@@ -609,7 +611,7 @@ function common_newstructv_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
         return true
     end
 
-    if !newstruct_common(false, true, offset, B, orig, gutils, normalR, shadowR) #=run=#
+    if !newstruct_common(false, true, offset, B, orig, gutils, normalR, shadowR, enzyme_ctx) #=run=#
         normal =
             (unsafe_load(normalR) != C_NULL) ? LLVM.Instruction(unsafe_load(normalR)) :
             nothing
@@ -630,7 +632,7 @@ function common_newstructv_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
             gutils,
             offset,
             B,
-            false;
+            false, enzyme_ctx;
             firstconst = true,
             endcast = false,
             firstconst_after_tape = true,
@@ -669,6 +671,7 @@ function common_newstructv_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
 end
 
 function common_newstructv_rev(offset, B, orig, gutils, tape)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig)
         return true
     end
@@ -688,7 +691,7 @@ function common_newstructv_rev(offset, B, orig, gutils, tape)
         return
     end
 
-    if !newstruct_common(false, false, offset, B, orig, gutils, nothing, nothing) #=shadowR=#
+    if !newstruct_common(false, false, offset, B, orig, gutils, nothing, nothing, enzyme_ctx) #=shadowR=#
         @assert tape !== C_NULL
         width = get_width(gutils)
         generic_setup(
@@ -698,7 +701,7 @@ function common_newstructv_rev(offset, B, orig, gutils, tape)
             gutils,
             offset,
             B,
-            true;
+            true, enzyme_ctx;
             firstconst = true,
             tape,
             firstconst_after_tape = true,
@@ -715,6 +718,7 @@ function common_f_tuple_fwd(offset, B, orig, gutils, normalR, shadowR)
 end
 
 function common_f_tuple_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)::Bool
+    enzyme_ctx = enzyme_context()
     needsShadowP = Ref{UInt8}(0)
     needsPrimalP = Ref{UInt8}(0)
     activep = API.EnzymeGradientUtilsGetReturnDiffeType(
@@ -729,7 +733,7 @@ function common_f_tuple_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)
         return true
     end
 
-    if !newstruct_common(false, true, offset, B, orig, gutils, normalR, shadowR) #=run=#
+    if !newstruct_common(false, true, offset, B, orig, gutils, normalR, shadowR, enzyme_ctx) #=run=#
         normal =
             (unsafe_load(normalR) != C_NULL) ? LLVM.Instruction(unsafe_load(normalR)) :
             nothing
@@ -750,7 +754,7 @@ function common_f_tuple_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)
             gutils,
             offset + 1,
             B,
-            false;
+            false, enzyme_ctx;
             endcast = false,
             runtime_activity = true,
             strong_zero = false
@@ -786,6 +790,7 @@ function common_f_tuple_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)
 end
 
 function common_f_tuple_rev(offset, B, orig, gutils, tape)
+    enzyme_ctx = enzyme_context()
     needsShadowP = Ref{UInt8}(0)
     needsPrimalP = Ref{UInt8}(0)
     activep = API.EnzymeGradientUtilsGetReturnDiffeType(
@@ -806,7 +811,7 @@ function common_f_tuple_rev(offset, B, orig, gutils, tape)
         return true
     end
 
-    if !newstruct_common(false, false, offset, B, orig, gutils, nothing, nothing) #=shadowR=#
+    if !newstruct_common(false, false, offset, B, orig, gutils, nothing, nothing, enzyme_ctx) #=shadowR=#
         @assert tape !== C_NULL
         width = get_width(gutils)
         tape2 = if width != 1
@@ -843,7 +848,7 @@ function common_f_tuple_rev(offset, B, orig, gutils, tape)
             gutils,
             offset + 1,
             B,
-            true;
+            true, enzyme_ctx;
             tape = tape2,
             runtime_activity = false,
             strong_zero = false
@@ -930,6 +935,7 @@ end
 end
 
 @register_aug function new_structt_augfwd(B, orig, gutils, normalR, shadowR, tapeR)::Bool
+    enzyme_ctx = enzyme_context()
     needsShadowP = Ref{UInt8}(0)
     needsPrimalP = Ref{UInt8}(0)
     activep = API.EnzymeGradientUtilsGetReturnDiffeType(
@@ -959,27 +965,27 @@ end
 
     shadowsin = invert_pointer(gutils, operands(orig)[2], B)
     if width == 1
-        vals = [new_from_original(gutils, operands(orig)[1]), val_from_byref_if_mixed(B, gutils, operands(orig)[2], shadowsin)]
+        vals = [new_from_original(gutils, operands(orig)[1]), val_from_byref_if_mixed(B, gutils, operands(orig)[2], shadowsin, enzyme_ctx)]
         shadowres = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), vals)
         callconv!(shadowres, callconv(orig))
-        shadowres = byref_from_val_if_mixed(B, shadowres)
+        shadowres = byref_from_val_if_mixed(B, shadowres, enzyme_ctx)
     else
         shadowres =
             UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig))))
         for idx = 1:width
             vals = [
                 new_from_original(gutils, operands(orig)[1]),
-                val_from_byref_if_mixed(B, gutils, operands(orig)[2], extract_value!(B, shadowsin, idx - 1)),
+                val_from_byref_if_mixed(B, gutils, operands(orig)[2], extract_value!(B, shadowsin, idx - 1), enzyme_ctx),
             ]
             tmp = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), vals)
             callconv!(tmp, callconv(orig))
-            tmp = byref_from_val_if_mixed(B, tmp)
+            tmp = byref_from_val_if_mixed(B, tmp, enzyme_ctx)
             shadowres = insert_value!(B, shadowres, tmp, idx - 1)
         end
     end
     unsafe_store!(shadowR, shadowres.ref)
 
-    legal, TT, _ = abs_typeof(orig)
+    legal, TT, _ = abs_typeof(orig, enzyme_ctx)
     if !legal
         unsafe_store!(tapeR, shadowres.ref)
     else
@@ -1060,6 +1066,7 @@ end
 end
 
 @register_rev function new_structt_rev(B, orig, gutils, tape)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig)
         return true
     end
@@ -1081,7 +1088,7 @@ end
 
     width = get_width(gutils)
 
-    legal, TT, _ = abs_typeof(orig)
+    legal, TT, _ = abs_typeof(orig, enzyme_ctx)
     torun = false
     if legal
         @assert legal
@@ -1120,6 +1127,7 @@ end
 end
 
 function common_jl_getfield_fwd(offset, B, orig, gutils, normalR, shadowR)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig) || unsafe_load(shadowR) == C_NULL
         return true
     end
@@ -1179,7 +1187,7 @@ function common_jl_getfield_fwd(offset, B, orig, gutils, normalR, shadowR)
 
 		if !get_runtime_activity(gutils)
 			estr = "Mismatched activity for: " * string(orig) * " const input " *string(ops[2]) * ", differentiable return"
-			shadowres = julia_error(estr, orig.ref, API.ET_MixedActivityError, gutils.ref, orig.ref, B.ref)
+            shadowres = julia_error(estr, orig.ref, API.ET_MixedActivityError, gutils.ref, orig.ref, B.ref, enzyme_ctx)
 			if shadowres != C_NULL
 				unsafe_store!(shadowR, shadowres)
 				return true
@@ -1510,6 +1518,7 @@ function idx_jl_getfield_rev(
 end
 
 function common_jl_getfield_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)::Bool
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig) || unsafe_load(shadowR) == C_NULL
         return true
     end
@@ -1542,7 +1551,7 @@ function common_jl_getfield_augfwd(offset, B, orig, gutils, normalR, shadowR, ta
     push!(vals, inps[1])
 
     sym = new_from_original(gutils, ops[3])
-    sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym])
+    sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym], enzyme_ctx)
     push!(vals, sym)
 
     push!(vals, unsafe_to_llvm(B, Val(is_constant_value(gutils, ops[2]))))
@@ -1593,6 +1602,7 @@ function common_jl_getfield_augfwd(offset, B, orig, gutils, normalR, shadowR, ta
 end
 
 function common_jl_getfield_rev(offset, B, orig, gutils, tape)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig)
         return
     end
@@ -1639,7 +1649,7 @@ function common_jl_getfield_rev(offset, B, orig, gutils, tape)
 
     sym = new_from_original(gutils, ops[3])
     sym = lookup_value(gutils, sym, B)
-    sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym])
+    sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym], enzyme_ctx)
     push!(vals, sym)
 
     push!(vals, unsafe_to_llvm(B, Val(is_constant_value(gutils, ops[2]))))
@@ -1657,6 +1667,7 @@ function common_jl_getfield_rev(offset, B, orig, gutils, tape)
 end
 
 @register_fwd function jl_nthfield_fwd(B, orig, gutils, normalR, shadowR)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig) || unsafe_load(shadowR) == C_NULL
         return true
     end
@@ -1666,7 +1677,7 @@ end
             invert_pointer(gutils, operands(orig)[1], B)
         else
             estr = "Mismatched activity for: " * string(orig) * " const input " *string(operands(orig)[1]) * ", differentiable return"
-            eres = julia_error(estr, orig.ref, API.ET_MixedActivityError, gutils.ref, operands(orig)[1].ref, B.ref)
+            eres = julia_error(estr, orig.ref, API.ET_MixedActivityError, gutils.ref, operands(orig)[1].ref, B.ref, enzyme_ctx)
             if eres != C_NULL
                 LLVM.Value(eres)
             else
@@ -1705,6 +1716,7 @@ end
     return false
 end
 @register_aug function jl_nthfield_augfwd(B, orig, gutils, normalR, shadowR, tapeR)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig) || unsafe_load(shadowR) == C_NULL
         return true
     end
@@ -1737,7 +1749,7 @@ end
 
     sym = new_from_original(gutils, operands(orig)[2])
     sym = (sizeof(Int) == sizeof(Int64) ? emit_box_int64! : emit_box_int32!)(B, sym)
-    sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym])
+    sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym], enzyme_ctx)
     push!(vals, sym)
 
     # TODO properly handle runtime activity here
@@ -1787,6 +1799,7 @@ end
     return false
 end
 @register_rev function jl_nthfield_rev(B, orig, gutils, tape)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig)
         return
     end
@@ -1836,7 +1849,7 @@ end
     sym = new_from_original(gutils, operands(orig)[2])
     sym = lookup_value(gutils, sym, B)
     sym = (sizeof(Int) == sizeof(Int64) ? emit_box_int64! : emit_box_int32!)(B, sym)
-    sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym])
+    sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym], enzyme_ctx)
     push!(vals, sym)
 
     push!(vals, unsafe_to_llvm(B, Val(is_constant_value(gutils, operands(orig)[1]))))
@@ -2074,6 +2087,7 @@ function error_if_differentiable(::Type{T}) where {T}
 end
 
 function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig) || unsafe_load(shadowR) == C_NULL
         return true
     end
@@ -2107,7 +2121,7 @@ function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
                 B,
                 LLVM.Value[
                     unsafe_to_llvm(B, error_if_differentiable),
-                    emit_jltypeof!(B, cal),
+                    emit_jltypeof!(B, cal, enzyme_ctx),
                 ],
             )
         end
@@ -2138,7 +2152,7 @@ function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
                     B,
                     LLVM.Value[
                         unsafe_to_llvm(B, error_if_differentiable),
-                        emit_jltypeof!(B, cal),
+                        emit_jltypeof!(B, cal, enzyme_ctx),
                     ],
                 )
             end
@@ -2153,6 +2167,7 @@ function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
 end
 
 function common_f_svec_ref_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)
+    enzyme_ctx = enzyme_context()
     if is_constant_value(gutils, orig) || unsafe_load(shadowR) == C_NULL
         return true
     end
@@ -2188,7 +2203,7 @@ function common_f_svec_ref_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
         callconv!(cal, callconv(orig))
 
 
-        emit_apply_generic!(B, LLVM.Value[unsafe_to_llvm(B, errfn), emit_jltypeof!(B, cal)])
+        emit_apply_generic!(B, LLVM.Value[unsafe_to_llvm(B, errfn), emit_jltypeof!(B, cal, enzyme_ctx)])
         cal
     else
         ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig)))
@@ -2213,7 +2228,7 @@ function common_f_svec_ref_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
             callconv!(cal, callconv(orig))
             emit_apply_generic!(
                 B,
-                LLVM.Value[unsafe_to_llvm(B, errfn), emit_jltypeof!(B, cal)],
+                LLVM.Value[unsafe_to_llvm(B, errfn), emit_jltypeof!(B, cal, enzyme_ctx)],
             )
             shadow = insert_value!(B, shadow, cal, j - 1)
         end

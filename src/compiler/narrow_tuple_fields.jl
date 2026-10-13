@@ -1,5 +1,5 @@
 # Identify a runtime type test of a checked field from an immutable tuple.
-function tuple_field_type_test(term::LLVM.Instruction)
+function tuple_field_type_test(term::LLVM.Instruction, enzyme_ctx::Union{EnzymeContext, Nothing})
     if term isa LLVM.SwitchInst
         cond = operands(term)[1]
     elseif term isa LLVM.BrInst && LLVM.API.LLVMGetNumSuccessors(term) == 2
@@ -38,7 +38,7 @@ function tuple_field_type_test(term::LLVM.Instruction)
     sf = called_operand(source)
     sf isa LLVM.Function || return nothing
     name(sf) in ("jl_get_nth_field_checked", "ijl_get_nth_field_checked") || return nothing
-    legal, tuplety, _ = abs_typeof(first(arg_operands_view(source)))
+    legal, tuplety, _ = abs_typeof(first(arg_operands_view(source)), enzyme_ctx)
     legal && tuplety <: Tuple && isconcretetype(tuplety) || return nothing
     return source
 end
@@ -49,7 +49,7 @@ end
 # Preserve the original checked read and type test; only rematerialize the
 # already-checked field where the original read strictly dominates the type arm,
 # and only redirect uses that the new read dominates.
-function narrow_tuple_fields!(mod::LLVM.Module)
+function narrow_tuple_fields!(mod::LLVM.Module, enzyme_ctx::Union{EnzymeContext, Nothing})
     changed = 0
     for f in functions(mod)
         bbs = collect(blocks(f))
@@ -58,7 +58,7 @@ function narrow_tuple_fields!(mod::LLVM.Module)
         for bb in bbs
             term = terminator(bb)
             term === nothing && continue
-            source = tuple_field_type_test(term)
+            source = tuple_field_type_test(term, enzyme_ctx)
             source === nothing && continue
             push!(tests, term => source)
         end
