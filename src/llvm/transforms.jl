@@ -348,10 +348,12 @@ predecessors gives the alloca only plain loads again.
 
 Only rewrite what is certainly equivalent: a `phi ptr` in address space 0 with an
 alloca among its incoming values, whose users are all non-atomic loads of tracked
-pointers in its own block that no memory write precedes. Each load is re-created
-before the terminator of every predecessor; on an edge whose predecessor has other
-successors that is a speculative load, so it is only done for an alloca-backed
-pointer, which is always dereferenceable.
+pointers, in its own block or in a successor whose only predecessor it is, that no
+memory write precedes. Each load is re-created before the terminator of every
+predecessor. That load is speculative on an edge whose predecessor has other
+successors, and on every edge when the original load is in the successor, so it is
+then only done for a pointer that is always dereferenceable: an alloca, or an
+argument whose `dereferenceable` bytes cover it.
 """
 function unfold_root_phi_loads!(f::LLVM.Function)::Bool
     T_jlvalue = LLVM.StructType(LLVM.LLVMType[])
@@ -395,7 +397,7 @@ function unfold_root_phi_loads!(f::LLVM.Function)::Bool
             # A write before one of the loads could change what they read: none
             # in this block after the phi, and none in a load's own block before it.
             for inst in instructions(bb)
-                mayWriteToMemory(inst) || continue
+                root_path_may_write(inst) || continue
                 # The first write in this block: a load in a successor, or
                 # after it in this block, may read what it wrote.
                 for (ld, _) in accesses
@@ -409,7 +411,7 @@ function unfold_root_phi_loads!(f::LLVM.Function)::Bool
             for (ld, _) in accesses
                 LLVM.parent(ld) == bb && continue
                 for inst in instructions(LLVM.parent(ld))
-                    mayWriteToMemory(inst) || continue
+                    root_path_may_write(inst) || continue
                     if precedes(inst, ld)
                         ok = false
                     end
@@ -418,10 +420,11 @@ function unfold_root_phi_loads!(f::LLVM.Function)::Bool
             end
             ok || continue
 
-            # A speculative load is only safe from an alloca.
+            # A speculative load needs an always dereferenceable pointer.
+            hoisted = any(((ld, _),) -> LLVM.parent(ld) != bb, accesses)
             for (v, pred) in incs
                 nsucc = length(collect(successors(terminator(pred))))
-                if nsucc != 1 && !isa(first(get_base_and_offset(v)), LLVM.AllocaInst)
+                if (hoisted || nsucc != 1) && !dereferenceable_root_ptr(v)
                     ok = false
                     break
                 end
@@ -490,6 +493,51 @@ function root_block_after(@nospecialize(inst::LLVM.Value), bb::LLVM.BasicBlock):
     ib == bb && return true
     preds = predecessors(ib)
     return length(preds) == 1 && first(preds) == bb
+end
+
+"""
+    root_path_may_write(inst) -> Bool
+
+Whether `inst` may write memory. Unlike `mayWriteToMemory`, which only reads the
+attributes of the call site, a call is also known not to write when its callee is
+read-only, as for intrinsics such as `llvm.smax` that LLVM leaves between a phi
+and the loads it moved into a successor.
+"""
+function root_path_may_write(@nospecialize(inst::LLVM.Instruction))::Bool
+    mayWriteToMemory(inst) || return false
+    if isa(inst, LLVM.CallInst)
+        callee = LLVM.called_operand(inst)
+        if isa(callee, LLVM.Function) && is_readonly(callee)
+            return false
+        end
+    end
+    return true
+end
+
+"""
+    dereferenceable_root_ptr(v) -> Bool
+
+Whether a pointer-sized load from `v` is safe even where the program would not
+have loaded from it: `v` points into an alloca, or at a constant offset into an
+argument whose `dereferenceable` attribute covers the load.
+"""
+function dereferenceable_root_ptr(@nospecialize(v::LLVM.Value))::Bool
+    base, offset = get_base_and_offset(v)
+    isa(base, LLVM.AllocaInst) && return true
+    isa(base, LLVM.Argument) || return false
+    offset >= 0 || return false
+    f = LLVM.Function(LLVM.API.LLVMGetParamParent(base))
+    idx = findfirst(==(base), collect(parameters(f)))
+    idx === nothing && return false
+    # Look the kind up by name: building a `dereferenceable` attribute with value 0
+    # asserts on LLVM 15.
+    derefkind = LLVM.API.LLVMGetEnumAttributeKindForName("dereferenceable", Csize_t(15))
+    for attr in collect(LLVM.parameter_attributes(f, idx))
+        if isa(attr, LLVM.EnumAttribute) && LLVM.kind(attr) == derefkind
+            return offset + sizeof(Int) <= LLVM.value(attr)
+        end
+    end
+    return false
 end
 
 """
@@ -745,7 +793,7 @@ end
 #
 #  turn this into load/store, as this is more
 #  amenable to caching analysis infrastructure
-function memcpy_alloca_to_loadstore(mod::LLVM.Module, world::UInt)
+function memcpy_alloca_to_loadstore(mod::LLVM.Module, world::UInt, enzyme_ctx::EnzymeContext)
     dl = datalayout(mod)
     ctx = context(mod)
     seen = TypeTreeTable()
@@ -856,7 +904,7 @@ function memcpy_alloca_to_loadstore(mod::LLVM.Module, world::UInt)
                     T_jlvalue = LLVM.StructType(LLVMType[])
                     T_prjlvalue = LLVM.PointerType(T_jlvalue, Tracked)
 
-                    legal, source_typ, byref = abs_typeof(src)
+                    legal, source_typ, byref = abs_typeof(src, enzyme_ctx)
                     codegen_typ = value_type(src)
                     if legal
                         if codegen_typ isa LLVM.PointerType || codegen_typ isa LLVM.IntegerType
@@ -872,12 +920,15 @@ function memcpy_alloca_to_loadstore(mod::LLVM.Module, world::UInt)
                             only!(ec, -1)
                         end
                         metadata(src)["enzyme_type"] = to_md(ec, ctx)
-                        metadata(src)["enzymejl_source_type_$(source_typ)"] = MDNode(LLVM.Metadata[])
+                        if EmitTypeNames[]
+                            metadata(src)["enzymejl_source_type_$(source_typ)"] = MDNode(LLVM.Metadata[])
+                        end
                         metadata(src)["enzymejl_byref_$(byref)"] = MDNode(LLVM.Metadata[])
+                        mark_load_dereferenceable!(src, source_typ, byref)
 
                         @static if VERSION < v"1.11-"
                         else
-                            legal2, obj = absint(src)
+                            legal2, obj = absint(src, enzyme_ctx)
                             if legal2 && is_memory_instance(unbind(obj))
                                 metadata(src)["nonnull"] = MDNode(LLVM.Metadata[])
                             end
@@ -1316,6 +1367,18 @@ function nodecayed_getparent(st::NoDecayedPhiState, b::LLVM.IRBuilder, @nospecia
         return LLVM.UndefValue(PT), offset, st.addr == 13
     end
 
+    # A null pointer derives from no object: its base is null. Such a phi arm appears where
+    # the code tests a pointer it loaded from a `julia.constgv` slot, which LLVM cannot fold
+    # while the slot is a declaration (see `make_slots_symbolic!`).
+    if isa(v, LLVM.PointerNull)
+        PT = if LLVM.is_opaque(value_type(v))
+            LLVM.PointerType(10)
+        else
+            LLVM.PointerType(eltype(value_type(v)), 10)
+        end
+        return LLVM.null(PT), offset, st.addr == 13
+    end
+
     if isa(v, LLVM.PHIInst) && !hasload && haskey(st.goffsets, v)
         offset = nuwadd!(b, offset, st.goffsets[v])
         nv = st.nextvs[v]
@@ -1429,6 +1492,299 @@ function nodecayed_getparent(st::NoDecayedPhiState, b::LLVM.IRBuilder, @nospecia
     end
 end
 
+# Message of the runtime error thrown on reaching a phi `nodecayed_phis!` could
+# not handle, carrying the compile-time diagnosis.
+function nodecayed_runtime_message(err::EnzymeInternalError)::String
+    return sprint() do io
+        println(io, "Enzyme could not determine how to keep a pointer phi in this function rooted for")
+        println(io, "the garbage collector, so reaching the phi throws this error. Please open an issue")
+        println(io, "with the code to reproduce on github.com/EnzymeAD/Enzyme.jl.")
+        println(io)
+        print(io, err.msg)
+        if err.bt !== nothing && !isempty(err.bt)
+            println(io, "Location of the phi:")
+            Base.show_backtrace(io, err.bt)
+            println(io)
+        end
+        if VERBOSE_ERRORS[] && err.ir !== nothing
+            println(io, "Function at the time of the failure:")
+            print(io, err.ir)
+        end
+    end
+end
+
+# Attributes a function loses once it may throw, on itself and its calls: the
+# throw unwinds, does not return, and allocates and writes the exception.
+const THROWING_BODY_DROPPED_ATTRS = (
+    "nounwind", "willreturn", "speculatable", "readnone", "readonly", "writeonly",
+    "argmemonly", "inaccessiblememonly", "inaccessiblemem_or_argmemonly", "memory",
+)
+
+function drop_throwing_body_attrs!(attrs)
+    for nm in THROWING_BODY_DROPPED_ATTRS
+        kind = LLVM.API.LLVMGetEnumAttributeKindForName(nm, length(nm))
+        kind == 0 && continue
+        for attr in collect(attrs)
+            if attr isa LLVM.EnumAttribute && LLVM.kind(attr) == kind
+                delete!(attrs, attr)
+            end
+        end
+    end
+    return nothing
+end
+
+# Rebuild `phi` without its incoming values from blocks in `dropped`.
+function drop_phi_incoming!(phi::LLVM.PHIInst, dropped::Set{LLVM.BasicBlock})
+    kept = Tuple{LLVM.Value, LLVM.BasicBlock}[(v, bb) for (v, bb) in LLVM.incoming(phi) if !in(bb, dropped)]
+    if length(kept) == length(LLVM.incoming(phi))
+        return nothing
+    end
+    B = LLVM.IRBuilder()
+    position!(B, phi)
+    nphi = phi!(B, value_type(phi), LLVM.name(phi))
+    append!(LLVM.incoming(nphi), kept)
+    replace_uses!(phi, nphi)
+    LLVM.API.LLVMInstructionEraseFromParent(phi)
+    return nothing
+end
+
+# `nodecayed_phis!` could not give the phis in `failed` an addrspace(10)
+# parent. Such a phi is only a problem if it is reached, so make reaching its
+# block throw the compile-time diagnosis instead: keep the block's phis, then
+# throw, and remove the code that this leaves unreachable, which holds every
+# use of the phi.
+function nodecayed_cut_failed!(f::LLVM.Function, failed::Vector{Tuple{LLVM.PHIInst, EnzymeInternalError}})
+    # Placeholder phis whose rewrite failed have no incoming values yet.
+    preds = Dict{LLVM.BasicBlock, Vector{LLVM.BasicBlock}}(bb => LLVM.BasicBlock[] for bb in blocks(f))
+    for bb in blocks(f), succ in successors(terminator(bb))
+        push!(preds[succ], bb)
+    end
+    for bb in blocks(f), inst in collect(instructions(bb))
+        isa(inst, LLVM.PHIInst) || break
+        if isempty(LLVM.incoming(inst))
+            append!(LLVM.incoming(inst), [(LLVM.UndefValue(value_type(inst)), pb) for pb in preds[bb]])
+        end
+    end
+
+    cut = Dict{LLVM.BasicBlock, EnzymeInternalError}()
+    for (inst, err) in failed
+        get!(cut, LLVM.parent(inst), err)
+    end
+
+    dead = LLVM.Instruction[]
+    for (bb, err) in cut
+        rest = LLVM.Instruction[inst for inst in instructions(bb) if !isa(inst, LLVM.PHIInst)]
+        append!(dead, rest)
+        B = LLVM.IRBuilder()
+        position!(B, first(rest))
+        msg = nodecayed_runtime_message(err)
+        if err.mi !== nothing && err.world !== nothing
+            emit_error(B, nothing, (msg, err.mi, err.world), EnzymeRuntimeExceptionMI)
+        else
+            emit_error(B, nothing, msg)
+        end
+        unreachable!(B)
+    end
+
+    # The cut blocks no longer branch anywhere.
+    reachable = Set{LLVM.BasicBlock}()
+    worklist = LLVM.BasicBlock[LLVM.entry(f)]
+    while !isempty(worklist)
+        bb = pop!(worklist)
+        in(bb, reachable) && continue
+        push!(reachable, bb)
+        haskey(cut, bb) && continue
+        append!(worklist, collect(successors(terminator(bb))))
+    end
+    deadblocks = LLVM.BasicBlock[bb for bb in blocks(f) if !in(bb, reachable)]
+    dropped = Set{LLVM.BasicBlock}(deadblocks)
+    union!(dropped, keys(cut))
+    for bb in reachable
+        haskey(cut, bb) && continue
+        for inst in collect(instructions(bb))
+            isa(inst, LLVM.PHIInst) || break
+            drop_phi_incoming!(inst, dropped)
+        end
+    end
+
+    # Erase the dead code, users before definitions. Its only cycles go through
+    # phis, which are not of token type.
+    for bb in deadblocks, inst in instructions(bb)
+        push!(dead, inst)
+    end
+    for inst in dead
+        if isa(inst, LLVM.PHIInst)
+            replace_uses!(inst, LLVM.UndefValue(value_type(inst)))
+        end
+    end
+    while !isempty(dead)
+        remaining = LLVM.Instruction[]
+        for inst in dead
+            if isempty(LLVM.uses(inst))
+                LLVM.API.LLVMInstructionEraseFromParent(inst)
+            else
+                push!(remaining, inst)
+            end
+        end
+        @assert length(remaining) < length(dead)
+        dead = remaining
+    end
+    for bb in deadblocks
+        LLVM.API.LLVMDeleteBasicBlock(bb)
+    end
+
+    # The failed phis and their placeholders are now unused.
+    for bb in keys(cut)
+        changed = true
+        while changed
+            changed = false
+            for inst in collect(instructions(bb))
+                isa(inst, LLVM.PHIInst) || break
+                if isempty(LLVM.uses(inst))
+                    LLVM.API.LLVMInstructionEraseFromParent(inst)
+                    changed = true
+                end
+            end
+        end
+    end
+
+    drop_throwing_body_attrs!(function_attributes(f))
+    for u in LLVM.uses(f)
+        call = LLVM.user(u)
+        if isa(call, LLVM.CallInst) && LLVM.called_operand(call) == f
+            drop_throwing_body_attrs!(LLVM.function_attributes(call))
+        end
+    end
+    return nothing
+end
+
+# `v` with the steps that do not change its value stripped: pointer bitcasts, and the
+# `add x, 0` / `mul x, 1` that `nodecayed_getparent` builds for zero offsets.
+function nodecayed_strip(@nospecialize(v::LLVM.Value))::LLVM.Value
+    if isa(v, LLVM.BitCastInst) || (isa(v, LLVM.ConstantExpr) && opcode(v) == LLVM.API.LLVMBitCast)
+        return nodecayed_strip(operands(v)[1])
+    end
+    if isa(v, LLVM.Instruction) && (opcode(v) == LLVM.API.LLVMAdd || opcode(v) == LLVM.API.LLVMMul)
+        unit = opcode(v) == LLVM.API.LLVMAdd ? 0 : 1
+        lhs, rhs = operands(v)
+        if isa(rhs, LLVM.ConstantInt) && convert(Int, rhs) == unit
+            return nodecayed_strip(lhs)
+        end
+        if isa(lhs, LLVM.ConstantInt) && convert(Int, lhs) == unit
+            return nodecayed_strip(rhs)
+        end
+    end
+    return v
+end
+
+function nodecayed_undef_or_poison(@nospecialize(v::LLVM.Value))::Bool
+    undeforpoison = isa(v, LLVM.UndefValue)
+    @static if LLVM.version() >= v"12"
+        undeforpoison |= isa(v, LLVM.PoisonValue)
+    end
+    return undeforpoison
+end
+
+# Replace each set of the phis in `live` that take, besides each other, one and the same
+# value by that value.
+#
+# GVN keeps a field it re-reads after a call that may write memory (say the data pointer of a
+# `Const` array, loaded before a loop and again after a call inside it) as a web of phis.
+# `nodecayed_phis!` turns that web into phis of the parent object and of the byte offset,
+# which then only ever carry the one object and offset 0, but through a cycle of phis and
+# bitcasts that it does not fold. Enzyme then cannot recompute the data pointer reloaded from
+# such a phi in the reverse pass, so it caches that addrspace(13) pointer, and fails with
+# "Illegal cached pointer".
+#
+# A set of phis whose operands are each other or one value `V` (undef or poison aside)
+# can only ever hold `V`. Without undef or poison operands `V` also dominates every one of
+# them: each path to one of the phis reaches it with `V`, or with another of them, which it
+# reached before. An undef or poison operand breaks that argument, since its path need not
+# pass `V`. Under `--check-bounds=yes`, for instance, Julia 1.10's `matmul3x3` reaches a
+# block from seven bounds-checked paths, and only one of them carries the array whose data
+# pointer the phi carries; the other six bring undef, and `V`, that load, does not dominate
+# the phi. So only the phis that `V` dominates are replaced, and any other stays a phi,
+# which then takes `V` instead of the replaced ones (an operand of a phi dominates the end of
+# its incoming block, and `V` dominates the block of each replaced phi).
+function fold_redundant_nodecayed_phis!(live::Set{LLVM.PHIInst})
+    isempty(live) && return
+    # `live` holds the phis created in one function.
+    domtree = LLVM.DomTree(LLVM.parent(LLVM.parent(first(live))))
+    fold_redundant_nodecayed_phis!(domtree, live)
+    dispose(domtree)
+    return
+end
+
+nodecayed_dominates(domtree::LLVM.DomTree, @nospecialize(v::LLVM.Value), q::LLVM.PHIInst)::Bool =
+    !isa(v, LLVM.Instruction) || LLVM.dominates(domtree, v, q)
+
+function fold_redundant_nodecayed_phis!(domtree::LLVM.DomTree, live::Set{LLVM.PHIInst})
+    changed = true
+    while changed
+        changed = false
+        for p in collect(live)
+            in(p, live) || continue
+            group = LLVM.PHIInst[p]
+            seen = Set{LLVM.PHIInst}(group)
+            same = nothing
+            ok = true
+            i = 1
+            while ok && i <= length(group)
+                for (v, _) in LLVM.incoming(group[i])
+                    sv = nodecayed_strip(v)
+                    if isa(sv, LLVM.PHIInst) && in(sv, live)
+                        if !in(sv, seen)
+                            push!(seen, sv)
+                            push!(group, sv)
+                        end
+                    elseif nodecayed_undef_or_poison(sv)
+                        continue
+                    elseif same === nothing
+                        same = sv
+                    elseif same != sv
+                        ok = false
+                        break
+                    end
+                end
+                i += 1
+            end
+            (ok && same !== nothing) || continue
+            castable = true
+            for q in group
+                castable &= nodecayed_castable(value_type(same), value_type(q))
+            end
+            castable || continue
+            for q in group
+                nodecayed_dominates(domtree, same, q) || continue
+                repl = same
+                if value_type(repl) != value_type(q)
+                    b = IRBuilder()
+                    position!(b, first_non_phi(LLVM.parent(q)))
+                    repl = bitcast!(b, repl, value_type(q))
+                end
+                replace_uses!(q, repl)
+                LLVM.API.LLVMInstructionEraseFromParent(q)
+                delete!(live, q)
+                changed = true
+            end
+        end
+    end
+    return
+end
+
+# Whether a value of type `from` can stand for one of type `to`, with at most a bitcast.
+function nodecayed_castable(@nospecialize(from::LLVM.LLVMType), @nospecialize(to::LLVM.LLVMType))::Bool
+    from == to && return true
+    return isa(from, LLVM.PointerType) && isa(to, LLVM.PointerType) && addrspace(from) == addrspace(to)
+end
+
+function first_non_phi(bb::LLVM.BasicBlock)::LLVM.Instruction
+    for inst in instructions(bb)
+        isa(inst, LLVM.PHIInst) || return inst
+    end
+    error("block without a terminator")
+end
+
 function nodecayed_phis!(mod::LLVM.Module)
     # Simple handler to fix addrspace 11
     #complex handler for addrspace 13, which itself comes from a load of an
@@ -1496,6 +1852,9 @@ function nodecayed_phis!(mod::LLVM.Module)
         for addr in (11, 13)
 
             nextvs = Dict{LLVM.PHIInst, LLVM.PHIInst}()
+            failed = Tuple{LLVM.PHIInst, EnzymeInternalError}[]
+            # The phis created below that are still in the function.
+            created = Set{LLVM.PHIInst}()
             mtodo = Vector{LLVM.PHIInst}[]
             goffsets = Dict{LLVM.PHIInst, LLVM.PHIInst}()
             nonphis = LLVM.Instruction[]
@@ -1533,9 +1892,11 @@ function nodecayed_phis!(mod::LLVM.Module)
                         "nodecayed." * LLVM.name(inst),
                     )
                     nextvs[inst] = nphi
+                    push!(created, nphi)
                     anyV = true
 
                     goffsets[inst] = phi!(nb, offty, "nodecayedoff." * LLVM.name(inst))
+                    push!(created, goffsets[inst])
                 end
                 push!(mtodo, todo)
                 push!(nonphis, nonphi)
@@ -1551,42 +1912,48 @@ function nodecayed_phis!(mod::LLVM.Module)
                     end
                     nvs = Tuple{LLVM.Value, LLVM.BasicBlock}[]
                     offsets = Tuple{LLVM.Value, LLVM.BasicBlock}[]
-                    for (v, pb) in LLVM.incoming(inst)
-                        done = false
-                        for ((nv, pb0), (offset, pb1)) in zip(nvs, offsets)
-                            if pb0 == pb
-                                push!(nvs, (nv, pb))
-                                push!(offsets, (offset, pb))
-                                done = true
-                                break
+                    try
+                        for (v, pb) in LLVM.incoming(inst)
+                            done = false
+                            for ((nv, pb0), (offset, pb1)) in zip(nvs, offsets)
+                                if pb0 == pb
+                                    push!(nvs, (nv, pb))
+                                    push!(offsets, (offset, pb))
+                                    done = true
+                                    break
+                                end
                             end
+                            if done
+                                continue
+                            end
+
+                            v0 = v
+
+                            b = IRBuilder()
+                            position!(b, terminator(pb))
+
+                            phicache = Dict{LLVM.PHIInst, Tuple{LLVM.PHIInst, LLVM.PHIInst}}()
+                            st = NoDecayedPhiState(addr, offty, ctx, f, inst, v0, nextvs, goffsets, phicache)
+                            v, offset, hadload = nodecayed_getparent(st, b, v, LLVM.ConstantInt(offty, 0), false)
+
+                            if addr == 13
+                                @assert hadload
+                            end
+
+                            if !LLVM.is_opaque(value_type(v)) && eltype(value_type(v)) != el_ty
+                                v = bitcast!(
+                                    b,
+                                    v,
+                                    LLVM.PointerType(el_ty, addrspace(value_type(v))),
+                                )
+                            end
+                            push!(nvs, (v, pb))
+                            push!(offsets, (offset, pb))
                         end
-                        if done
-                            continue
-                        end
-
-                        v0 = v
-
-                        b = IRBuilder()
-                        position!(b, terminator(pb))
-
-                        phicache = Dict{LLVM.PHIInst, Tuple{LLVM.PHIInst, LLVM.PHIInst}}()
-                        st = NoDecayedPhiState(addr, offty, ctx, f, inst, v0, nextvs, goffsets, phicache)
-                        v, offset, hadload = nodecayed_getparent(st, b, v, LLVM.ConstantInt(offty, 0), false)
-
-                        if addr == 13
-                            @assert hadload
-                        end
-
-                        if !LLVM.is_opaque(value_type(v)) && eltype(value_type(v)) != el_ty
-                            v = bitcast!(
-                                b,
-                                v,
-                                LLVM.PointerType(el_ty, addrspace(value_type(v))),
-                            )
-                        end
-                        push!(nvs, (v, pb))
-                        push!(offsets, (offset, pb))
+                    catch err
+                        err isa EnzymeInternalError || rethrow()
+                        push!(failed, (inst, err))
+                        continue
                     end
 
                     nb = IRBuilder()
@@ -1613,6 +1980,7 @@ function nodecayed_phis!(mod::LLVM.Module)
                             bc = bitcast!(nb, bc, value_type(nphi))
                         end
                         replace_uses!(nphi, bc)
+                        delete!(created, nphi)
                         LLVM.API.LLVMInstructionEraseFromParent(nphi)
                         nphi = bc
                     else
@@ -1655,8 +2023,20 @@ function nodecayed_phis!(mod::LLVM.Module)
                     replace_uses!(inst, nphi)
                 end
                 for inst in todo
+                    any(x -> x[1] == inst, failed) && continue
                     LLVM.API.LLVMInstructionEraseFromParent(inst)
                 end
+            end
+            # The placeholders of the phis that failed above never get incoming
+            # values, so they are not foldable; `nodecayed_cut_failed!` removes them.
+            # Fold first: the cut erases dead code, which can hold phis in `created`.
+            for (inst, _) in failed
+                delete!(created, nextvs[inst])
+                delete!(created, goffsets[inst])
+            end
+            fold_redundant_nodecayed_phis!(created)
+            if !isempty(failed)
+                nodecayed_cut_failed!(f, failed)
             end
         end
     end
@@ -3104,20 +3484,26 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
     # Prevent dead-arg-elimination of functions which we may require args for in the derivative
     funcT = LLVM.FunctionType(LLVM.VoidType(), LLVMType[], vararg = true)
     if LLVM.version().major <= 15
+        # These fake calls must not write memory they are passed, yet each also
+        # writes inaccessible memory. On LLVM 15 a call that writes nothing is
+        # deleted once it is nounwind, which InstCombine marks every call in a
+        # nounwind function: InstCombine assumes an `llvm.` call that only
+        # reads memory will return, and the Attributor deletes a nounwind
+        # read-only call to any other function.
         func, _ = get_function!(
             mod,
             "llvm.enzymefakeuse",
             funcT,
-            LLVM.Attribute[EnumAttribute("readnone"), EnumAttribute("nofree")],
+            LLVM.Attribute[EnumAttribute("inaccessiblememonly"), EnumAttribute("nofree")],
         )
+        # The read of the pointer argument is stated at the call site.
         rfunc, _ = get_function!(
             mod,
             "llvm.enzymefakeread",
             funcT,
             LLVM.Attribute[
-                EnumAttribute("readonly"),
                 EnumAttribute("nofree"),
-                EnumAttribute("argmemonly"),
+                EnumAttribute("inaccessiblemem_or_argmemonly"),
             ],
         )
         sfunc, _ = get_function!(
@@ -3125,9 +3511,8 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
             "llvm.enzyme.sret_use",
             funcT,
             LLVM.Attribute[
-                EnumAttribute("readonly"),
                 EnumAttribute("nofree"),
-                EnumAttribute("argmemonly"),
+                EnumAttribute("inaccessiblemem_or_argmemonly"),
             ],
         )
         wfunc, _ = get_function!(
@@ -3200,6 +3585,11 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
                         cl,
                         LLVM.API.LLVMAttributeIndex(1),
                         EnumAttribute("nocapture"),
+                    )
+                    LLVM.API.LLVMAddCallSiteAttribute(
+                        cl,
+                        LLVM.API.LLVMAttributeIndex(1),
+                        EnumAttribute("readonly"),
                     )
                 end
             end
@@ -3301,6 +3691,11 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
                                     LLVM.API.LLVMAttributeIndex(1),
                                     EnumAttribute("nocapture"),
                                 )
+                                LLVM.API.LLVMAddCallSiteAttribute(
+                                    cl,
+                                    LLVM.API.LLVMAttributeIndex(1),
+                                    EnumAttribute("readonly"),
+                                )
                             end
                         end
                         continue
@@ -3319,6 +3714,11 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
                             cl,
                             LLVM.API.LLVMAttributeIndex(1),
                             EnumAttribute("nocapture"),
+                        )
+                        LLVM.API.LLVMAddCallSiteAttribute(
+                            cl,
+                            LLVM.API.LLVMAttributeIndex(1),
+                            EnumAttribute("readonly"),
                         )
                     end
                 end
@@ -3433,7 +3833,7 @@ function safe_atomic_to_regular_store!(f::LLVM.Function)
     return changed
 end
 
-function replace_builtin_fptr!(mod::LLVM.Module)
+function replace_builtin_fptr!(mod::LLVM.Module, enzyme_ctx::EnzymeContext)
     if !haskey(functions(mod), "jl_get_builtin_fptr")
         return false
     end
@@ -3455,7 +3855,7 @@ function replace_builtin_fptr!(mod::LLVM.Module)
             if isa(inst, LLVM.CallInst)
                 if called_operand(inst) == jl_get_builtin_fptr_fn
                     arg1 = operands(inst)[1]
-                    legal, obj = absint(arg1)
+                    legal, obj = absint(arg1, enzyme_ctx)
                     if legal
                         if isa(obj, DataType) && isdefined(obj, :instance)
                             obj = obj.instance

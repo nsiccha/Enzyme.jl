@@ -219,7 +219,27 @@ function emit_jl_throw!(B::LLVM.IRBuilder, @nospecialize(val::LLVM.Value))::LLVM
     return cb
 end
 
-function emit_conditional_throw!(B::LLVM.IRBuilder, @nospecialize(cond::LLVM.Value), @nospecialize(errty::Type), @nospecialize(str::LLVM.Value))::LLVM.Value
+# The fields after the message of the error object `emit_error` builds from `string`.
+error_fields(B::LLVM.IRBuilder, @nospecialize(string::Union{String, LLVM.Value})) = ()
+error_fields(B::LLVM.IRBuilder, string::Tuple{String, Core.MethodInstance, UInt}) =
+    (unsafe_to_llvm(B, string[2]), LLVM.ConstantInt(string[3]))
+
+# Stores the message `str` and then `fields` into the pointer-sized fields of the
+# error object `err`.
+function store_error_fields!(B::LLVM.IRBuilder, @nospecialize(err::LLVM.Value), @nospecialize(str::LLVM.Value), fields::LLVM.Value...)
+    err2 = bitcast!(B, err, LLVM.PointerType(LLVM.PointerType(LLVM.Int8Type()), 10))
+    err2 = addrspacecast!(B, err2, LLVM.PointerType(LLVM.PointerType(LLVM.Int8Type()), Derived))
+    store!(B, str, err2)
+    for (i, field) in enumerate(fields)
+        g = LLVM.inbounds_gep!(B, LLVM.PointerType(LLVM.Int8Type()), err2, [LLVM.ConstantInt(i)])
+        g = LLVM.bitcast!(B, g, LLVM.PointerType(value_type(field), Derived))
+        store!(B, field, g)
+    end
+    return
+end
+
+# Throws an `errty` built from the message `str` and `fields` when `cond` holds.
+function emit_conditional_throw!(B::LLVM.IRBuilder, @nospecialize(cond::LLVM.Value), @nospecialize(errty::Type), @nospecialize(str::LLVM.Value), fields::LLVM.Value...)::LLVM.Value
     curent_bb = position(B)
     fn = LLVM.parent(curent_bb)
     mod = LLVM.parent(fn)
@@ -227,7 +247,7 @@ function emit_conditional_throw!(B::LLVM.IRBuilder, @nospecialize(cond::LLVM.Val
     T_jlvalue = LLVM.StructType(LLVMType[])
     T_prjlvalue = LLVM.PointerType(T_jlvalue, 10)
     strty = LLVM.PointerType(LLVM.Int8Type())
-    FT = LLVM.FunctionType(T_void, [strty, LLVM.IntType(1)])
+    FT = LLVM.FunctionType(T_void, LLVMType[strty, LLVM.IntType(1), map(value_type, fields)...])
 
     name = "jl_conditional_throw_"*string(errty)
     if haskey(functions(mod), name)
@@ -235,22 +255,22 @@ function emit_conditional_throw!(B::LLVM.IRBuilder, @nospecialize(cond::LLVM.Val
     else
         fn = LLVM.Function(mod, name, FT)
     	linkage!(fn, LLVM.API.LLVMInternalLinkage)
-        rstr, rcond = LLVM.parameters(fn)
+        params = collect(LLVM.parameters(fn))
 	 builder = LLVM.IRBuilder()
          entry = BasicBlock(fn, "entry")
          errb = BasicBlock(fn, "err")
          exitb = BasicBlock(fn, "errb")
          position!(builder, entry)
-	 br!(builder, rcond, errb, exitb)
+        br!(builder, params[2], errb, exitb)
          position!(builder, errb)
 
         err = emit_allocobj!(builder, errty)
-        err2 = bitcast!(builder, err, LLVM.PointerType(LLVM.PointerType(LLVM.Int8Type()), 10))
-        err2 = addrspacecast!(builder, err2, LLVM.PointerType(LLVM.PointerType(LLVM.Int8Type()), Derived))
-        store!(builder, rstr, err2)
+        store_error_fields!(builder, err, params[1], params[3:end]...)
 
     	 err = addrspacecast!(builder, err, LLVM.PointerType(T_jlvalue, 12))
 	   thrown = emit_jl_throw!(builder, err)
+        # Inlining the helper moves this throw into the caller.
+        mark_inserted_error!(thrown)
 	 unreachable!(builder)
 	 position!(builder, exitb)
 	 ret!(builder)
@@ -258,7 +278,7 @@ function emit_conditional_throw!(B::LLVM.IRBuilder, @nospecialize(cond::LLVM.Val
         push!(LLVM.function_attributes(fn), LLVM.EnumAttribute("alwaysinline", 0))
     end
 
-    call!(B, FT, fn, LLVM.Value[str, cond])
+    return call!(B, FT, fn, LLVM.Value[str, cond, fields...])
 end
 
 function emit_box_int32!(B::LLVM.IRBuilder, @nospecialize(val::LLVM.Value))::LLVM.Value
@@ -385,11 +405,11 @@ function load_if_mixed(oval::OT, val::VT) where {OT, VT}
     end
 end
 
-function val_from_byref_if_mixed(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(oval::LLVM.Value), @nospecialize(val::LLVM.Value))::LLVM.Value
+function val_from_byref_if_mixed(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(oval::LLVM.Value), @nospecialize(val::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})::LLVM.Value
     world = enzyme_world()
-    legal, TT, _ = abs_typeof(oval)
+    legal, TT, _ = abs_typeof(oval, enzyme_ctx)
     if !legal
-        legal, TT, _ = abs_typeof(oval, true)
+        legal, TT, _ = abs_typeof(oval, enzyme_ctx, true)
         if legal
             if active_reg(TT, world) == AnyState
                 return val
@@ -398,7 +418,7 @@ function val_from_byref_if_mixed(B::LLVM.IRBuilder, gutils::GradientUtils, @nosp
         return emit_apply_generic!(B, LLVM.Value[unsafe_to_llvm(B, load_if_mixed), new_from_original(gutils, oval), val]) 
     end
     if !guaranteed_nonactive(TT, world)
-        legal2, TT2, _ = abs_typeof(val)
+        legal2, TT2, _ = abs_typeof(val, enzyme_ctx)
         if legal2
 	        @assert TT2 <: Base.RefValue
 	    else
@@ -432,11 +452,11 @@ end
     end
 end
 
-function byref_from_val_if_mixed(B::LLVM.IRBuilder, @nospecialize(val::LLVM.Value))::LLVM.Value
+function byref_from_val_if_mixed(B::LLVM.IRBuilder, @nospecialize(val::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})::LLVM.Value
     world = enzyme_world()
-    legal, TT, _ = abs_typeof(val)
+    legal, TT, _ = abs_typeof(val, enzyme_ctx)
     if !legal
-        legal, TT, _ = abs_typeof(val, true)
+        legal, TT, _ = abs_typeof(val, enzyme_ctx, true)
         if legal && active_reg(TT, world) == AnyState
             return val
         end
@@ -595,7 +615,7 @@ function emit_ntuple_type!(B::LLVM.IRBuilder, @nospecialize(count::LLVM.Value), 
     return call!(B, FT, fn, LLVM.Value[unsafe_to_llvm(B, T), count])
 end
 
-function emit_apply_type!(B::LLVM.IRBuilder, @nospecialize(Ty::Type), args::Vector{LLVM.Value})::LLVM.Value
+function emit_apply_type!(B::LLVM.IRBuilder, @nospecialize(Ty::Type), args::Vector{LLVM.Value}, enzyme_ctx::Union{EnzymeContext, Nothing})::LLVM.Value
     curent_bb = position(B)
     fn = LLVM.parent(curent_bb)
     mod = LLVM.parent(fn)
@@ -603,7 +623,7 @@ function emit_apply_type!(B::LLVM.IRBuilder, @nospecialize(Ty::Type), args::Vect
     legal = true
     found = Any[]
     for arg in args
-        slegal, foundv = absint(arg)
+        slegal, foundv = absint(arg, enzyme_ctx)
         if slegal
 	    push!(found, unbind(foundv))
         else
@@ -650,7 +670,7 @@ function emit_apply_type!(B::LLVM.IRBuilder, @nospecialize(Ty::Type), args::Vect
     return tag
 end
 
-function emit_tuple!(B::LLVM.IRBuilder, args::Vector{LLVM.Value})::LLVM.Value
+function emit_tuple!(B::LLVM.IRBuilder, args::Vector{LLVM.Value}, enzyme_ctx::Union{EnzymeContext, Nothing})::LLVM.Value
     curent_bb = position(B)
     fn = LLVM.parent(curent_bb)
     mod = LLVM.parent(fn)
@@ -658,7 +678,7 @@ function emit_tuple!(B::LLVM.IRBuilder, args::Vector{LLVM.Value})::LLVM.Value
     legal = true
     found = Any[]
     for arg in args
-        slegal, foundv = absint(arg)
+        slegal, foundv = absint(arg, enzyme_ctx)
         if slegal
 	    push!(found, unbind(foundv))
         else
@@ -704,12 +724,12 @@ function emit_tuple!(B::LLVM.IRBuilder, args::Vector{LLVM.Value})::LLVM.Value
     return tag
 end
 
-function emit_jltypeof!(B::LLVM.IRBuilder, @nospecialize(arg::LLVM.Value))::LLVM.Value
+function emit_jltypeof!(B::LLVM.IRBuilder, @nospecialize(arg::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})::LLVM.Value
     curent_bb = position(B)
     fn = LLVM.parent(curent_bb)
     mod = LLVM.parent(fn)
 
-    legal, val, byref = abs_typeof(arg)
+    legal, val, byref = abs_typeof(arg, enzyme_ctx)
     if legal
         return unsafe_to_llvm(B, val)
     end
@@ -721,7 +741,7 @@ function emit_jltypeof!(B::LLVM.IRBuilder, @nospecialize(arg::LLVM.Value))::LLVM
     call!(B, FT, fn, [arg])
 end
 
-function emit_methodinstance!(B::LLVM.IRBuilder, @nospecialize(func), args::Vector{LLVM.Value})::LLVM.Value
+function emit_methodinstance!(B::LLVM.IRBuilder, @nospecialize(func), args::Vector{LLVM.Value}, enzyme_ctx::Union{EnzymeContext, Nothing})::LLVM.Value
     curent_bb = position(B)
     fn = LLVM.parent(curent_bb)
     mod = LLVM.parent(fn)
@@ -733,11 +753,11 @@ function emit_methodinstance!(B::LLVM.IRBuilder, @nospecialize(func), args::Vect
 
     primalvaltys = LLVM.Value[unsafe_to_llvm(B, Core.Typeof(func))]
     for a in args
-        push!(primalvaltys, emit_jltypeof!(B, a))
+        push!(primalvaltys, emit_jltypeof!(B, a, enzyme_ctx))
     end
 
     meth = only(methods(func))
-    tag = emit_apply_type!(B, Tuple, primalvaltys)
+    tag = emit_apply_type!(B, Tuple, primalvaltys, enzyme_ctx)
 
     #    TT = meth.sig
     #    while TT isa UnionAll
@@ -1024,8 +1044,8 @@ function get_array_elsz(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value))
     return LLVM.load!(B, elsz, v)
 end
 
-function emit_layout_of_type!(B::LLVM.IRBuilder, @nospecialize(ty::LLVM.Value))
-    legal, JTy = absint(ty)
+function emit_layout_of_type!(B::LLVM.IRBuilder, @nospecialize(ty::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})
+    legal, JTy = absint(ty, enzyme_ctx)
     # The layout is not a GC object. Do not use address space 10 for it,
     # because LateLowerGCFrame then puts the pointer in a GC frame slot
     # and the GC writes mark bits before the layout.
@@ -1045,8 +1065,8 @@ function emit_layout_of_type!(B::LLVM.IRBuilder, @nospecialize(ty::LLVM.Value))
     return load!(B, lptr, layoutp)
 end
 
-function emit_type_layout_elsz!(B::LLVM.IRBuilder, @nospecialize(ty::LLVM.Value))
-	legal, JTy = absint(ty)
+function emit_type_layout_elsz!(B::LLVM.IRBuilder, @nospecialize(ty::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})
+    legal, JTy = absint(ty, enzyme_ctx)
 	if legal
 	    JTy = unbind(JTy)
 	    @assert JTy isa Type
@@ -1054,7 +1074,7 @@ function emit_type_layout_elsz!(B::LLVM.IRBuilder, @nospecialize(ty::LLVM.Value)
 	    return LLVM.ConstantInt(res)
 	end
 
-	ty = emit_layout_of_type!(B, ty)
+    ty = emit_layout_of_type!(B, ty, enzyme_ctx)
 	@assert !isa(ty, LLVM.ConstantExpr)
 	@assert !isa(ty, LLVM.Constant)
 	i32 = LLVM.IntType(32)
@@ -1062,9 +1082,9 @@ function emit_type_layout_elsz!(B::LLVM.IRBuilder, @nospecialize(ty::LLVM.Value)
 	return load!(B, i32, lty)
 end
 
-function get_memory_elsz(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value))
-    ty = emit_jltypeof!(B, array)
-    return emit_type_layout_elsz!(B, ty)
+function get_memory_elsz(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})
+    ty = emit_jltypeof!(B, array, enzyme_ctx)
+    return emit_type_layout_elsz!(B, ty, enzyme_ctx)
 end
 
 function get_array_len(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value))
@@ -1104,7 +1124,7 @@ function get_array_len(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value))
     return LLVM.load!(B, sizeT, v)
 end
 
-function get_memory_len(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value))
+function get_memory_len(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})
     if isa(array, LLVM.CallInst)
         fn = LLVM.called_operand(array)
         nm = ""
@@ -1125,7 +1145,7 @@ function get_memory_len(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value))
 	    )
 	        # This is number of bytes not number of elements
 		res = get_memory_size(B, array)
-		es = get_memory_elsz(B, array)
+            es = get_memory_elsz(B, array, enzyme_ctx)
 		return udiv!(B, res, es)
         end
     end
@@ -1163,7 +1183,7 @@ function get_memory_nbytes(B::LLVM.IRBuilder, memty::Type{<:Memory}, nel::LLVM.V
 end
 end
 
-function get_memory_nbytes(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value))
+function get_memory_nbytes(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})
     if isa(array, LLVM.CallInst)
         fn = LLVM.called_operand(array)
         nm = ""
@@ -1179,8 +1199,8 @@ function get_memory_nbytes(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value))
 		return res
         end
     end
-    nel = get_memory_len(B, array)
-    legal, memty = abs_typeof(array)
+    nel = get_memory_len(B, array, enzyme_ctx)
+    legal, memty = abs_typeof(array, enzyme_ctx)
     @assert legal
     return get_memory_nbytes(B, memty, nel)
 end
@@ -1322,26 +1342,12 @@ function emit_error(B::LLVM.IRBuilder, @nospecialize(orig::Union{Nothing, LLVM.I
         end
         call!(B, trap_ft, trap)
     else
+        fields = error_fields(B, string)
     	if cond !== nothing
-	    if string isa Tuple
-	       errty = errty.name.wrapper{Nothing, Nothing}
-	    end
-            emit_conditional_throw!(B, cond, errty, stringv)
+            emit_conditional_throw!(B, cond, errty, stringv, fields...)
     	else
             err = emit_allocobj!(B, errty)
-            err2 = bitcast!(B, err, LLVM.PointerType(LLVM.PointerType(LLVM.Int8Type()), 10))
-            err2 = addrspacecast!(B, err2, LLVM.PointerType(LLVM.PointerType(LLVM.Int8Type()), Derived))
-            store!(B, stringv, err2)
-	    if string isa Tuple
-	       g1 = LLVM.inbounds_gep!(B, LLVM.PointerType(LLVM.Int8Type()), err2, [LLVM.ConstantInt(1)])
-	       ts = unsafe_to_llvm(B, string[2])
-	       g1 = LLVM.bitcast!(B, g1, LLVM.PointerType(value_type(ts), Derived))
-	       store!(B, ts, g1)
-	       g2 = LLVM.inbounds_gep!(B, LLVM.PointerType(LLVM.Int8Type()), err2, [LLVM.ConstantInt(2)])
-	       ts = LLVM.ConstantInt(string[3])
-	       g2 = LLVM.bitcast!(B, g2, LLVM.PointerType(value_type(ts), Derived))
-	       store!(B, ts, g2)
-	    end
+            store_error_fields!(B, err, stringv, fields...)
     		emit_jl_throw!(
     		    B,
     		    addrspacecast!(B, err, LLVM.PointerType(LLVM.StructType(LLVMType[]), 12)),
@@ -1364,6 +1370,35 @@ function emit_error(B::LLVM.IRBuilder, @nospecialize(orig::Union{Nothing, LLVM.I
 		)
 	    end
     end
+    # An error in a block that already ends in `unreachable` adds no new
+    # unreachable path; see `strip_invariant_group_after_inserted_errors!`.
+    if !isa(LLVM.terminator(curent_bb), LLVM.UnreachableInst)
+        mark_inserted_error!(ct)
+    end
     return ct
+end
+
+# Call-site attribute marking an error `emit_error` inserted into a block that
+# would otherwise continue.
+const INSERTED_ERROR_ATTR = "enzymejl_inserted_error"
+
+function mark_inserted_error!(@nospecialize(call::LLVM.Value))
+    LLVM.API.LLVMAddCallSiteAttribute(
+        call,
+        reinterpret(LLVM.API.LLVMAttributeIndex, LLVM.API.LLVMAttributeFunctionIndex),
+        StringAttribute(INSERTED_ERROR_ATTR),
+    )
+    return
+end
+
+function is_inserted_error(@nospecialize(inst::LLVM.Instruction))::Bool
+    isa(inst, LLVM.CallInst) || return false
+    attr = LLVM.API.LLVMGetCallSiteStringAttribute(
+        inst,
+        reinterpret(LLVM.API.LLVMAttributeIndex, LLVM.API.LLVMAttributeFunctionIndex),
+        INSERTED_ERROR_ATTR,
+        length(INSERTED_ERROR_ATTR),
+    )
+    return attr != C_NULL
 end
 

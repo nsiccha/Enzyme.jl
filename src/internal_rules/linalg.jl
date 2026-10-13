@@ -21,6 +21,60 @@ end
 
 @inline onedimensionalize(::Type{T}) where {T<:Array} = Vector{eltype(T)}
 
+# Triangular solves for derivatives. For a strided triangular BLAS matrix, `ldiv!` and `\`
+# call LAPACK's trtrs, which besides solving checks the matrix for singularity, which the
+# primal computation already did. OpenBLAS also runs trtrs multithreaded for any matrix with
+# more than one right-hand side, so that solving a 2×2 system took microseconds. Solve with
+# BLAS's trsv/trsm instead, which compute the same result.
+const _EnzymeTriangular{T, S} = Union{
+    LowerTriangular{T, S},
+    UpperTriangular{T, S},
+    UnitLowerTriangular{T, S},
+    UnitUpperTriangular{T, S},
+}
+
+_tri_uplo(::Union{LowerTriangular, UnitLowerTriangular}) = 'L'
+_tri_uplo(::Union{UpperTriangular, UnitUpperTriangular}) = 'U'
+_tri_diag(::Union{LowerTriangular, UpperTriangular}) = 'N'
+_tri_diag(::Union{UnitLowerTriangular, UnitUpperTriangular}) = 'U'
+_flip_uplo(uplo::Char) = uplo == 'L' ? 'U' : 'L'
+
+# The stored matrix, and the uplo, trans and diag arguments, with which BLAS solves with A, or
+# nothing if it cannot.
+_tri_blas_args(A) = nothing
+_tri_blas_args(A::_EnzymeTriangular{T, <:StridedMatrix{T}}) where {T <: LinearAlgebra.BlasFloat} =
+    (A.data, _tri_uplo(A), 'N', _tri_diag(A))
+# The triangle used of the transpose of the stored matrix is the opposite one of the stored matrix.
+_tri_blas_args(A::_EnzymeTriangular{T, <:Transpose{T, <:StridedMatrix{T}}}) where {T <: LinearAlgebra.BlasFloat} =
+    (parent(A.data), _flip_uplo(_tri_uplo(A)), 'T', _tri_diag(A))
+_tri_blas_args(A::_EnzymeTriangular{T, <:Adjoint{T, <:StridedMatrix{T}}}) where {T <: LinearAlgebra.BlasFloat} =
+    (parent(A.data), _flip_uplo(_tri_uplo(A)), 'C', _tri_diag(A))
+_tri_blas_args(A::Transpose{T, <:_EnzymeTriangular{T, <:StridedMatrix{T}}}) where {T <: LinearAlgebra.BlasFloat} =
+    (parent(A).data, _tri_uplo(parent(A)), 'T', _tri_diag(parent(A)))
+_tri_blas_args(A::Adjoint{T, <:_EnzymeTriangular{T, <:StridedMatrix{T}}}) where {T <: LinearAlgebra.BlasFloat} =
+    (parent(A).data, _tri_uplo(parent(A)), 'C', _tri_diag(parent(A)))
+
+# Like `ldiv!(A, B)`, for A triangular.
+_trisolve!(A, B) = ldiv!(A, B)
+function _trisolve!(A::AbstractMatrix{T}, B::StridedVecOrMat{T}) where {T <: LinearAlgebra.BlasFloat}
+    args = _tri_blas_args(A)
+    if args === nothing || stride(args[1], 1) != 1 || stride(B, 1) != 1
+        return ldiv!(A, B)
+    end
+    data, uplo, trans, diag = args
+    if B isa AbstractVector
+        BLAS.trsv!(uplo, trans, diag, data, B)
+    else
+        BLAS.trsm!('L', uplo, trans, diag, one(T), data, B)
+    end
+    return B
+end
+
+# Like `A \ B`, for A triangular.
+_trisolve(A, B) = A \ B
+_trisolve(A::AbstractMatrix{T}, B::StridedVecOrMat{T}) where {T <: LinearAlgebra.BlasFloat} =
+    _tri_blas_args(A) === nothing ? A \ B : _trisolve!(A, copy(B))
+
 # y=inv(A) B
 #   dA −= z y^T
 #   dB += z, where  z = inv(A^T) dy
@@ -150,7 +204,7 @@ function EnzymeRules.reverse(
     end
 
     for (dA, db, dy) in zip(dAs, dbs, dys)
-        z = transpose(cache_A) \ dy
+        z = _trisolve(transpose(cache_A), dy)
         if !(typeof(A) <: Const)
             dA .-= z * transpose(y)
         end
@@ -209,7 +263,7 @@ function EnzymeRules.reverse(
         (cache_Yout, cache_A, cache_B) = cache
         for b = 1:EnzymeRules.width(config)
             dY = EnzymeRules.width(config) == 1 ? Y.dval : Y.dval[b]
-            z = adjoint(cache_A) \ dY
+            z = _trisolve(adjoint(cache_A), dY)
             if !isa(B, Const)
                 dB = EnzymeRules.width(config) == 1 ? B.dval : B.dval[b]
                 dB .+= z
@@ -222,6 +276,50 @@ function EnzymeRules.reverse(
         end
     end
     return (nothing, nothing, nothing)
+end
+
+# `dB .-= A * B` for A triangular, using `tmp`, which is like B, as scratch. Unlike `mul!`, this
+# uses BLAS also when A wraps the transpose or adjoint of a matrix, except for tiny products,
+# for which the generic `mul!` is faster than a BLAS call (n^2 m <= 128, as measured with
+# OpenBLAS).
+_trimul_sub!(dB, A, B, tmp) = mul!(dB, A, B, -1, 1)
+function _trimul_sub!(
+        dB::StridedVecOrMat{T}, A::AbstractMatrix{T}, B::StridedVecOrMat{T}, tmp::StridedVecOrMat{T}
+    ) where {T <: LinearAlgebra.BlasFloat}
+    args = _tri_blas_args(A)
+    if args === nothing || stride(args[1], 1) != 1 || stride(tmp, 1) != 1 ||
+            size(A, 1)^2 * size(B, 2) <= 128
+        return mul!(dB, A, B, -1, 1)
+    end
+    data, uplo, trans, diag = args
+    copyto!(tmp, B)
+    if tmp isa AbstractVector
+        BLAS.trmv!(uplo, trans, diag, data, tmp)
+    else
+        BLAS.trmm!('L', uplo, trans, diag, one(T), data, tmp)
+    end
+    dB .-= tmp
+    return dB
+end
+
+# Solve with, or multiply by, the lower (`Val(:L)`) or upper (`Val(:U)`) triangular factor of a
+# Cholesky factorization C. Unlike `C.L` and `C.U`, these do not copy the factor that is not
+# stored, but use its adjoint. They branch on `C.uplo` so that each branch has concrete types.
+function _chol_trisolve!(C::Cholesky, ::Val{:L}, B)
+    return C.uplo == 'L' ? _trisolve!(LowerTriangular(C.factors), B) :
+        _trisolve!(LowerTriangular(C.factors'), B)
+end
+function _chol_trisolve!(C::Cholesky, ::Val{:U}, B)
+    return C.uplo == 'U' ? _trisolve!(UpperTriangular(C.factors), B) :
+        _trisolve!(UpperTriangular(C.factors'), B)
+end
+function _chol_trimul_sub!(dB, C::Cholesky, ::Val{:L}, B, tmp)
+    return C.uplo == 'L' ? _trimul_sub!(dB, LowerTriangular(C.factors), B, tmp) :
+        _trimul_sub!(dB, LowerTriangular(C.factors'), B, tmp)
+end
+function _chol_trimul_sub!(dB, C::Cholesky, ::Val{:U}, B, tmp)
+    return C.uplo == 'U' ? _trimul_sub!(dB, UpperTriangular(C.factors), B, tmp) :
+        _trimul_sub!(dB, UpperTriangular(C.factors'), B, tmp)
 end
 
 # y = inv(A) B
@@ -248,29 +346,29 @@ function EnzymeRules.forward(
         N = EnzymeRules.width(config)
         retval = B.val
 
-        L = fact.val.L
-        U = fact.val.U
+        # Scratch for the products with the factors' shadows, shared by all lanes
+        tmp = fact isa Const ? nothing : similar(B.val)
 
-        ldiv!(L, B.val)
+        _chol_trisolve!(fact.val, Val(:L), B.val)
         ntuple(Val(N)) do b
             Base.@_inline_meta
             dB = N == 1 ? B.dval : B.dval[b]
             if !(fact isa Const)
-                dL = N == 1 ? fact.dval.L : fact.dval[b].L
-                mul!(dB, dL, B.val, -1, 1)
+                dfact = N == 1 ? fact.dval : fact.dval[b]
+                _chol_trimul_sub!(dB, dfact, Val(:L), B.val, tmp)
             end
-            ldiv!(L, dB)
+            _chol_trisolve!(fact.val, Val(:L), dB)
         end
 
-        ldiv!(U, B.val)
+        _chol_trisolve!(fact.val, Val(:U), B.val)
         dretvals = ntuple(Val(N)) do b
             Base.@_inline_meta
             dB = N == 1 ? B.dval : B.dval[b]
             if !(fact isa Const)
-                dU = N == 1 ? fact.dval.U : fact.dval[b].U
-                mul!(dB, dU, B.val, -1, 1)
+                dfact = N == 1 ? fact.dval : fact.dval[b]
+                _chol_trimul_sub!(dB, dfact, Val(:U), B.val, tmp)
             end
-            ldiv!(U, dB)
+            _chol_trisolve!(fact.val, Val(:U), dB)
             return dB
         end
 
@@ -300,6 +398,149 @@ _zero_unused_elements!(X, ::UpperTriangular) = triu!(X)
 _zero_unused_elements!(X, ::LowerTriangular) = tril!(X)
 _zero_unused_elements!(X, ::UnitUpperTriangular) = triu!(X, 1)
 _zero_unused_elements!(X, ::UnitLowerTriangular) = tril!(X, -1)
+
+# LAPACK.trtrs!(uplo, trans, diag, A, B) overwrites B with X = op(A) \ B, where op is chosen
+# by trans and only the uplo triangle of A is read, its diagonal taken as ones when diag is
+# 'U'. It is what `\` and `ldiv!` call for a strided triangular BLAS matrix. Enzyme's BLAS
+# rules differentiate the LAPACK call in reverse mode only, so forward mode had no derivative
+# for it, and neither had forward over reverse, which differentiates the trtrs call that the
+# reverse pass solves with. These rules handle both in Julia and solve with trtrs! itself, so
+# that differentiating a rule again (forward over reverse, forward over forward) reaches these
+# rules rather than the LAPACK call.
+
+# The shadow of A in batch lane b, or nothing if A is inactive. A shadow that is the primal
+# itself holds no derivative: Enzyme passes one for data that is inactive at run time.
+_trtrs_shadow(::Const, b, N) = nothing
+function _trtrs_shadow(A::Annotation, b, N)
+    dA = N == 1 ? A.dval : A.dval[b]
+    return dA === A.val ? nothing : dA
+end
+
+# The part of dA that trtrs! reads.
+function _trtrs_used_part(uplo::AbstractChar, diag::AbstractChar, dA::AbstractMatrix)
+    M = copyto!(similar(dA, size(dA)), dA)
+    k = diag == 'U' ? 1 : 0
+    return uplo == 'L' ? tril!(M, -k) : triu!(M, k)
+end
+
+# dB -= op(M) * X
+function _trtrs_sub_op_mul!(dB, trans::AbstractChar, M, X)
+    α, β = -one(eltype(dB)), one(eltype(dB))
+    if trans == 'N'
+        mul!(dB, M, X, α, β)
+    elseif trans == 'T'
+        mul!(dB, transpose(M), X, α, β)
+    else
+        mul!(dB, adjoint(M), X, α, β)
+    end
+    return dB
+end
+
+# dA[i, j] -= G[i, j] over the part of dA that trtrs! reads.
+function _trtrs_sub_used_part!(dA, uplo::AbstractChar, diag::AbstractChar, G)
+    n = size(dA, 1)
+    k = diag == 'U' ? 1 : 0
+    for j in 1:n
+        rows = uplo == 'L' ? ((j + k):n) : (1:(j - k))
+        for i in rows
+            @inbounds dA[i, j] -= G[i, j]
+        end
+    end
+    return dA
+end
+
+# Tangent of X = op(A) \ B, into dB: dX = op(A) \ (dB - op(dA) X).
+function _trtrs_tangent!(uplo, trans, diag, A, dA, X, dB)
+    if dA !== nothing
+        _trtrs_sub_op_mul!(dB, trans, _trtrs_used_part(uplo, diag, dA), X)
+    end
+    LinearAlgebra.LAPACK.trtrs!(uplo, trans, diag, A, dB)
+    return dB
+end
+
+# Adjoint of X = op(A) \ B for real A, given dB = the adjoint of X. The adjoint of B is
+# Z = op(A)ᵀ \ dB, solved in place in dB, and dA decreases by Z Xᵀ (trans 'N') or X Zᵀ.
+function _trtrs_adjoint!(uplo, trans, diag, A, dA, X, dB)
+    LinearAlgebra.LAPACK.trtrs!(uplo, trans == 'N' ? 'T' : 'N', diag, A, dB)
+    if dA !== nothing
+        G = trans == 'N' ? dB * transpose(X) : X * transpose(dB)
+        _trtrs_sub_used_part!(dA, uplo, diag, G)
+    end
+    return dB
+end
+
+function EnzymeRules.forward(
+        config::EnzymeRules.FwdConfig,
+        func::Const{typeof(LinearAlgebra.LAPACK.trtrs!)},
+        RT::Type{<:Union{Const, Duplicated, BatchDuplicated}},
+        uplo::Const{<:AbstractChar},
+        trans::Const{<:AbstractChar},
+        diag::Const{<:AbstractChar},
+        A::Annotation{<:AbstractMatrix{T}},
+        B::Annotation{<:AbstractVecOrMat{T}},
+    ) where {T <: LinearAlgebra.BlasFloat}
+    N = EnzymeRules.width(config)
+    X = func.val(uplo.val, trans.val, diag.val, A.val, B.val)
+    for b in 1:N
+        dB = _trtrs_shadow(B, b, N)
+        if dB !== nothing
+            _trtrs_tangent!(uplo.val, trans.val, diag.val, A.val, _trtrs_shadow(A, b, N), X, dB)
+        end
+    end
+    if EnzymeRules.needs_primal(config) && EnzymeRules.needs_shadow(config)
+        return N == 1 ? Duplicated(X, B.dval) : BatchDuplicated(X, B.dval)
+    elseif EnzymeRules.needs_shadow(config)
+        return B.dval
+    elseif EnzymeRules.needs_primal(config)
+        return X
+    else
+        return nothing
+    end
+end
+
+# Reverse mode is for real matrices only: complex trtrs keeps its previous handling.
+function EnzymeRules.augmented_primal(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(LinearAlgebra.LAPACK.trtrs!)},
+        ::Type{RT},
+        uplo::Const{<:AbstractChar},
+        trans::Const{<:AbstractChar},
+        diag::Const{<:AbstractChar},
+        A::Annotation{<:AbstractMatrix{T}},
+        B::Annotation{<:AbstractVecOrMat{T}},
+    ) where {RT, T <: LinearAlgebra.BlasReal}
+    X = func.val(uplo.val, trans.val, diag.val, A.val, B.val)
+    # The adjoint solves with A, and the adjoint of A also needs X.
+    cache_A = !(B isa Const) && EnzymeRules.overwritten(config)[5] ? copy(A.val) : nothing
+    cache_X = !(B isa Const) && !(A isa Const) && EnzymeRules.overwritten(config)[6] ? copy(X) : nothing
+    primal = EnzymeRules.needs_primal(config) ? X : nothing
+    shadow = EnzymeRules.needs_shadow(config) ? B.dval : nothing
+    return EnzymeRules.AugmentedReturn(primal, shadow, (cache_A, cache_X))
+end
+
+function EnzymeRules.reverse(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(LinearAlgebra.LAPACK.trtrs!)},
+        ::Type{RT},
+        cache,
+        uplo::Const{<:AbstractChar},
+        trans::Const{<:AbstractChar},
+        diag::Const{<:AbstractChar},
+        A::Annotation{<:AbstractMatrix{T}},
+        B::Annotation{<:AbstractVecOrMat{T}},
+    ) where {RT, T <: LinearAlgebra.BlasReal}
+    cache_A, cache_X = cache
+    Aval = cache_A === nothing ? A.val : cache_A
+    X = cache_X === nothing ? B.val : cache_X
+    N = EnzymeRules.width(config)
+    for b in 1:N
+        dB = _trtrs_shadow(B, b, N)
+        if dB !== nothing
+            _trtrs_adjoint!(uplo.val, trans.val, diag.val, Aval, _trtrs_shadow(A, b, N), X, dB)
+        end
+    end
+    return (nothing, nothing, nothing, nothing, nothing)
+end
 
 function EnzymeRules.augmented_primal(
         config::EnzymeRules.RevConfig,

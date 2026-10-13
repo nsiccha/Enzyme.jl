@@ -30,7 +30,17 @@ SafeAtomicToRegularStorePass() = NewPMFunctionPass("safe_atomic_to_regular_store
 Addr13NoAliasPass() = NewPMModulePass("addr13_noalias", addr13NoAlias)
 RemoveAlwaysInlineRootsPass() = NewPMModulePass("remove_alwaysinline_roots", remove_alwaysinline_roots!)
 
-function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti = nothing)
+# `mark_loads_dereferenceable!` for the compilation `enzyme_ctx`.
+struct MarkLoadsDereferenceable
+    enzyme_ctx::Union{EnzymeContext, Nothing}
+end
+(pass::MarkLoadsDereferenceable)(fn::LLVM.Function) = mark_loads_dereferenceable!(fn, pass.enzyme_ctx)
+
+MarkLoadsDereferenceablePass(enzyme_ctx::Union{EnzymeContext, Nothing}) =
+    NewPMFunctionPass("enzyme_mark_loads_dereferenceable", MarkLoadsDereferenceable(enzyme_ctx))
+
+# `enzyme_ctx` is the compilation `mod` belongs to, `nothing` outside of one.
+function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, enzyme_ctx::Union{EnzymeContext, Nothing}, tti = nothing)
     @dispose pb = NewPMPassBuilder() begin
         if tti !== nothing
             LLVM.target_transform_info!(pb, tti)
@@ -89,12 +99,19 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti
     end
 
     function middle_optimize!(second_stage = false)
+        # Infer which functions only write on paths that throw before the loop
+        # passes below run: with EnzymeAD/Enzyme#3264, Enzyme also states this as
+        # LLVM `memory` attributes, which lets LICM hoist loads (e.g. of an array's
+        # `Memory` pointer) past calls to such functions instead of Enzyme having
+        # to cache them per loop iteration.
+        API.EnzymeDetectReadonlyOrThrow(mod)
         return @dispose pb = NewPMPassBuilder() begin
             if tti !== nothing
                 LLVM.target_transform_info!(pb, tti)
             end
             registerEnzymeAndPassPipeline!(pb)
             register!(pb, RestoreAllocaType())
+            register!(pb, MarkLoadsDereferenceablePass(enzyme_ctx))
             add!(pb, NewPMAAManager()) do aam
                 add!(aam, ScopedNoAliasAA())
                 add!(aam, TypeBasedAA())
@@ -119,6 +136,10 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti
                     add!(fpm, AllocOptPass())
                     add!(fpm, RestoreAllocaType())
 
+                    # Loaded pointers to heap objects of a known type are `dereferenceable`
+                    # (see `mark_load_dereferenceable!`), so that LICM can hoist loads such as
+                    # an array's `Memory` pointer out of loops.
+                    add!(fpm, MarkLoadsDereferenceablePass(enzyme_ctx))
                     add!(fpm, NewPMLoopPassManager(use_memory_ssa = true)) do lpm
                         add!(lpm, LoopIdiomRecognizePass())
                         add!(lpm, LoopRotatePass())
@@ -135,7 +156,11 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti
                         add!(lpm, LoopDeletionPass())
                     end
                     # todo peeling=false?
-                    add!(fpm, LoopUnrollPass(opt_level = 2, partial = false)) # what opt level?
+                    # Only fully unroll before AD. Runtime unrolling a loop with an
+                    # unknown trip count gives it a strided body and a remainder loop,
+                    # which the reverse pass inherits and the vectorizer after AD turns
+                    # into gathers and scatters.
+                    add!(fpm, LoopUnrollPass(opt_level = 2, partial = false, runtime = false)) # what opt level?
                     add!(fpm, AllocOptPass())
                     add!(fpm, RestoreAllocaType())
                     add!(fpm, SROAPass())
@@ -225,6 +250,14 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti
     return run!(GCInvariantVerifierPass(strong = false), mod)
 end
 
+# Julia's `aggressiveSimplifyCFGOptions`
+const aggressiveSimplifyCFGOptions = (
+    forward_switch_cond = true,
+    switch_range_to_icmp = true,
+    switch_to_lookup = true,
+    hoist_common_insts = true,
+)
+
 function addOptimizationPasses!(mpm::LLVM.NewPMPassManager)
     add!(mpm, NewPMFunctionPassManager()) do fpm
         add!(fpm, ReinsertGCMarkerPass())
@@ -283,11 +316,17 @@ function addOptimizationPasses!(mpm::LLVM.NewPMPassManager)
         end
         add!(fpm, InstCombinePass())
         add!(fpm, JLInstSimplifyPass())
+        add!(fpm, IRCEPass())
         add!(fpm, NewPMLoopPassManager()) do lpm
+            add!(lpm, LoopInstSimplifyPass())
             add!(lpm, IndVarSimplifyPass())
             add!(lpm, LoopDeletionPass())
+            # As in Julia, only unroll loops whose trip count is known and small
+            # here, so that no loop remains. Partial and runtime unrolling happen
+            # after vectorization, as unrolling first leaves the vectorizer a
+            # strided loop that it can only vectorize with gathers and scatters.
+            add!(lpm, LoopFullUnrollPass())
         end
-        add!(fpm, LoopUnrollPass(opt_level = 2))
 
         # Run our own SROA on heap objects before LLVM's
         add!(fpm, AllocOptPass())
@@ -325,10 +364,19 @@ function addOptimizationPasses!(mpm::LLVM.NewPMPassManager)
         end
         add!(fpm, InstCombinePass())
         add!(fpm, JLInstSimplifyPass())
+
+        # Vectorization, following Julia's `buildVectorPipeline`.
+        add!(fpm, InjectTLIMappings())
         add!(fpm, LoopVectorizePass())
-        add!(fpm, SimplifyCFGPass())
+        add!(fpm, LoopLoadEliminationPass())
+        add!(fpm, InstCombinePass())
+        add!(fpm, JLInstSimplifyPass())
+        add!(fpm, SimplifyCFGPass(; aggressiveSimplifyCFGOptions...))
         add!(fpm, SLPVectorizerPass())
+        add!(fpm, VectorCombinePass())
         add!(fpm, ADCEPass())
+        # Unroll vectorized loops, as well as loops that failed to vectorize.
+        add!(fpm, LoopUnrollPass(opt_level = 2))
     end
 end
 
@@ -399,13 +447,6 @@ function addJuliaLegalizationPasses!(mpm::LLVM.NewPMPassManager, lower_intrinsic
         add!(mpm, NewPMFunctionPassManager()) do fpm
             add!(fpm, InstCombinePass())
             add!(fpm, JLInstSimplifyPass())
-            aggressiveSimplifyCFGOptions =
-                (
-                forward_switch_cond = true,
-                switch_range_to_icmp = true,
-                switch_to_lookup = true,
-                hoist_common_insts = true,
-            )
             add!(fpm, SimplifyCFGPass(; aggressiveSimplifyCFGOptions...))
         end
     else
@@ -483,6 +524,83 @@ function fixup_callconv!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
     return
 end
 
+# Since LLVM 18 the loop vectorizer hoists the runtime alias checks of an inner
+# loop into its outer loop (`-hoist-runtime-checks`). The hoisted checks assume
+# that the outer loop walks memory forwards: for one that walks it backwards
+# they add a stride check that always fails, so the vectorized inner loop never
+# runs. A reverse pass walks the loop nest of its primal backwards, so the
+# post-AD pipeline does not hoist the checks, as before LLVM 18. The option is a
+# global of Julia's LLVM, so it is only turned off while Enzyme's passes run.
+const HoistRuntimeChecksLock = ReentrantLock()
+const HoistRuntimeChecksUsers = Ref(0)
+const HoistRuntimeChecksDefault = Ref(false)
+const HoistRuntimeChecksWarned = Ref(false)
+
+# The address of `llvm::VectorizerParams::HoistRuntimeChecks`, or `C_NULL` if
+# Julia's LLVM predates the option (LLVM 16 and earlier) or does not export it.
+function hoist_runtime_checks_ptr()
+    handle = Libdl.dlopen(String(Base.libllvm_path()))
+    ptr = Libdl.dlsym(handle, :_ZN4llvm16VectorizerParams18HoistRuntimeChecksE; throw_error = false)
+    return ptr === nothing ? Ptr{Bool}(C_NULL) : Ptr{Bool}(ptr)
+end
+
+# LLVM 18 and later have the option, so a failed lookup there means this build
+# of Julia's LLVM does not export it. Say so once rather than silently keeping
+# the hoisting on. Nothing is said while precompiling: the flag would be
+# serialized as spent and every later session would stay silent.
+function warn_missing_runtime_check_hoisting!()
+    if LLVM.version().major < 18 || generating_output()
+        return
+    end
+    lock(HoistRuntimeChecksLock)
+    warned = true
+    try
+        warned = HoistRuntimeChecksWarned[]
+        HoistRuntimeChecksWarned[] = true
+    finally
+        unlock(HoistRuntimeChecksLock)
+    end
+    if !warned
+        @safe_warn "Enzyme could not find llvm::VectorizerParams::HoistRuntimeChecks in Julia's LLVM $(LLVM.version()); runtime-check hoisting stays on, so reverse-mode derivatives of loop nests may always take the scalar fallback of their vectorized inner loops"
+    end
+    return
+end
+
+function disable_runtime_check_hoisting!()
+    ptr = hoist_runtime_checks_ptr()
+    if ptr == C_NULL
+        warn_missing_runtime_check_hoisting!()
+        return ptr
+    end
+    lock(HoistRuntimeChecksLock)
+    try
+        if HoistRuntimeChecksUsers[] == 0
+            HoistRuntimeChecksDefault[] = unsafe_load(ptr)
+            unsafe_store!(ptr, false)
+        end
+        HoistRuntimeChecksUsers[] += 1
+    finally
+        unlock(HoistRuntimeChecksLock)
+    end
+    return ptr
+end
+
+function restore_runtime_check_hoisting!(ptr::Ptr{Bool})
+    if ptr == C_NULL
+        return
+    end
+    lock(HoistRuntimeChecksLock)
+    try
+        HoistRuntimeChecksUsers[] -= 1
+        if HoistRuntimeChecksUsers[] == 0
+            unsafe_store!(ptr, HoistRuntimeChecksDefault[])
+        end
+    finally
+        unlock(HoistRuntimeChecksLock)
+    end
+    return
+end
+
 function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, machine::Bool = true; callconv::Bool = true, tti = nothing)
     define_ntuple_type!(mod)
     if callconv
@@ -531,7 +649,12 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
                 addMachinePasses!(mpm)
             end
         end
-        run!(pb, mod, tm)
+        hoisting = disable_runtime_check_hoisting!()
+        try
+            run!(pb, mod, tm)
+        finally
+            restore_runtime_check_hoisting!(hoisting)
+        end
     end
     for f in functions(mod)
         if isempty(blocks(f))
