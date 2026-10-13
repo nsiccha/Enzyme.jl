@@ -8873,8 +8873,6 @@ mutable struct LazySplitThunks
     end
 end
 
-generating_output() = ccall(:jl_generating_output, Cint, ()) != 0
-
 @inline function lazy_thunk(cell::LazyThunk{T}) where {T}
     compiled = @atomic :acquire cell.compiled
     if compiled === nothing || !lazy_valid(compiled)
