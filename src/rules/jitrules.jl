@@ -531,7 +531,7 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
             else
                 annotation0
             end
-            forward, adjoint = thunk(
+            forward, adjoint = runtime_thunk(
                 Val(0),
                 dupClosure0 ? $dupty : Const{FT},
                 annotationA,
@@ -767,7 +767,7 @@ function body_runtime_generic_rev(
                 annotation0
             end
 
-            _, adjoint = thunk(
+            _, adjoint = runtime_thunk(
                 Val(0),
                 dupClosure0 ? $dupty : Const{FT},
                 annotation,
@@ -1366,7 +1366,7 @@ function augfwd_with_return(
         else
             Const(f)
         end
-        forward, adjoint = thunk(
+        forward, adjoint = runtime_thunk(
             Val(0),
             FA,
             annotation,
@@ -1694,7 +1694,7 @@ end
             else
                 Const(f)
             end
-            forward, adjoint = thunk(
+            forward, adjoint = runtime_thunk(
                 Val(0),
                 FA,
                 annotation,

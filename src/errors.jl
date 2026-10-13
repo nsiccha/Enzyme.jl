@@ -1017,6 +1017,425 @@ parent_scope(@nospecialize(val::LLVM.Value), depth = 0) = parent_scope(LLVM.pare
 parent_scope(val::LLVM.Argument, depth = 0) =
     parent_scope(LLVM.Function(LLVM.API.LLVMGetParamParent(val)), depth + 1)
 
+# Runtime calls returning a new object that owns newly allocated element storage.
+const FRESH_STORAGE_ALLOCATORS = (
+    "jl_alloc_array_1d", "ijl_alloc_array_1d",
+    "jl_alloc_array_2d", "ijl_alloc_array_2d",
+    "jl_alloc_array_3d", "ijl_alloc_array_3d",
+    "jl_new_array", "ijl_new_array",
+    "jl_alloc_genericmemory", "ijl_alloc_genericmemory",
+    "jl_alloc_genericmemory_unchecked", "ijl_alloc_genericmemory_unchecked",
+)
+
+const GC_OBJECT_ALLOCATORS = ("julia.gc_alloc_obj", "jl_gc_alloc_typed", "ijl_gc_alloc_typed")
+
+function called_function_name(@nospecialize(inst::LLVM.Value))::String
+    isa(inst, LLVM.CallInst) || return ""
+    fn = LLVM.called_operand(inst)
+    return isa(fn, LLVM.Function) ? LLVM.name(fn) : ""
+end
+
+function is_array_type(@nospecialize(TT))::Bool
+    TT isa DataType || return false
+    @static if VERSION < v"1.11-"
+        return TT <: Array
+    else
+        return TT <: Array || TT <: Memory
+    end
+end
+
+@static if VERSION < v"1.11-"
+else
+    # Whether `mem` is memory allocated by the function being differentiated: a
+    # fresh genericmemory allocation, the shared zero-length instance (which has no
+    # elements), or a phi/select of such values. Memory reached through an
+    # argument, a global or a loaded field is excluded.
+    function is_fresh_memory(@nospecialize(mem::LLVM.Value), seen::Set{LLVM.Value})::Bool
+        mem, off = get_base_and_offset(mem; offsetAllowed = false)
+        off == 0 || return false
+        mem in seen && return true
+        called_function_name(mem) in FRESH_STORAGE_ALLOCATORS && return true
+        if isa(mem, LLVM.PHIInst)
+            push!(seen, mem)
+            for (v, _) in LLVM.incoming(mem)
+                is_fresh_memory(v, seen) || return false
+            end
+            return true
+        end
+        if isa(mem, LLVM.SelectInst)
+            push!(seen, mem)
+            return is_fresh_memory(operands(mem)[2], seen) &&
+                is_fresh_memory(operands(mem)[3], seen)
+        end
+        legal, obj = absint(mem)
+        return legal && is_memory_instance(unbind(obj))
+    end
+
+    # Whether `call` is a constant-length memset/memcpy/memmove into `ptr`, a pointer
+    # into the Array object `alloc`, that does not reach its `ref.mem` field at
+    # offset `memoff`; for example the copy of a matrix's size tuple.
+    function writes_beside_memory_field(
+            call::LLVM.CallInst,
+            ptr::LLVM.Value,
+            alloc::LLVM.CallInst,
+            memoff::Int,
+        )::Bool
+        nm = called_function_name(call)
+        (
+            startswith(nm, "llvm.memset.") || startswith(nm, "llvm.memcpy.") ||
+                startswith(nm, "llvm.memmove.")
+        ) || return false
+        ops = operands(call)
+        ops[1] == ptr || return false
+        len = ops[3]
+        isa(len, LLVM.ConstantInt) || return false
+        base, off = get_base_and_offset(ptr)
+        base == alloc || return false
+        return off >= memoff + sizeof(Ptr{Cvoid}) || off + convert(Int, len) <= memoff
+    end
+
+    # Whether the Array object allocated by `alloc` wraps memory allocated by the
+    # function being differentiated: every store to its `ref.mem` field writes such
+    # memory, and the object reaches no call that could store other memory there.
+    function array_wrapper_owns_fresh_memory(alloc::LLVM.CallInst)::Bool
+        memoff = Int(fieldoffset(Vector{Float64}, 1) + fieldoffset(MemoryRef{Float64}, 2))
+        found = false
+        todo = LLVM.Value[alloc]
+        seen = Set{LLVM.Value}()
+        while !isempty(todo)
+            cur = pop!(todo)
+            cur in seen && continue
+            push!(seen, cur)
+            for u in LLVM.uses(cur)
+                user = LLVM.user(u)
+                if isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst) ||
+                        isa(user, LLVM.GetElementPtrInst)
+                    push!(todo, user)
+                elseif isa(user, LLVM.StoreInst)
+                    operands(user)[1] == cur && return false
+                    base, off = get_base_and_offset(operands(user)[2])
+                    base == alloc || return false
+                    if off == memoff
+                        is_fresh_memory(operands(user)[1], Set{LLVM.Value}()) || return false
+                        found = true
+                    end
+                elseif isa(user, LLVM.CallInst) && writes_beside_memory_field(user, cur, alloc, memoff)
+                    continue
+                elseif !(isa(user, LLVM.LoadInst) || isa(user, LLVM.PHIInst) || isa(user, LLVM.SelectInst))
+                    return false
+                end
+            end
+        end
+        return found
+    end
+end
+
+# When `cur`, an inactive tracked pointer to a Julia value of type `TT`, is (a cast
+# of) a newly allocated array, return that allocation call; otherwise `nothing`.
+# If its elements hold no references, a zero-filled array of the same shape is then
+# a valid shadow for `cur`: nothing else can reach that shadow, and activity
+# analysis found no active data stored into the primal. Elements that are
+# references may alias other objects, so only an empty such array has that shadow.
+function fresh_array_allocation(
+        @nospecialize(cur::LLVM.Value),
+        @nospecialize(TT),
+    )::Union{Nothing, LLVM.CallInst}
+    is_array_type(TT) || return nothing
+    ty = value_type(cur)
+    (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return nothing
+    base, off = get_base_and_offset(cur; offsetAllowed = false)
+    (off == 0 && isa(base, LLVM.CallInst)) || return nothing
+    nm = called_function_name(base)
+    nm in FRESH_STORAGE_ALLOCATORS && return base
+    @static if VERSION >= v"1.11-"
+        if nm in GC_OBJECT_ALLOCATORS && TT <: Array && array_wrapper_owns_fresh_memory(base)
+            return base
+        end
+    end
+    return nothing
+end
+
+# Whether `v` casts a tracked pointer to another tracked pointer type, so that it
+# points to the same Julia object.
+is_object_cast(@nospecialize(v::LLVM.Value))::Bool = false
+function is_object_cast(v::Union{LLVM.BitCastInst, LLVM.AddrSpaceCastInst})::Bool
+    ty = value_type(operands(v)[1])
+    return isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked
+end
+
+# Whether `cur`, an inactive tracked pointer, is constant argument data of the
+# function being differentiated: a constant argument itself (looking through casts
+# and field extractions), or a value loaded from memory reached from one, through
+# casts, GEPs, field extractions, `julia.gc_loaded` and further loads (a closure's
+# captured data is such memory). Such data has no shadow: activity analysis treats
+# the argument and every value loaded from it as constant, and a derivative that
+# flows into it is discarded. When `cur` is stored into active memory, inserted into
+# an active aggregate or returned as an active value, a zero-filled copy of the
+# object it points to is therefore a valid shadow: a derivative accumulated into
+# that copy is discarded too.
+function constant_argument_data(gutils::GradientUtils, @nospecialize(cur::LLVM.Value))::Bool
+    ty = value_type(cur)
+    (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return false
+    while is_object_cast(cur) || isa(cur, LLVM.ExtractValueInst)
+        cur = operands(cur)[1]
+    end
+    isa(cur, LLVM.Argument) && return is_constant_value(gutils, cur)
+    isa(cur, LLVM.LoadInst) || return false
+    ptr = operands(cur)[1]
+    while !isa(ptr, LLVM.Argument)
+        if isa(ptr, LLVM.LoadInst) || isa(ptr, LLVM.GetElementPtrInst) ||
+                isa(ptr, LLVM.BitCastInst) || isa(ptr, LLVM.AddrSpaceCastInst) ||
+                isa(ptr, LLVM.ExtractValueInst)
+            ptr = operands(ptr)[1]
+        elseif called_function_name(ptr) == "julia.gc_loaded"
+            ptr = operands(ptr)[2]
+        else
+            return false
+        end
+    end
+    return is_constant_value(gutils, ptr)
+end
+
+# The shadow of an empty fresh array whose elements may hold references, called at
+# run time from generated code: a non-empty one raises `err`, the runtime activity
+# error that a mixed activity on it raised before.
+function empty_array_shadow(prim, err::EnzymeRuntimeActivityError)
+    isempty(prim) || throw(err)
+    return make_zero(prim)
+end
+
+# Emit the run-time call `args` (`make_zero` or `empty_array_shadow` applied to a
+# fresh array) returning a zero-filled array of the same shape, cast to `ty`.
+function emit_zero_shadow!(
+        B::LLVM.IRBuilder,
+        args::Vector{LLVM.Value},
+        @nospecialize(ty::LLVM.LLVMType),
+        created::Vector{LLVM.Instruction},
+    )::LLVM.Value
+    res = emit_apply_generic!(B, args)
+    push!(created, res)
+    if value_type(res) != ty
+        res = bitcast!(B, res, ty)
+        if res isa LLVM.Instruction
+            push!(created, res)
+        end
+    end
+    return res
+end
+
+# The shadow emitted by `emit_zero_shadow!` for each of the `width` batch lanes, or
+# `nothing` if it cannot be computed outside the initialization of a fresh object
+# (`hoist_before_initialization!`).
+function emit_zero_shadows!(
+        B::LLVM.IRBuilder,
+        args::Vector{LLVM.Value},
+        @nospecialize(ty::LLVM.LLVMType),
+        width::Integer,
+        created::Vector{LLVM.Instruction},
+    )::Union{Nothing, LLVM.Value}
+    start = length(created) + 1
+    sres = if width == 1
+        emit_zero_shadow!(B, args, ty, created)
+    else
+        agg = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, ty)))
+        for idx in 1:width
+            res = emit_zero_shadow!(B, args, ty, created)
+            agg = insert_value!(B, agg, res, idx - 1)
+            if agg isa LLVM.Instruction
+                push!(created, agg)
+            end
+        end
+        agg
+    end
+    emitted = created[start:end]
+    hoist_before_initialization!(B, emitted) && return sres
+    for inst in reverse(emitted)
+        LLVM.API.LLVMInstructionEraseFromParent(inst)
+    end
+    resize!(created, start - 1)
+    return nothing
+end
+
+# Calls that neither allocate nor run the garbage collector, besides LLVM intrinsics.
+const NONCOLLECTING_JULIA_CALLS = (
+    "julia.gc_loaded", "julia.pointer_from_objref", "julia.write_barrier",
+    "julia.typeof", "julia.get_pgcstack",
+)
+
+# Whether the instruction `inst` may run the garbage collector.
+may_collect(@nospecialize(inst::LLVM.Instruction))::Bool = false
+function may_collect(inst::LLVM.CallInst)::Bool
+    nm = called_function_name(inst)
+    return !(startswith(nm, "llvm.") || nm in NONCOLLECTING_JULIA_CALLS)
+end
+
+# The pointer that `inst` writes through: a store, or a memory intrinsic.
+written_pointer(@nospecialize(inst::LLVM.Instruction)) = nothing
+written_pointer(inst::LLVM.StoreInst) = operands(inst)[2]
+function written_pointer(inst::LLVM.CallInst)
+    nm = called_function_name(inst)
+    (
+        startswith(nm, "llvm.memcpy.") || startswith(nm, "llvm.memmove.") ||
+            startswith(nm, "llvm.memset.")
+    ) || return nothing
+    return operands(inst)[1]
+end
+
+# A run-time call may run the garbage collector, so it must not execute between a GC
+# object allocation and the stores that initialize the object: Julia emits no
+# safepoint there, and the collector would scan the uninitialized fields. A shadow
+# needed by such a store (for example the field of a struct boxed for a dynamic
+# call) is emitted inside that window. Move the instructions `emitted` before the
+# earliest allocation that precedes them in their block, with no call that may
+# collect in between, and that is still written to after them. Return `false`
+# (moving nothing) if an operand of `emitted` is computed after that allocation.
+function hoist_before_initialization!(B::LLVM.IRBuilder, emitted::Vector{LLVM.Instruction})::Bool
+    isempty(emitted) && return true
+    written = Set{LLVM.Value}()
+    ref = LLVM.API.LLVMGetNextInstruction(last(emitted))
+    while ref != C_NULL
+        inst = LLVM.Instruction(ref)
+        ptr = written_pointer(inst)
+        if ptr !== nothing
+            push!(written, first(get_base_and_offset(ptr)))
+        end
+        ref = LLVM.API.LLVMGetNextInstruction(inst)
+    end
+    window = LLVM.Instruction[]
+    earliest = 0
+    ref = LLVM.API.LLVMGetPreviousInstruction(first(emitted))
+    while ref != C_NULL
+        inst = LLVM.Instruction(ref)
+        if called_function_name(inst) in GC_OBJECT_ALLOCATORS
+            inst in written && (earliest = length(window) + 1)
+        elseif may_collect(inst)
+            break
+        end
+        push!(window, inst)
+        ref = LLVM.API.LLVMGetPreviousInstruction(inst)
+    end
+    earliest == 0 && return true
+    later = Set{LLVM.Value}(view(window, 1:earliest))
+    for inst in emitted, op in operands(inst)
+        op in later && return false
+    end
+    for inst in emitted
+        API.moveBefore(inst, window[earliest], B)
+    end
+    return true
+end
+
+# How a mixed activity error describes the constant value `obj` of type `TT`.
+function mixed_activity_value_description(
+        legal::Bool,
+        @nospecialize(obj),
+        @nospecialize(obj0),
+        @nospecialize(TT),
+    )::String
+    legal || return "Unknown object of type" * " " * string(TT)
+    sv = string(obj) * " of type" * " " * string(TT)
+    if obj0 isa Core.Binding
+        sv = sv * " binded at " * string(obj0)
+    end
+    return sv
+end
+
+# The message of the runtime activity error for the mixed activity at `val`, where
+# `badval` describes the constant value `illegalVal`.
+function mixed_activity_message(
+        msg::String,
+        badval::Union{Nothing, String},
+        @nospecialize(illegalVal),
+        @nospecialize(val),
+        gutils::GradientUtils,
+        @nospecialize(bt),
+    )::String
+    io = IOBuffer()
+    print(io, msg)
+    println(io)
+    if badval !== nothing
+        println(io, " Julia value causing error:  " * badval)
+    else
+        ttval = val
+        if isa(ttval, LLVM.StoreInst)
+            ttval = operands(ttval)[1]
+        end
+        tt = TypeTree(API.EnzymeGradientUtilsAllocAndGetTypeTree(gutils, ttval))
+        st = API.EnzymeTypeTreeToString(tt)
+        print(io, "Type tree: ")
+        println(io, Base.unsafe_string(st))
+        API.EnzymeStringFree(st)
+    end
+    if illegalVal !== nothing
+        println(io, " LLVM view of erring value:   " * string(illegalVal))
+    end
+    if bt !== nothing
+        Base.show_backtrace(io, bt)
+    end
+    return String(take!(io))
+end
+
+# The method instance (or `nothing`) and world of the function containing `val`.
+function mixed_activity_method(@nospecialize(val))
+    f = if isa(val, LLVM.Instruction)
+        LLVM.parent(LLVM.parent(val))::LLVM.Function
+    elseif isa(val, LLVM.Argument)
+        parent_scope(val)::LLVM.Function
+    else
+        return nothing, nothing
+    end
+    mi, _ = enzyme_custom_extract_mi(f, false) #=error=#
+    return mi, enzyme_world()
+end
+
+# Whether the mixed activity site `val` moves its constant value into active data:
+# a store into active memory, an insertion into an active aggregate, or an active
+# return, rather than a phi or select merging it with active values. A moved
+# constant argument datum has a zero-filled shadow (`constant_argument_data`); a
+# merged one keeps the runtime activity error (test/constant_array_branch.jl).
+moves_into_active(@nospecialize(val::LLVM.Value))::Bool = true
+moves_into_active(::Union{LLVM.PHIInst, LLVM.SelectInst})::Bool = false
+
+# The condition under which the runtime activity error for the mixed activity at
+# `val` must be raised, emitted with `B`; `nothing` if always. A constant incoming
+# value of a phi only matters when control takes its edge: `B` is positioned
+# before the terminator of the incoming block, which may branch elsewhere too.
+mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(val)) = nothing
+mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, val::LLVM.PHIInst) =
+    edge_condition(B, LLVM.terminator(position(B)), new_from_original(gutils, LLVM.parent(val)))
+
+# The condition under which the terminator `term` branches to `dest`, emitted with
+# `B`; `nothing` if always.
+edge_condition(B::LLVM.IRBuilder, @nospecialize(term), @nospecialize(dest::LLVM.Value)) = nothing
+
+function edge_condition(B::LLVM.IRBuilder, term::LLVM.BrInst, @nospecialize(dest::LLVM.Value))
+    LLVM.isconditional(term) || return nothing
+    iftrue, iffalse = LLVM.successors(term)
+    iftrue == iffalse && return nothing
+    cond = LLVM.condition(term)
+    return iftrue == dest ? cond : not!(B, cond)
+end
+
+# A switch reaches `dest` through the cases that name it, or through the default
+# when no other case matches.
+function edge_condition(B::LLVM.IRBuilder, term::LLVM.SwitchInst, @nospecialize(dest::LLVM.Value))
+    ops = operands(term)
+    val = ops[1]
+    todefault = ops[2] == dest
+    cond = nothing
+    for i in 3:2:length(ops)
+        (ops[i + 1] == dest) == todefault && continue
+        if todefault
+            c = icmp!(B, LLVM.API.LLVMIntNE, val, ops[i])
+            cond = cond === nothing ? c : and!(B, cond, c)
+        else
+            c = icmp!(B, LLVM.API.LLVMIntEQ, val, ops[i])
+            cond = cond === nothing ? c : or!(B, cond, c)
+        end
+    end
+    return cond
+end
+
 function julia_error(
     cstr::Cstring,
     val::LLVM.API.LLVMValueRef,
@@ -1468,6 +1887,10 @@ else
             end
 end
 
+            # The run-time `make_zero` needs no static type, which the walk's loads
+            # (for instance a field of a struct stored inline in an array) may lack.
+            constant_element = moves_into_active(val) && constant_argument_data(gutils, cur)
+
             legal, TT, byref = abs_typeof(cur, true)
 
             if legal
@@ -1525,19 +1948,59 @@ end
 
                 end
 
-                badval = if legal2
-                    sv = string(obj) * " of type" * " " * string(TT)
-		    if obj0 isa Core.Binding
-			sv = sv *" binded at "*string(obj0)
-		    end
-		    sv
-                else
-                    "Unknown object of type" * " " * string(TT)
+                alloc = fresh_array_allocation(cur, TT)
+                if alloc !== nothing
+                    nalloc = new_from_original(gutils, alloc)
+                    shadowargs = if isbitstype(eltype(TT))
+                        LLVM.Value[unsafe_to_llvm(prevbb, make_zero), nalloc]
+                    else
+                        rttext = mixed_activity_message(
+                            msg,
+                            mixed_activity_value_description(legal2, obj, obj0, TT),
+                            cur,
+                            val,
+                            gutils,
+                            bt,
+                        )
+                        rtmi, rtworld = mixed_activity_method(val)
+                        rterr = if rtmi === nothing
+                            EnzymeRuntimeActivityError(rttext, nothing, nothing)
+                        else
+                            EnzymeRuntimeActivityError(rttext, rtmi, rtworld)
+                        end
+                        LLVM.Value[
+                            unsafe_to_llvm(prevbb, empty_array_shadow),
+                            nalloc,
+                            unsafe_to_llvm(prevbb, rterr),
+                        ]
+                    end
+                    shadowres = emit_zero_shadows!(prevbb, shadowargs, value_type(cur), width, created)
+                    if shadowres !== nothing
+                        seen[cur] = shadowres
+                        return shadowres
+                    end
+                end
+
+                if !constant_element
+                    badval = mixed_activity_value_description(legal2, obj, obj0, TT)
+                    @assert !illegal
+                    illegalVal = cur
+                    illegal = true
+                    return make_batched(ncur, prevbb)
+                end
+            end
+
+            if constant_element
+                shadowargs = LLVM.Value[unsafe_to_llvm(prevbb, make_zero), ncur]
+                shadowres = emit_zero_shadows!(prevbb, shadowargs, value_type(cur), width, created)
+                if shadowres !== nothing
+                    seen[cur] = shadowres
+                    return shadowres
                 end
                 @assert !illegal
                 illegalVal = cur
                 illegal = true
-                return make_batched(ncur, prevbb)
+                return ncur
             end
 
             if isa(cur, LLVM.PointerNull)
@@ -1782,54 +2245,14 @@ end
                 return C_NULL
             end
         end
-        msg2 = sprint() do io
-            print(io, msg)
-            println(io)
-            if badval !== nothing
-                println(io, " Julia value causing error:  " * badval)
-            else
-                ttval = val
-                if isa(ttval, LLVM.StoreInst)
-                    ttval = operands(ttval)[1]
-                end
-                tt = TypeTree(API.EnzymeGradientUtilsAllocAndGetTypeTree(gutils, ttval))
-                st = API.EnzymeTypeTreeToString(tt)
-                print(io, "Type tree: ")
-                println(io, Base.unsafe_string(st))
-                API.EnzymeStringFree(st)
-            end
-            if illegalVal !== nothing
-                println(io, " LLVM view of erring value:   " * string(illegalVal))
-            end
-            if bt !== nothing
-                Base.show_backtrace(io, bt)
-            end
-        end
-        
-	    mi = nothing
-        world = nothing
-
-        if isa(val, LLVM.Instruction)
-            f = LLVM.parent(LLVM.parent(val))::LLVM.Function
-            mi, rt = enzyme_custom_extract_mi(
-                f,
-                false,
-            ) #=error=#
-            world = enzyme_world()
-        elseif isa(val, LLVM.Argument)
-            f = parent_scope(val)::LLVM.Function
-            mi, rt = enzyme_custom_extract_mi(
-                f,
-                false,
-            ) #=error=#
-            world = enzyme_world()
-        end
-        mode = Enzyme.API.DEM_ReverseModeCombined
+        msg2 = mixed_activity_message(msg, badval, illegalVal, val, gutils, bt)
+        mi, world = mixed_activity_method(val)
+        cond = mixed_activity_condition(b, gutils, val)
 
         if mi !== nothing
-            emit_error(b, nothing, (msg2, mi, world), EnzymeRuntimeActivityError{Cstring, Core.MethodInstance, UInt})
+            emit_error(b, nothing, (msg2, mi, world), EnzymeRuntimeActivityError{Cstring, Core.MethodInstance, UInt}, cond)
         else
-            emit_error(b, nothing, msg2, EnzymeRuntimeActivityError{Cstring, Nothing, Nothing})
+            emit_error(b, nothing, msg2, EnzymeRuntimeActivityError{Cstring, Nothing, Nothing}, cond)
         end
         return C_NULL
     elseif errtype == API.ET_GetIndexError
