@@ -644,6 +644,55 @@ end
             end
         end
     end
+
+    # An undef incoming reaches the phi on a path that does not pass the one object, so that
+    # object does not dominate the phi: the parent phi stays, and the module still verifies.
+    @testset "nodecayed_phis! keeps parent phis whose one object does not dominate them" begin
+        @test @filecheck begin
+            @check_label "@kernel_undef"
+            @check "merge:"
+            @check "phi {} addrspace(10)*"
+            @check_same "[ undef, %skip ]"
+            @check "load double addrspace(13)*"
+            @check "ret double"
+            LLVM.Context() do ctx
+                mod = parse(
+                    LLVM.Module, """
+                    source_filename = "start"
+                    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+                    target triple = "x86_64-linux-gnu"
+
+                    define double @kernel_undef({} addrspace(10)* addrspace(11)* nocapture readonly %field, i1 %c, i64 %i) #0 {
+                    top:
+                      br i1 %c, label %have, label %skip
+
+                    have:
+                      %obj = load atomic {} addrspace(10)*, {} addrspace(10)* addrspace(11)* %field unordered, align 8
+                      %hdr = bitcast {} addrspace(10)* %obj to double addrspace(13)* addrspace(10)*
+                      %hdr11 = addrspacecast double addrspace(13)* addrspace(10)* %hdr to double addrspace(13)* addrspace(11)*
+                      %data.have = load double addrspace(13)*, double addrspace(13)* addrspace(11)* %hdr11, align 8
+                      br label %merge
+
+                    skip:
+                      br label %merge
+
+                    merge:
+                      %data = phi double addrspace(13)* [ %data.have, %have ], [ undef, %skip ]
+                      %e = getelementptr inbounds double, double addrspace(13)* %data, i64 %i
+                      %x = load double, double addrspace(13)* %e, align 8
+                      ret double %x
+                    }
+
+                    attributes #0 = { "enzymejl_world"="1" }
+                    """
+                )
+
+                Enzyme.Compiler.nodecayed_phis!(mod)
+                LLVM.verify(mod)
+                string(mod)
+            end
+        end
+    end
 end
 
 
