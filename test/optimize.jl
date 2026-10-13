@@ -271,3 +271,78 @@ end
     RO = Enzyme.Compiler.set_readonly(Enzyme.Compiler.AllEffects)
     @test RO == Enzyme.Compiler.ReadOnlyEffects
 end
+
+@noinline function tanh_work(x, k)
+    w = Vector{Float64}(undef, k)
+    s = 0.0
+    for i in 1:k
+        z = tanh(x[i])
+        s += z * sqrt(1 + s^2)
+        w[i] = s
+    end
+    return w[k] * s
+end
+
+function tanh_work_sum(x)
+    s = 0.0
+    for k in 1:length(x)
+        s += tanh_work(x, k)
+    end
+    return s
+end
+
+function calls_julia_safepoint(f)
+    for bb in Enzyme.Compiler.LLVM.blocks(f), inst in Enzyme.Compiler.LLVM.instructions(bb)
+        inst isa Enzyme.Compiler.LLVM.CallInst || continue
+        callee = Enzyme.Compiler.LLVM.called_operand(inst)
+        if callee isa Enzyme.Compiler.LLVM.Function && Enzyme.Compiler.LLVM.name(callee) == "julia.safepoint"
+            return true
+        end
+    end
+    return false
+end
+
+@testset "Calls of functions with a GC safepoint stay GC safepoints" begin
+    # Enzyme marks math functions such as `tanh` readnone, but their Julia bodies
+    # hold a GC safepoint. GC lowering must not take calls to them as calls that
+    # cannot collect, or a value live across the call (here the shadow of `w`) is
+    # left unrooted and freed by a collection that another thread starts.
+    LLVM = Enzyme.Compiler.LLVM
+    Enzyme.Compiler.JuliaContext() do ctx
+        _, mod = Enzyme.Compiler.reflect(tanh_work_sum, Active, Tuple{Duplicated{Vector{Float64}}}; second_stage = false)
+        with_safepoint = LLVM.Function[]
+        for f in LLVM.functions(mod)
+            isempty(LLVM.blocks(f)) && continue
+            calls_julia_safepoint(f) && push!(with_safepoint, f)
+        end
+        lying = 0
+        for f in with_safepoint
+            if Enzyme.Compiler.has_fn_attr(f, LLVM.StringAttribute("enzyme_math")) &&
+                    Enzyme.Compiler.excludes_safepoint(collect(LLVM.function_attributes(f)))
+                lying += 1
+            end
+        end
+        @test lying > 0
+
+        # Everything up to, but not including, GC lowering.
+        Enzyme.Compiler.post_optimize!(mod, Enzyme.Compiler.JIT.get_tm(), false)
+        with_safepoint = LLVM.Function[]
+        for f in LLVM.functions(mod)
+            isempty(LLVM.blocks(f)) && continue
+            calls_julia_safepoint(f) && push!(with_safepoint, f)
+        end
+        @test !isempty(with_safepoint)
+        for f in with_safepoint
+            @test !Enzyme.Compiler.excludes_safepoint(collect(LLVM.function_attributes(f)))
+            for call in Enzyme.Compiler.calls_of(f)
+                @test !Enzyme.Compiler.excludes_safepoint(Enzyme.Compiler.callsite_function_attributes(call))
+            end
+        end
+    end
+    x = [0.1 * sin(i) for i in 1:6]
+    dx = zero(x)
+    autodiff(Reverse, tanh_work_sum, Active, Duplicated(x, dx))
+    ddx = zero(x)
+    autodiff(Reverse, tanh_work_sum, Active, Duplicated(x, ddx))
+    @test dx == ddx
+end

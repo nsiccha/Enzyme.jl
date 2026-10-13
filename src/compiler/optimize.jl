@@ -506,6 +506,10 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
 
     removeDeadArgs!(mod, tm, #=post_gc_fixup=# true)
 
+    # After `removeDeadArgs!`, whose attributor and `EnzymeDetectReadonlyOrThrow`
+    # infer `readonly` through `julia.safepoint` again, and before GC lowering.
+    restore_safepoint_effects!(mod)
+
     @dispose pb = NewPMPassBuilder() begin
         if tti !== nothing
             LLVM.target_transform_info!(pb, tti)
@@ -543,4 +547,219 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
     # flush(stdout)
     # flush(stderr)
     return
+end
+
+const FUNCTION_ATTRIBUTE_INDEX =
+    reinterpret(LLVM.API.LLVMAttributeIndex, LLVM.API.LLVMAttributeFunctionIndex)
+
+"""
+    callsite_function_attributes(call::LLVM.CallBase)::Vector{LLVM.Attribute}
+
+The function attributes written on `call` itself, not those of its callee.
+"""
+function callsite_function_attributes(call::LLVM.CallBase)::Vector{LLVM.Attribute}
+    count = LLVM.API.LLVMGetCallSiteAttributeCount(call, FUNCTION_ATTRIBUTE_INDEX)
+    refs = Vector{LLVM.API.LLVMAttributeRef}(undef, count)
+    if count > 0
+        LLVM.API.LLVMGetCallSiteAttributes(call, FUNCTION_ATTRIBUTE_INDEX, refs)
+    end
+    attrs = LLVM.Attribute[]
+    for ref in refs
+        push!(attrs, LLVM.Attribute(ref))
+    end
+    return attrs
+end
+
+"""
+    excludes_safepoint(attr::LLVM.Attribute)::Bool
+
+Whether Julia's GC lowering (`LateLowerGCFrame`) reads the function or call-site
+attribute `attr` as "this call cannot reach a GC safepoint", and so roots nothing
+across the call: `readnone`, `readonly` or `argmemonly` up to LLVM 15, and from
+LLVM 16 a `memory` effect that only reads, or only accesses argument memory.
+"""
+function excludes_safepoint(attr::LLVM.Attribute)::Bool
+    attr isa LLVM.EnumAttribute || return false
+    if LLVM.version().major <= 15
+        return kind(attr) == READNONE_ATTR_KIND ||
+            kind(attr) == READONLY_ATTR_KIND ||
+            kind(attr) == kind(EnumAttribute("argmemonly"))
+    end
+    kind(attr) == kind(EnumAttribute("memory")) || return false
+    effect = MemoryEffect(value(attr))
+    return is_readonly(effect) || (
+        is_readnone(getModRef(effect, InaccessibleMem)) &&
+            is_readnone(getModRef(effect, Other))
+    )
+end
+
+function excludes_safepoint(attrs::AbstractVector)::Bool
+    for attr in attrs
+        excludes_safepoint(attr) && return true
+    end
+    return false
+end
+
+"""
+    calls_safepoint(f::LLVM.Function)::Bool
+
+Whether the body of `f` holds a call that Julia's GC lowering takes as a GC
+safepoint (`julia.safepoint`, an allocation, a runtime call, an indirect call),
+leaving out calls to functions defined in the same module, which
+[`restore_safepoint_effects!`](@ref) follows separately.
+"""
+function calls_safepoint(f::LLVM.Function)::Bool
+    for bb in blocks(f), inst in instructions(bb)
+        isa(inst, LLVM.CallBase) || continue
+        callee = LLVM.called_operand(inst)
+        isa(callee, LLVM.InlineAsm) && continue
+        if isa(callee, LLVM.Function)
+            isempty(blocks(callee)) || continue
+            startswith(LLVM.name(callee), "llvm.") && continue
+            excludes_safepoint(collect(function_attributes(callee))) && continue
+        end
+        excludes_safepoint(callsite_function_attributes(inst)) && continue
+        return true
+    end
+    return false
+end
+
+"""
+    calls_of(f::LLVM.Function)::Vector{LLVM.CallBase}
+
+Every call or invoke of `f`, directly or through a constant cast of it.
+"""
+function calls_of(f::LLVM.Function)::Vector{LLVM.CallBase}
+    calls = LLVM.CallBase[]
+    for u in LLVM.uses(f)
+        user = LLVM.user(u)
+        if isa(user, LLVM.CallBase)
+            LLVM.called_operand(user) == f && push!(calls, user)
+        elseif isa(user, LLVM.ConstantExpr)
+            for cu in LLVM.uses(user)
+                call = LLVM.user(cu)
+                if isa(call, LLVM.CallBase) && LLVM.called_operand(call) == user
+                    push!(calls, call)
+                end
+            end
+        end
+    end
+    return calls
+end
+
+"""
+    safepoint_effects(attr::LLVM.EnumAttribute)::LLVM.EnumAttribute
+
+The LLVM 16+ `memory` attribute `attr` with read-write access to inaccessible
+memory added, which is how Julia declares `julia.safepoint` itself.
+"""
+function safepoint_effects(attr::LLVM.EnumAttribute)::LLVM.EnumAttribute
+    effect = MemoryEffect(value(attr))
+    widened = effect.data | (MRI_ModRef << getLocationPos(InaccessibleMem))
+    return EnumAttribute("memory", widened)
+end
+
+"""
+    restore_safepoint_effects!(f::LLVM.Function)
+
+Replace the attributes of `f` that tell GC lowering it cannot reach a safepoint
+(see [`excludes_safepoint`](@ref)) by ones that keep its effects on visible
+memory but add inaccessible memory: `readnone` becomes `inaccessiblememonly`,
+`argmemonly` becomes `inaccessiblemem_or_argmemonly`, `readonly` is dropped, and
+on LLVM 16+ the `memory` effect gains inaccessible read-write access. The same
+attributes are removed from, or widened on, every call site of `f`.
+"""
+function restore_safepoint_effects!(f::LLVM.Function)
+    attrs = function_attributes(f)
+    if LLVM.version().major <= 15
+        readnone = false
+        argmemonly = false
+        inaccessible = false
+        for attr in collect(attrs)
+            attr isa LLVM.EnumAttribute || continue
+            if kind(attr) == kind(EnumAttribute("inaccessiblememonly")) ||
+                    kind(attr) == kind(EnumAttribute("inaccessiblemem_or_argmemonly"))
+                inaccessible = true
+            end
+            excludes_safepoint(attr) || continue
+            readnone |= kind(attr) == READNONE_ATTR_KIND
+            argmemonly |= kind(attr) == kind(EnumAttribute("argmemonly"))
+            delete!(attrs, attr)
+        end
+        if argmemonly
+            delete!(attrs, EnumAttribute("inaccessiblememonly"))
+            push!(attrs, EnumAttribute("inaccessiblemem_or_argmemonly"))
+        elseif readnone && !inaccessible
+            push!(attrs, EnumAttribute("inaccessiblememonly"))
+        end
+    else
+        for attr in collect(attrs)
+            excludes_safepoint(attr) || continue
+            delete!(attrs, attr)
+            push!(attrs, safepoint_effects(attr))
+        end
+    end
+
+    for call in calls_of(f)
+        for attr in callsite_function_attributes(call)
+            excludes_safepoint(attr) || continue
+            LLVM.API.LLVMRemoveCallSiteEnumAttribute(call, FUNCTION_ATTRIBUTE_INDEX, kind(attr))
+            if LLVM.version().major > 15
+                LLVM.API.LLVMAddCallSiteAttribute(call, FUNCTION_ATTRIBUTE_INDEX, safepoint_effects(attr))
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    restore_safepoint_effects!(mod::LLVM.Module)
+
+Before GC lowering, give back to every function defined in `mod` that may reach a
+GC safepoint the memory effects that a safepoint has.
+
+`handle_compiled` annotates the Julia definitions of known functions (math
+functions such as `tanh`, `sqrt` and `pow`, `eps`, `Base.mightalias`,
+`Threads.threadid`, ...) as `readnone` or `readonly` (`memory(none)` /
+`memory(read)` on LLVM 16+), which is true of the value they compute and lets
+Enzyme recompute them. Their bodies are still Julia code with a GC safepoint.
+Julia's GC lowering treats a call to such a function as a point where no
+collection can happen, so a GC-tracked value that is live across the call gets
+no root, for example a shadow array that the reverse pass allocates. A
+collection requested by another thread stops this thread at the callee's
+safepoint and frees that value, and the reverse pass then reads and writes freed
+memory.
+
+A function may reach a safepoint when its body has a call that GC lowering takes
+as one (see [`calls_safepoint`](@ref)), or calls a function defined here that
+may.
+
+This must run after the last pass that infers memory effects and before GC
+lowering: Enzyme's attributor and `EnzymeDetectReadonlyOrThrow` (run by
+`removeDeadArgs!`) take `julia.safepoint` as read-only and mark such functions
+`readonly` again.
+"""
+function restore_safepoint_effects!(mod::LLVM.Module)
+    reaching = Set{LLVM.Function}()
+    todo = LLVM.Function[]
+    for f in functions(mod)
+        isempty(blocks(f)) && continue
+        if calls_safepoint(f)
+            push!(reaching, f)
+            push!(todo, f)
+        end
+    end
+    while !isempty(todo)
+        f = pop!(todo)
+        for call in calls_of(f)
+            caller = LLVM.parent(LLVM.parent(call))
+            caller in reaching && continue
+            push!(reaching, caller)
+            push!(todo, caller)
+        end
+    end
+    for f in reaching
+        restore_safepoint_effects!(f)
+    end
+    return nothing
 end
