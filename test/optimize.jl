@@ -331,7 +331,9 @@ end
     ir = sprint() do io
         Enzyme.Compiler.enzyme_code_llvm(io, quadratic_form, Active, Tuple{Duplicated{Vector{Float64}}, Const{Matrix{Float64}}})
     end
-    @test occursin("vector.memcheck", ir)
+    # Value names are kept (the reverse blocks are named `invert...`), so the
+    # absence of LLVM's `stride.check` below is meaningful.
+    @test occursin("invert", ir)
     @test !occursin("stride.check", ir)
 
     # Julia's own code keeps LLVM's setting.
