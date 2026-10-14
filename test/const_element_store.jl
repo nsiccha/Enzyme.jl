@@ -259,3 +259,40 @@ end
             want_loaded
     end
 end
+
+# A comprehension over an index vector builds a generator whose function captures
+# an active array together with constant arrays. When that function, or the loop
+# that collects the generator, is not inlined, the captures are stored into a
+# struct passed to the call, which moves constant argument data into active
+# memory as above. Julia 1.10 does not inline the function for a reshaped view,
+# even when `collect` is inlined at the call site; Julia 1.12 does not inline
+# `collect_to_with_first!` for any of these arrays.
+generator_comprehension(b, x, idx) = [b[idx[i], 1] + b[idx[i], 2] * x[i] for i in eachindex(idx)]
+function generator_inline_collect(b, x, idx)
+    values = (b[idx[i], 1] + b[idx[i], 2] * x[i] for i in eachindex(idx))
+    return @inline collect(values)
+end
+generator_objective(reader, b, x, idx) = sum(reader(b, x, idx))
+
+function generator_storages(::Type{T}) where {T}
+    u = T[-0.2, 0.1, 0.3, -0.1]
+    return (reshape(copy(u), 2, 2), reshape(view(copy(u), 1:4), 2, 2), view(reshape(copy(u), 2, 2), :, :))
+end
+
+@testset "Constant arrays captured by a generator with active data" begin
+    @testset "$(nameof(reader)), $(typeof(b)), n = $n" for T in (Float32, Float64), b in generator_storages(T),
+            reader in (generator_comprehension, generator_inline_collect), n in (0, 1, 4, 17)
+        x = T[(i - 2) / 4 for i in 1:n]
+        idx = [mod1(i, 2) for i in 1:n]
+        want = zeros(T, 2, 2)
+        for i in 1:n
+            want[idx[i], 1] += 1
+            want[idx[i], 2] += x[i]
+        end
+        inputs = deepcopy((b, x, idx))
+        db = Enzyme.make_zero(b)
+        autodiff(Reverse, generator_objective, Active, Const(reader), Duplicated(b, db), Const(x), Const(idx))
+        @test collect(db) ≈ want
+        @test (b, x, idx) == inputs
+    end
+end
