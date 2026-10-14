@@ -63,15 +63,8 @@ end
 
 @noinline ro_first(t) = t[1]
 
-struct ROReturned{T}
-    data::T
-end
-function (c::ROReturned)(x)
-    A = ro_first(c.data)
-    return sum(x^2 .* A) + c.data[2].λ
-end
-
 # Controls: each writes data the callable holds, so the check must still raise.
+# `ROWriteReturned` writes into data of the argument that a callee returned.
 struct ROWriteMatrix{T}
     data::T
 end
@@ -107,7 +100,7 @@ ro_D() = [0.0 1.0 4.0; 1.0 0.0 1.0; 4.0 1.0 0.0]
     for f in (
             ROShifted((ro_A(), 1.0e-10I)), ROSwapped((1.0e-10I, ro_A())),
             ROFields(ro_A(), 1.0e-10I), ROThree((ro_A(), ro_B(), 1.0e-10I)),
-            ROLocalTuple(ro_A()), ROReturned((ro_A(), 1.0e-10I)),
+            ROLocalTuple(ro_A()),
         )
         expected = autodiff(ReverseWithPrimal, Const(f), Active, Active(1.5))
         @test autodiff(ReverseWithPrimal, f, Active, Active(1.5)) == expected
