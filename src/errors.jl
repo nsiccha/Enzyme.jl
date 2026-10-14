@@ -1112,6 +1112,22 @@ else
         return off >= memoff + sizeof(Ptr{Cvoid}) || off + convert(Int, len) <= memoff
     end
 
+    # A bounds-error path can inspect a newly built Array before throwing. It
+    # cannot replace the Array's memory when the argument is readonly, and a
+    # noreturn call cannot let the Array escape into the differentiated path.
+    function readonly_noreturn_use(call::LLVM.CallInst, array::LLVM.Value)::Bool
+        callee = LLVM.called_operand(call)
+        (isa(callee, LLVM.Function) && is_noreturn(callee)) || return false
+        found = false
+        for (idx, arg) in enumerate(operands(call))
+            arg == array || continue
+            idx <= length(LLVM.parameters(callee)) || return false
+            any(is_readonly, collect(parameter_attributes(callee, idx))) || return false
+            found = true
+        end
+        return found
+    end
+
     # Whether the Array object allocated by `alloc` wraps memory allocated by the
     # function being differentiated: every store to its `ref.mem` field writes such
     # memory, and the object reaches no call that could store other memory there.
@@ -1140,6 +1156,8 @@ else
                         found = true
                     end
                 elseif isa(user, LLVM.CallInst) && writes_beside_memory_field(user, cur, alloc, memoff)
+                    continue
+                elseif isa(user, LLVM.CallInst) && readonly_noreturn_use(user, cur)
                     continue
                 elseif !(isa(user, LLVM.LoadInst) || isa(user, LLVM.PHIInst) || isa(user, LLVM.SelectInst))
                     return false

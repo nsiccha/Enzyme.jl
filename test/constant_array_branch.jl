@@ -9,6 +9,8 @@ using Enzyme, LinearAlgebra, Test
 branch_literal(x, e) = sum(e ? Float64[] : x .* 2.0)
 branch_literal_call(x, e) = consume_branch(e ? Float64[] : x .* 2.0)
 branch_zeros0(x, e) = sum(e ? zeros(0) : x .* 2.0)
+# With forced bounds checks, this can carry a separate phi of the arrays' data
+# pointers and pass the fresh array to a readonly bounds-error path.
 branch_zeros(x, e) = sum(e ? zeros(length(x)) : x .* 2.0)
 branch_ones(x, e) = sum(e ? ones(length(x)) : x .* 2.0)
 branch_fill(x, e) = sum(e ? fill(3.0, length(x)) : x .* 2.0)
