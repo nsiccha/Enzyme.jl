@@ -7172,18 +7172,38 @@ end
             todo = LLVM.Value[parameters(primalf)[1+swiftself]]
             done = Set{LLVM.Value}()
             doneInst = Set{LLVM.Instruction}()
+            # The single call of each callee whose body is walked below.
+            callsites = Dict{LLVM.Function, LLVM.CallInst}()
             while length(todo) != 0
                 cur = pop!(todo)
                 if cur in done
                     continue
                 end
                 push!(done, cur)
+                # Floating-point data cannot refer to memory. Storing it into
+                # memory of the argument is found from the pointer side.
+                if is_float_data(value_type(cur))
+                    continue
+                end
                 for u in LLVM.uses(cur)
                     user = LLVM.user(u)
                     if user in doneInst
                         continue
                     end
                     if LLVM.API.LLVMIsAReturnInst(user) != C_NULL
+                        # Data of the argument is returned from a walked callee,
+                        # so the result of its call holds it too.
+                        call = get(callsites, LLVM.parent(LLVM.parent(user)), nothing)
+                        if call !== nothing
+                            slegal, foundv, byref = abs_typeof(call, enzyme_ctx)
+                            if slegal
+                                reg2 = active_reg(foundv, job.world)
+                                if reg2 == ActiveState || reg2 == AnyState
+                                    continue
+                                end
+                            end
+                            push!(todo, call)
+                        end
                         continue
                     end
 
@@ -7200,14 +7220,14 @@ end
                     end
 
                     if isa(user, LLVM.StoreInst)
+                        base = operands(user)[2]
+                        while isa(base, LLVM.BitCastInst) ||
+                                isa(base, LLVM.AddrSpaceCastInst) ||
+                                isa(base, LLVM.GetElementPtrInst)
+                            base = operands(base)[1]
+                        end
                         # we are capturing the variable
                         if operands(user)[1] == cur
-                            base = operands(user)[2]
-                            while isa(base, LLVM.BitCastInst) ||
-                                      isa(base, LLVM.AddrSpaceCastInst) ||
-                                      isa(base, LLVM.GetElementPtrInst)
-                                base = operands(base)[1]
-                            end
                             if isa(base, LLVM.AllocaInst)
                                 push!(doneInst, user)
                                 push!(todo, base)
@@ -7216,6 +7236,14 @@ end
                         end
                         # we are storing into the variable
                         if operands(user)[2] == cur
+                            # A stack slot of this function, such as the copy of a
+                            # by-value argument that `lower_convention` stores into
+                            # (`.innerparm`), is reached here only because it holds
+                            # data of the argument. Storing into it writes local
+                            # memory, not memory the argument refers to.
+                            if isa(base, LLVM.AllocaInst)
+                                continue
+                            end
                             slegal, foundv, byref = abs_typeof(operands(user)[1], enzyme_ctx)
                             if slegal
                                 reg2 = active_reg(foundv, job.world)
@@ -7270,14 +7298,12 @@ end
                                         push!(todo, parm)
                                     end
                                 end
-                                slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
-                                if slegal
-                                    reg2 = active_reg(foundv, job.world)
-                                    if reg2 == ActiveState || reg2 == AnyState
-                                        continue
-                                    end
-                                end
-                                push!(todo, user)
+                                # The result holds data of the argument only if the
+                                # walk of the body reaches a `ret` (handled above),
+                                # not whenever the callee reads the argument: a call
+                                # such as `Matrix + UniformScaling` returns a fresh
+                                # array.
+                                callsites[called] = user
                                 continue
                             end
                         end

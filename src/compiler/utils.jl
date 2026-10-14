@@ -213,6 +213,16 @@ function clear_nounwind!(f::LLVM.Function)
 end
 
 """
+    is_float_data(ty::LLVM.LLVMType)::Bool
+
+Whether a value of type `ty` is floating-point data (a float or a vector of
+floats), which cannot refer to memory.
+"""
+is_float_data(::LLVM.LLVMType) = false
+is_float_data(::LLVM.FloatingPointType) = true
+is_float_data(ty::LLVM.VectorType) = is_float_data(eltype(ty))
+
+"""
     is_readonly(attr::LLVM.Attribute)::Bool
 
 Whether `attr` on its own establishes that the function or argument position it
