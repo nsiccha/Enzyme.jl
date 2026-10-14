@@ -1451,8 +1451,23 @@ end
 # value of a phi only matters when control takes its edge: `B` is positioned
 # before the terminator of the incoming block, which may branch elsewhere too.
 mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, @nospecialize(val)) = nothing
-mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, val::LLVM.PHIInst) =
-    edge_condition(B, LLVM.terminator(position(B)), new_from_original(gutils, LLVM.parent(val)))
+function mixed_activity_condition(B::LLVM.IRBuilder, gutils::GradientUtils, val::LLVM.PHIInst)
+    term = LLVM.terminator(position(B))
+    dest = new_from_original(gutils, LLVM.parent(val))
+    # The augmented forward pass has already executed any throwing branch. When
+    # restoring the tape, Enzyme removes edges to unreachable blocks from the
+    # split reverse pass, and may discard their condition. Use the surviving edge
+    # here too: retaining that condition would keep a fictitious phi alive.
+    if get_mode(gutils) == API.DEM_ReverseModeGradient && term isa LLVM.BrInst && LLVM.isconditional(term)
+        iftrue, iffalse = LLVM.successors(term)
+        if LLVM.terminator(iffalse) isa LLVM.UnreachableInst
+            return LLVM.ConstantInt(LLVM.Int1Type(), iftrue == dest)
+        elseif LLVM.terminator(iftrue) isa LLVM.UnreachableInst
+            return LLVM.ConstantInt(LLVM.Int1Type(), iffalse == dest)
+        end
+    end
+    return edge_condition(B, term, dest)
+end
 
 # The condition under which a zero-filled shadow emitted with `B` is needed. Emitted
 # with the mixed activity site's own builder `b`, it replaces the site's value and
