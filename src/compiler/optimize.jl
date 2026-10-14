@@ -246,6 +246,7 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, enz
     run!(GCInvariantVerifierPass(strong = false), mod)
 
     nodecayed_phis!(mod)
+    fold_array_data_phis!(mod)
 
     return run!(GCInvariantVerifierPass(strong = false), mod)
 end
