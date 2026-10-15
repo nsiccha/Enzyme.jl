@@ -393,4 +393,62 @@ end
         @test d2 ≈ d1
         @test X == [0.25 0.75; 0.6 0.4] && a == [2.0, 3.0]
     end
+
+    # Enzyme selects a rule from the primal argument types alone, so active
+    # arrays reach the same reshape rule and must share derivatives with the
+    # reshaped result. A linear view of a vector reshapes with `Val(1)`, which
+    # returns the vector itself; a linear view of a matrix reshapes it.
+    active_reshape_view(x) = sum(abs2, view(x, 2:3))
+    active_reshape_linear_view(x) = sum(abs2, view(reshape(x, 2, 2), 2:3))
+    function active_reshape_write(x)
+        y = copy(x)
+        A = reshape(y, 2, 2)
+        A .*= 2
+        return sum(abs2, y)
+    end
+    active_reshape_mixed(x, a) = sum(reshape(x, 2, 2) .* reshape(a, 1, 2))
+    function active_reshape_gradient(x)
+        dx = zero(x)
+        autodiff(Reverse, active_reshape_write, Active, Duplicated(x, dx))
+        return dx
+    end
+
+    @testset "Active array reshape alongside the constant reshape rule" begin
+        x0 = [1.0, 2.0, 3.0, 4.0]
+        for (f, want) in (
+                (active_reshape_view, [0.0, 4.0, 6.0, 0.0]),
+                (active_reshape_linear_view, [0.0, 4.0, 6.0, 0.0]),
+                (active_reshape_write, 8 .* x0),
+            )
+            for mode in (Reverse, set_runtime_activity(Reverse))
+                x = copy(x0)
+                dx = zero(x)
+                autodiff(mode, f, Active, Duplicated(x, dx))
+                @test dx ≈ want
+                @test x == x0
+            end
+            x = copy(x0)
+            d1, d2 = zero(x), zero(x)
+            autodiff(Reverse, f, Active, BatchDuplicated(x, (d1, d2)))
+            @test d1 ≈ want
+            @test d2 ≈ want
+        end
+
+        x = copy(x0)
+        dx = zero(x)
+        a = [2.0, 3.0]
+        res = autodiff(ReverseWithPrimal, active_reshape_mixed, Active, Duplicated(x, dx), Const(a))
+        @test last(res) ≈ active_reshape_mixed(x0, a)
+        @test dx ≈ [2.0, 2.0, 3.0, 3.0]
+        @test x == x0 && a == [2.0, 3.0]
+
+        # Forward mode, including forward over the reverse rule.
+        v = [1.0, 0.0, 0.0, 1.0]
+        @test autodiff(Forward, active_reshape_mixed, Duplicated(copy(x0), v), Const(a))[1] ≈ 5.0
+        @test autodiff(Forward, active_reshape_mixed, Const(copy(x0)), Duplicated(copy(a), [1.0, 0.0]))[1] ≈ 3.0
+        bres = autodiff(Forward, active_reshape_mixed, BatchDuplicated(copy(x0), (ones(4), v)), Const(a))[1]
+        @test bres[1] ≈ 10.0
+        @test bres[2] ≈ 5.0
+        @test autodiff(Forward, active_reshape_gradient, Duplicated(copy(x0), v))[1] ≈ 8 .* v
+    end
 end
