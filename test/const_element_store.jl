@@ -352,3 +352,45 @@ view_copy_first(sv, f, x, idx) = f(x, sv[1], idx)
         @test (data, idx) == inputs
     end
 end
+
+# Julia 1.13 constructs a reshaped Array by copying the source MemoryRef into
+# a new header. A constant row reduction can make that header active when it
+# shares the reshaped array with a broadcast over active data.
+@static if VERSION >= v"1.13-"
+    function const_reshape_weighted_rows(X, a)
+        A = reshape(a, 1, length(a))
+        return sum(sum((A .- 1) .* log.(X); dims = 2))
+    end
+
+    function const_reshape_shifted_rows(X, a)
+        A = reshape(a, 1, length(a))
+        offset = sum(A; dims = 2)
+        return sum(offset .+ sum((A .- 1) .* log.(X); dims = 2))
+    end
+
+    @testset "Constant array reshape used by reduction and active broadcast" begin
+        for groups in (2, 5), width in (2, 3),
+                f in (const_reshape_weighted_rows, const_reshape_shifted_rows)
+            X = reshape(collect(range(0.2, 0.8; length = groups * width)), groups, width)
+            a = collect(range(1.5, 2.5; length = width))
+            saved_X, saved_a = copy(X), copy(a)
+            expected = (reshape(a, 1, width) .- 1) ./ X
+            dX = zero(X)
+            result = autodiff(ReverseWithPrimal, f, Active, Duplicated(X, dX), Const(a))
+            @test last(result) ≈ f(X, a)
+            @test dX ≈ expected
+            @test X == saved_X && a == saved_a
+        end
+
+        X = [0.25 0.75; 0.6 0.4]
+        a = [2.0, 3.0]
+        d1, d2 = zero(X), zero(X)
+        autodiff(
+            Reverse, const_reshape_shifted_rows, Active,
+            BatchDuplicated(X, (d1, d2)), Const(a),
+        )
+        @test d1 ≈ (reshape(a, 1, 2) .- 1) ./ X
+        @test d2 ≈ d1
+        @test X == [0.25 0.75; 0.6 0.4] && a == [2.0, 3.0]
+    end
+end
