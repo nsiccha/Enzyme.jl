@@ -373,6 +373,49 @@ function EnzymeRules.reverse(
     return (dret.val,)
 end
 
+# Julia 1.13 builds a reshaped Array by copying its MemoryRef fields into a new
+# Array header. When the source is Const but the result is used with active data,
+# the copied data pointer otherwise looks like an inactive value stored into an
+# active object. Give the result an independent zero shadow, as for deepcopy of
+# a Const argument; derivatives accumulated there must not reach the source.
+@static if VERSION >= v"1.13-"
+    const_reshape_dim(d::Const) = d.val
+
+    struct ConstReshapeZero{T}
+        primal::T
+    end
+    (f::ConstReshapeZero)(::Int) = Enzyme.make_zero(f.primal)
+
+    function EnzymeRules.augmented_primal(
+            config::EnzymeRules.RevConfig,
+            func::Const{typeof(Base.reshape)},
+            ::Type{RT},
+            a::Const{<:Array},
+            dims::Vararg{Const, N},
+        ) where {RT, N}
+        value = func.val(a.val, map(const_reshape_dim, dims)...)
+        shadow = if EnzymeRules.needs_shadow(config)
+            width = EnzymeRules.width(config)
+            width == 1 ? Enzyme.make_zero(value) : ntuple(ConstReshapeZero(value), Val(width))
+        else
+            nothing
+        end
+        primal = EnzymeRules.needs_primal(config) ? value : nothing
+        return EnzymeRules.AugmentedReturn(primal, shadow, nothing)
+    end
+
+    function EnzymeRules.reverse(
+            ::EnzymeRules.RevConfig,
+            ::Const{typeof(Base.reshape)},
+            dret,
+            tape,
+            a::Const{<:Array},
+            dims::Vararg{Const, N},
+        ) where {N}
+        return ntuple(Returns(nothing), Val(N + 1))
+    end
+end
+
 
 @inline function pmap_fwd(
     idx,
