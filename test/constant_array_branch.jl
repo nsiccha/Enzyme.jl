@@ -447,7 +447,12 @@ cholesky_upper_adjoint_solve(x, F, y) = sum(abs2, F.U' \ (y .- x))
     y = collect(range(-1.0, 1.0; length = n))
     x1 = fill(0.1, n)
     expected = -2 .* (S \ (y .- x1))
-    for F in (cholesky(S), cholesky(Hermitian(S, :L))),
+    # `cholesky(Hermitian(S, :L))` copies only the lower triangle into `similar` storage,
+    # so the unused upper triangle of `factors` is uninitialized on Julia 1.12 and 1.13
+    # and may hold a NaN, which fails `==` against its own copy. Factoring a full copy in
+    # place keeps every entry defined, so the `F.factors == factors` check below sees any
+    # write into the `Const` factor.
+    for F in (cholesky(S), cholesky!(Hermitian(copy(S), :L))),
             f in (cholesky_lower_solve, cholesky_upper_adjoint_solve)
         factors = copy(F.factors)
         dx = zero(x1)
