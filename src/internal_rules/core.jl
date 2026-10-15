@@ -378,25 +378,55 @@ end
 # the copied data pointer otherwise looks like an inactive value stored into an
 # active object. Give the result an independent zero shadow, as for deepcopy of
 # a Const argument; derivatives accumulated there must not reach the source.
+#
+# Enzyme picks a rule from the primal argument types alone, so the rule also
+# receives active sources. Their shadow is the same reshape of the source
+# shadow, which shares the source shadow's memory as the primal shares the
+# source's, so derivatives reach the source without a reverse step. The integer
+# dimensions carry no derivative, whatever their annotation (forward over
+# reverse can pass them as `Duplicated`). Only the method that builds the new
+# header is intercepted; reshapes that return the source itself, such as
+# `reshape(v, Val(1))` in `view(v, i)`, stay native.
 @static if VERSION >= v"1.13-"
-    const_reshape_dim(d::Const) = d.val
-
     struct ConstReshapeZero{T}
         primal::T
     end
     (f::ConstReshapeZero)(::Int) = Enzyme.make_zero(f.primal)
 
+    # With runtime activity, a shadow identical to its primal marks inactive
+    # data, so the result keeps that marker.
+    reshape_shadow(source, value, shadow, runtime_activity) =
+        runtime_activity && shadow === source ? value : Base.reshape(shadow, size(value))
+
+    struct ReshapeShadowLane{T, R, S}
+        source::T
+        value::R
+        shadows::S
+        runtime_activity::Bool
+    end
+    (f::ReshapeShadowLane)(i::Int) =
+        reshape_shadow(f.source, f.value, f.shadows[i], f.runtime_activity)
+
+    reshape_shadows(::Val{1}, a::Const, value, rta) = Enzyme.make_zero(value)
+    reshape_shadows(::Val{W}, a::Const, value, rta) where {W} =
+        ntuple(ConstReshapeZero(value), Val(W))
+    reshape_shadows(::Val{1}, a::Union{Duplicated, DuplicatedNoNeed}, value, rta) =
+        reshape_shadow(a.val, value, a.dval, rta)
+    reshape_shadows(::Val{W}, a::Union{BatchDuplicated, BatchDuplicatedNoNeed}, value, rta) where {W} =
+        ntuple(ReshapeShadowLane(a.val, value, a.dval, rta), Val(W))
+
     function EnzymeRules.augmented_primal(
             config::EnzymeRules.RevConfig,
             func::Const{typeof(Base.reshape)},
             ::Type{RT},
-            a::Const{<:Array},
-            dims::Vararg{Const, N},
-        ) where {RT, N}
-        value = func.val(a.val, map(const_reshape_dim, dims)...)
+            a::Annotation{<:Array},
+            dims::Annotation{<:Dims},
+        ) where {RT}
+        value = func.val(a.val, dims.val)
         shadow = if EnzymeRules.needs_shadow(config)
-            width = EnzymeRules.width(config)
-            width == 1 ? Enzyme.make_zero(value) : ntuple(ConstReshapeZero(value), Val(width))
+            reshape_shadows(
+                Val(EnzymeRules.width(config)), a, value, EnzymeRules.runtime_activity(config)
+            )
         else
             nothing
         end
@@ -409,10 +439,28 @@ end
             ::Const{typeof(Base.reshape)},
             dret,
             tape,
-            a::Const{<:Array},
-            dims::Vararg{Const, N},
-        ) where {N}
-        return ntuple(Returns(nothing), Val(N + 1))
+            a::Annotation{<:Array},
+            dims::Annotation{<:Dims},
+        )
+        return (nothing, nothing)
+    end
+
+    # Forward mode differentiating the body of the reverse rule, as in forward
+    # over reverse, meets the same call and needs a forward rule for it.
+    function EnzymeRules.forward(
+            config::EnzymeRules.FwdConfig,
+            func::Const{typeof(Base.reshape)},
+            ::Type{RT},
+            a::Annotation{<:Array},
+            dims::Annotation{<:Dims},
+        ) where {RT}
+        value = func.val(a.val, dims.val)
+        EnzymeRules.needs_shadow(config) || return EnzymeRules.needs_primal(config) ? value : nothing
+        shadow = reshape_shadows(
+            Val(EnzymeRules.width(config)), a, value, EnzymeRules.runtime_activity(config)
+        )
+        EnzymeRules.needs_primal(config) || return shadow
+        return EnzymeRules.forward_rule_return_type(config, RT)(value, shadow)
     end
 end
 
