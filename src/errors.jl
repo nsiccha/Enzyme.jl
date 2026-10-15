@@ -1204,22 +1204,42 @@ end
 
 # Whether `cur`, an inactive tracked pointer, is constant argument data of the
 # function being differentiated: a constant argument itself (looking through casts
-# and field extractions), or a value loaded from memory reached from one, through
+# and field extractions), a value loaded from memory reached from one, through
 # casts, GEPs, field extractions, `julia.gc_loaded` and further loads (a closure's
-# captured data is such memory). Such data has no shadow: activity analysis treats
-# the argument and every value loaded from it as constant, and a derivative that
-# flows into it is discarded. When `cur` is stored into active memory, inserted into
-# an active aggregate, returned as an active value, or merged with active values by
-# a phi or select (`cond ? factors : copy(factors')` in `getproperty(::Cholesky,
-# :L)`, or Base's `unalias`), a zero-filled copy of the object it points to is
-# therefore a valid shadow: a derivative accumulated into that copy is discarded
-# too, and active data written through the merged value is read back through the
-# same copy.
-function constant_argument_data(gutils::GradientUtils, @nospecialize(cur::LLVM.Value))::Bool
+# captured data is such memory), or a phi or select of such values only (on Julia
+# 1.13, GVN's load PRE turns the `src` that Base's `unalias(dest, src)` returns
+# into a phi of two loads of the same argument field). Such data has no shadow:
+# activity analysis treats the argument and every value loaded from it as
+# constant, and a derivative that flows into it is discarded. When `cur` is stored
+# into active memory, inserted into an active aggregate, returned as an active
+# value, or merged with active values by a phi or select (`cond ? factors :
+# copy(factors')` in `getproperty(::Cholesky, :L)`, or Base's `unalias`), a
+# zero-filled copy of the object it points to is therefore a valid shadow: a
+# derivative accumulated into that copy is discarded too, and active data written
+# through the merged value is read back through the same copy.
+function constant_argument_data(
+        gutils::GradientUtils,
+        @nospecialize(cur::LLVM.Value),
+        seen::Set{LLVM.Value} = Set{LLVM.Value}(),
+    )::Bool
     ty = value_type(cur)
     (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return false
     while is_object_cast(cur) || isa(cur, LLVM.ExtractValueInst)
         cur = operands(cur)[1]
+    end
+    if isa(cur, LLVM.PHIInst)
+        cur in seen && return true
+        push!(seen, cur)
+        for (v, _) in LLVM.incoming(cur)
+            constant_argument_data(gutils, v, seen) || return false
+        end
+        return true
+    end
+    if isa(cur, LLVM.SelectInst)
+        cur in seen && return true
+        push!(seen, cur)
+        return constant_argument_data(gutils, operands(cur)[2], seen) &&
+            constant_argument_data(gutils, operands(cur)[3], seen)
     end
     isa(cur, LLVM.Argument) && return is_constant_value(gutils, cur)
     isa(cur, LLVM.LoadInst) || return false

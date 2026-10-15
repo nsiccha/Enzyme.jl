@@ -80,3 +80,38 @@ end
         @test dx[i] ≈ (tanh_work_sum(xp) - tanh_work_sum(xm)) / 2h rtol = 1.0e-6 atol = 1.0e-8
     end
 end
+
+# The tape of a call's derivative is a Julia object whose pointer fields are filled
+# with `nothing` before the shadows allocated next are stored into them. Dead store
+# elimination used to drop a `nothing` store that such a shadow later overwrote, so
+# a collection triggered by allocating the shadow scanned an uninitialized field.
+# Runtime activity through Base's `copyto!` from a view (`unalias`) crashed this way
+# on Julia 1.12 and 1.13 within a few hundred thousand calls.
+function tape_view_copy(x, s, idx)
+    w = convert(Vector{Float64}, view(x, idx))
+    t = 0.0
+    @inbounds for i in eachindex(w)
+        t += w[i] * log(s)
+    end
+    return t
+end
+
+function repeat_call(g, reps)
+    acc = 0.0
+    for _ in 1:reps
+        acc += g()
+    end
+    return acc
+end
+
+@testset "Tape pointer fields are initialized before the next allocation" begin
+    reps = 150_000
+    for (n, m) in ((7, 4), (1000, 500), (1000, 4))
+        x = collect(range(0.1, 2.0; length = n))
+        idx = collect(1:(n ÷ m):n)[1:m]
+        g = () -> autodiff(
+            set_runtime_activity(Reverse), tape_view_copy, Active, Const(x), Active(2.5), Const(idx)
+        )[1][2]
+        @test repeat_call(g, reps) / reps ≈ sum(x[idx]) / 2.5
+    end
+end

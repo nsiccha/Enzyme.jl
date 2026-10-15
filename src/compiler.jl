@@ -3103,7 +3103,7 @@ function julia_allocator(B::LLVM.IRBuilder, @nospecialize(LLVMType::LLVM.LLVMTyp
         if ZI != C_NULL
             unsafe_store!(
                 ZI,
-                zero_allocation(B, TT, LLVMType, obj, AlignedSize, Size, false),
+                zero_allocation(B, TT, LLVMType, obj, AlignedSize, Size, false, true),
             ) #=ZeroAll=#
         end
         AS = Tracked

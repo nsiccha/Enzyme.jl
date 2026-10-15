@@ -296,3 +296,59 @@ end
         @test (b, x, idx) == inputs
     end
 end
+
+# Copying a view of a constant array into a new vector goes through Base's
+# `unalias(dest, src)`, which returns `src` itself unless the two may alias. That
+# call is not inlined and its result is active, so the returned parent array, a
+# field of the constant argument, needs a shadow. On Julia 1.13 GVN's load PRE
+# loads that field in two predecessors and returns their phi.
+@inline function view_copy_objective(w, s)
+    t = zero(s)
+    @inbounds for i in eachindex(w)
+        t += w[i] * log(s)
+    end
+    return t
+end
+view_copy_convert(x, s, idx) = view_copy_objective(convert(Vector{Float64}, view(x, idx)), s)
+view_copy_constructor(x, s, idx) = view_copy_objective(Vector{Float64}(view(x, idx)), s)
+view_copy_copyto(x, s, idx) = view_copy_objective(copyto!(similar(idx, Float64), view(x, idx)), s)
+view_copy_collect(x, s, idx) = view_copy_objective(collect(view(x, idx)), s)
+view_copy_range(x, s, idx) = view_copy_objective(Vector{Float64}(view(x, 2:5)), s)
+view_copy_column(A, s, idx) = view_copy_objective(Vector{Float64}(view(A, :, 2)), s)
+view_copy_rows(A, s, idx) = view_copy_objective(Vector{Float64}(view(A, idx, 2)), s)
+view_copy_first(sv, f, x, idx) = f(x, sv[1], idx)
+
+@testset "Copies of views of constant arrays" begin
+    x = [0.5, 1.5, 2.0, 0.25, 3.0, 1.25, 0.75]
+    A = reshape(collect(1.0:21.0), 7, 3)
+    idx = [1, 3, 5, 7]
+    s = 2.5
+    @testset "$(nameof(f))" for (f, data, copied) in (
+            (view_copy_convert, x, x[idx]), (view_copy_constructor, x, x[idx]),
+            (view_copy_copyto, x, x[idx]), (view_copy_collect, x, x[idx]),
+            (view_copy_range, x, x[2:5]), (view_copy_column, A, A[:, 2]),
+            (view_copy_rows, A, A[idx, 2]),
+        )
+        want = sum(copied) / s
+        inputs = deepcopy((data, idx))
+        @test autodiff(Reverse, f, Active, Const(data), Active(s), Const(idx))[1][2] ≈ want
+        @test autodiff(Forward, f, Const(data), Duplicated(s, 1.0), Const(idx))[1] ≈ want
+        bres = autodiff(Forward, f, Const(data), BatchDuplicated(s, (1.0, 2.0)), Const(idx))[1]
+        @test bres[1] ≈ want
+        @test bres[2] ≈ 2 * want
+
+        d1 = [0.0]
+        d2 = [0.0]
+        autodiff(Reverse, view_copy_first, Active, BatchDuplicated([s], (d1, d2)), Const(f), Const(data), Const(idx))
+        @test d1[1] ≈ want
+        @test d2[1] ≈ want
+
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal, Const{typeof(f)}, Active, Const{typeof(data)}, Active{Float64}, Const{typeof(idx)}
+        )
+        tape, prim, _ = fwd(Const(f), Const(data), Active(s), Const(idx))
+        @test prim ≈ sum(copied) * log(s)
+        @test rev(Const(f), Const(data), Active(s), Const(idx), 1.0, tape)[1][2] ≈ want
+        @test (data, idx) == inputs
+    end
+end
