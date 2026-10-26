@@ -452,3 +452,61 @@ end
         @test autodiff(Forward, active_reshape_gradient, Duplicated(copy(x0), v))[1] ≈ 8 .* v
     end
 end
+
+# Arrays that non-inlined calls (`findall`, `diff`) compute from constant data are
+# stored into a NamedTuple, which is passed with an active scalar to a function
+# that is not inlined. Activity analysis treats the `Vector{Float64}` that `diff`
+# returns as active, so the NamedTuple is active, and the constant `Vector{Int}`
+# that `findall` returns needs a shadow there. Its type comes from the callee's
+# return type; an array of integers cannot hold derivatives, so it is its own
+# shadow.
+@inline returned_record(times) = (; idx = findall(>(0.0), times), dt = diff(times))
+@noinline returned_record_weight(r, rate) = sum(exp.(-rate .* r.dt); init = 0.0) + length(r.idx)
+function returned_record_total(rates, ts)
+    t = 0.0
+    for s in eachindex(rates)
+        t += returned_record_weight(returned_record(ts[s]), rates[s])
+    end
+    return t
+end
+
+@testset "Arrays returned by calls into an active record" begin
+    ts0 = [[0.0, 0.5, 1.5, 2.0], [0.0, 1.0], [0.0], [0.0, 0.25, 0.75]]
+    rates0 = [0.3, 0.7, 1.1, 0.2]
+    want = [-sum(diff(t) .* exp.(-r .* diff(t))) for (r, t) in zip(rates0, ts0)]
+
+    for mode in (ReverseWithPrimal, set_runtime_activity(ReverseWithPrimal))
+        ts = deepcopy(ts0)
+        d = zero(rates0)
+        res = autodiff(mode, returned_record_total, Active, Duplicated(copy(rates0), d), Const(ts))
+        @test res[2] ≈ returned_record_total(rates0, ts0)
+        @test d ≈ want
+        @test ts == ts0
+    end
+
+    d1 = zero(rates0)
+    d2 = zero(rates0)
+    autodiff(Reverse, returned_record_total, Active, BatchDuplicated(copy(rates0), (d1, d2)), Const(deepcopy(ts0)))
+    @test d1 ≈ want
+    @test d2 ≈ want
+
+    dr = collect(1.0:4.0)
+    @test autodiff(Forward, returned_record_total, Duplicated(copy(rates0), dr), Const(deepcopy(ts0)))[1] ≈
+        sum(want .* dr)
+    bres = autodiff(
+        Forward, returned_record_total, BatchDuplicated(copy(rates0), (ones(4), dr)), Const(deepcopy(ts0))
+    )[1]
+    @test bres[1] ≈ sum(want)
+    @test bres[2] ≈ sum(want .* dr)
+
+    fwd, rev = autodiff_thunk(
+        ReverseSplitWithPrimal, Const{typeof(returned_record_total)}, Active,
+        Duplicated{Vector{Float64}}, Const{Vector{Vector{Float64}}},
+    )
+    x = Duplicated(copy(rates0), zero(rates0))
+    ts = Const(deepcopy(ts0))
+    tape, prim, _ = fwd(Const(returned_record_total), x, ts)
+    @test prim ≈ returned_record_total(rates0, ts0)
+    rev(Const(returned_record_total), x, ts, 1.0, tape)
+    @test x.dval ≈ want
+end
