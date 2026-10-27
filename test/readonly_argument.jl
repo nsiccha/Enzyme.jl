@@ -128,9 +128,10 @@ end
 # then not walked, and the call that passes it a field of the callable by
 # reference used to be reported as a write, although the parameter's type
 # cannot hold derivative data (a ReactiveKernels derivative rule for
-# `logbeta`, hoisted out of a loop). The parameter type now decides. Like
-# `logbeta`, the rule calls `lgamma_r`, which writes the sign of Γ through a
-# pointer, so LLVM cannot mark the rule read-only.
+# `logbeta`, hoisted out of a loop). The parameter type now decides. The rule
+# here calls `lgamma_r`, which writes the sign of Γ through a pointer, so LLVM
+# cannot infer it read-only: Julia 1.12 infers a rule without such a call
+# read-only, and `is_readonly(called)` accepted it before this check existed.
 struct RORule
     a::Bool
     b::NTuple{3, Bool}
