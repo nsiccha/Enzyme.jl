@@ -1,4 +1,5 @@
 using Enzyme, LinearAlgebra, Test
+using Enzyme: EnzymeRules
 
 # An unannotated function argument whose type can hold derivative data must be
 # proven readonly (`err_if_func_written`). These callables only read the data
@@ -120,4 +121,117 @@ ro_D() = [0.0 1.0 4.0; 1.0 0.0 1.0; 4.0 1.0 0.0]
         @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(1.5))
         @test f.data[1] == ro_A()
     end
+end
+
+# The check walks a callee's body only when the callee has a single call site.
+# A `@noinline` function with a custom rule, called from a second site, is
+# neither walked nor read-only, so the call that passes it a field of the
+# callable by reference used to be reported as a write, although the
+# parameter's type cannot hold derivative data (a ReactiveKernels derivative
+# rule hoisted out of a loop). The parameter type now decides.
+struct RORule
+    a::Bool
+    b::NTuple{3, Bool}
+end
+@noinline (r::RORule)(x, y) = r.a ? x * y + r.b[2] : x + y
+
+function EnzymeRules.augmented_primal(
+        config::EnzymeRules.RevConfig, f::Const{RORule}, ::Type{RT},
+        x::EnzymeRules.Annotation, y::EnzymeRules.Annotation
+    ) where {RT}
+    primal = f.val(x.val, y.val)
+    return EnzymeRules.AugmentedReturn(
+        EnzymeRules.needs_primal(config) ? primal : nothing, nothing, (x.val, y.val)
+    )
+end
+function EnzymeRules.reverse(
+        ::EnzymeRules.RevConfig, f::Const{RORule}, dret::Active, tape,
+        x::EnzymeRules.Annotation, y::EnzymeRules.Annotation
+    )
+    xv, yv = tape
+    dx, dy = f.val.a ? (yv, xv) : (1.0, 1.0)
+    return (x isa Active ? dret.val * dx : nothing, y isa Active ? dret.val * dy : nothing)
+end
+
+struct RORuleHolder{M}
+    data::M
+    rule::RORule
+end
+(c::RORuleHolder)(x) = c.rule(x, 2.0) + RORule(false, (true, false, true))(x, 3.0) + sum(c.data)
+
+struct RORulePair{M}
+    data::M
+    rules::Tuple{RORule, RORule}
+end
+(c::RORulePair)(x) = c.rules[1](x, 2.0) * c.rules[2](x, 3.0) + sum(c.data)
+
+struct ROBox{M}
+    v::M
+end
+
+# Not yet accepted: a parameter that holds derivative data, passed to a callee
+# that only reads it but is neither walked nor read-only (it allocates, or has
+# a custom rule) because it has a second call site.
+@noinline ro_box_scaled(b::ROBox, x) = sum(b.v .* x)
+struct ROAllocBox{M}
+    box::ROBox{M}
+end
+(c::ROAllocBox)(x) = ro_box_scaled(c.box, x) + ro_box_scaled(ROBox([1.0]), x)
+
+@noinline ro_box_rule(b::ROBox, x) = sum(b.v) * x
+function EnzymeRules.augmented_primal(
+        config::EnzymeRules.RevConfig, ::Const{typeof(ro_box_rule)}, ::Type{RT},
+        b::EnzymeRules.Annotation, x::EnzymeRules.Annotation
+    ) where {RT}
+    primal = ro_box_rule(b.val, x.val)
+    return EnzymeRules.AugmentedReturn(
+        EnzymeRules.needs_primal(config) ? primal : nothing, nothing, sum(b.val.v)
+    )
+end
+function EnzymeRules.reverse(
+        ::EnzymeRules.RevConfig, ::Const{typeof(ro_box_rule)}, dret::Active, tape,
+        b::EnzymeRules.Annotation, x::EnzymeRules.Annotation
+    )
+    return (nothing, x isa Active ? dret.val * tape : nothing)
+end
+struct ROCustomBox{M}
+    box::ROBox{M}
+end
+(c::ROCustomBox)(x) = ro_box_rule(c.box, x) + ro_box_rule(ROBox([1.0]), x)
+
+# Controls: callees with a second call site that write data the callable holds.
+@noinline ro_box_set!(b::ROBox, x) = (b.v[1] = x; x)
+struct ROWriteBox{M}
+    box::ROBox{M}
+end
+(c::ROWriteBox)(x) = ro_box_set!(c.box, x) + ro_box_set!(ROBox([0.0]), x) + sum(c.box.v)
+
+@noinline ro_ref_set!(r, x) = (r[] = x; nothing)
+struct ROWriteFloatRef{M}
+    data::M
+    r::Base.RefValue{Float64}
+end
+(c::ROWriteFloatRef)(x) = (ro_ref_set!(c.r, x); ro_ref_set!(Ref(0.0), x); c.r[] * sum(c.data))
+
+@testset "Readonly check: calls whose parameter cannot hold derivative data" begin
+    for f in (
+            RORuleHolder([1.0, 2.0], RORule(true, (true, false, true))),
+            RORulePair([1.0, 2.0], (RORule(true, (true, true, true)), RORule(false, (true, false, true)))),
+        )
+        expected = autodiff(ReverseWithPrimal, Const(f), Active, Active(1.5))
+        @test autodiff(ReverseWithPrimal, f, Active, Active(1.5)) == expected
+    end
+    @test autodiff(Reverse, RORuleHolder([1.0, 2.0], RORule(true, (true, false, true))), Active, Active(1.5))[1][1] == 3.0
+
+    for f in (ROAllocBox(ROBox([1.0, 2.0])), ROCustomBox(ROBox([1.0, 2.0])))
+        expected = autodiff(ReverseWithPrimal, Const(f), Active, Active(1.5))
+        @test_broken autodiff(ReverseWithPrimal, f, Active, Active(1.5)) == expected
+    end
+
+    f = ROWriteBox(ROBox([1.0, 2.0]))
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(1.5))
+    @test f.box.v == [1.0, 2.0]
+    f = ROWriteFloatRef([1.0, 2.0], Ref(0.0))
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(1.5))
+    @test f.r[] == 0.0
 end
