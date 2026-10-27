@@ -7279,6 +7279,14 @@ end
 			       nm == "ijl_alloc_genericmemory_unchecked"
                                 continue
                             end
+                            # The callee's parameter type says what it receives
+                            # through `cur`. A type that cannot hold derivative
+                            # data is not followed, as for the values above,
+                            # whether or not the body is walked below (a function
+                            # with a custom rule called from several sites).
+                            if is_inactive_operand(user, called, cur, job.world)
+                                continue
+                            end
                             if is_readonly(called)
                                 slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
                                 if slegal

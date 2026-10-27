@@ -223,6 +223,31 @@ is_float_data(::LLVM.FloatingPointType) = true
 is_float_data(ty::LLVM.VectorType) = is_float_data(eltype(ty))
 
 """
+    is_inactive_operand(call, fn, val, world)::Bool
+
+Whether `call` passes `val` only by reference (`BITS_REF` or `MUT_REF`) to
+parameters of the Julia function `fn` whose declared type (`enzymejl_parmtype`)
+cannot hold derivative data that a write could change (`active_reg` is
+`ActiveState` or `AnyState`). Nothing `fn` does through `val` then writes
+derivative data, whether or not its body can be inspected.
+"""
+function is_inactive_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospecialize(val::LLVM.Value), world::UInt)::Bool
+    found = false
+    nparms = length(LLVM.parameters(fn))
+    for (i, op) in enumerate(arg_operands_view(call))
+        op == val || continue
+        i <= nparms || return false
+        typ, byref = enzyme_extract_parm_type(fn, i, false)
+        (typ === nothing || byref === nothing) && return false
+        (byref == GPUCompiler.BITS_REF || byref == GPUCompiler.MUT_REF) || return false
+        reg = active_reg(typ, world)
+        (reg == ActiveState || reg == AnyState) || return false
+        found = true
+    end
+    return found
+end
+
+"""
     is_readonly(attr::LLVM.Attribute)::Bool
 
 Whether `attr` on its own establishes that the function or argument position it
