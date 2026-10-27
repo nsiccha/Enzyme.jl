@@ -125,15 +125,21 @@ end
 
 # The check walks a callee's body only when the callee has a single call site.
 # A `@noinline` function with a custom rule, called from a second site, is
-# neither walked nor read-only, so the call that passes it a field of the
-# callable by reference used to be reported as a write, although the
-# parameter's type cannot hold derivative data (a ReactiveKernels derivative
-# rule hoisted out of a loop). The parameter type now decides.
+# then not walked, and the call that passes it a field of the callable by
+# reference used to be reported as a write, although the parameter's type
+# cannot hold derivative data (a ReactiveKernels derivative rule for
+# `logbeta`, hoisted out of a loop). The parameter type now decides. Like
+# `logbeta`, the rule calls `lgamma_r`, which writes the sign of Γ through a
+# pointer, so LLVM cannot mark the rule read-only.
 struct RORule
     a::Bool
     b::NTuple{3, Bool}
 end
-@noinline (r::RORule)(x, y) = r.a ? x * y + r.b[2] : x + y
+@noinline function (r::RORule)(x, y)
+    sign = Ref{Int32}(0)
+    ccall((:lgamma_r, Base.libm_name), Float64, (Float64, Ref{Int32}), y, sign)
+    return r.a ? x * y + r.b[2] : x + y
+end
 
 function EnzymeRules.augmented_primal(
         config::EnzymeRules.RevConfig, f::Const{RORule}, ::Type{RT},
@@ -170,15 +176,16 @@ struct ROBox{M}
 end
 
 # Not yet accepted: a parameter that holds derivative data, passed to a callee
-# that only reads it but is neither walked nor read-only (it allocates, or has
-# a custom rule) because it has a second call site.
+# that only reads it but is neither walked (it has a second call site) nor
+# read-only (it allocates; a custom rule alone does not stop LLVM from
+# inferring that on Julia 1.12 without forced bounds checks).
 @noinline ro_box_scaled(b::ROBox, x) = sum(b.v .* x)
 struct ROAllocBox{M}
     box::ROBox{M}
 end
 (c::ROAllocBox)(x) = ro_box_scaled(c.box, x) + ro_box_scaled(ROBox([1.0]), x)
 
-@noinline ro_box_rule(b::ROBox, x) = sum(b.v) * x
+@noinline ro_box_rule(b::ROBox, x) = sum(b.v .* x)
 function EnzymeRules.augmented_primal(
         config::EnzymeRules.RevConfig, ::Const{typeof(ro_box_rule)}, ::Type{RT},
         b::EnzymeRules.Annotation, x::EnzymeRules.Annotation
