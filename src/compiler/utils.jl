@@ -290,23 +290,26 @@ function is_fresh_object(@nospecialize(val::LLVM.Value))::Bool
 end
 
 """
-    is_nonwriting_builtin_call(call::LLVM.CallInst)::Bool
+    is_nonwriting_runtime_call(call::LLVM.CallInst)::Bool
 
-Whether `call` is a `julia.call` of a Julia builtin that reads its arguments or
-builds a new object from them (`tuple`, `getfield`, `isa`, ...) but writes no
-memory they refer to. Builtins take and return boxed values, as the code around a
-dynamic call does.
+Whether `call` reads its arguments, or builds a new object from them, but writes
+no memory they refer to: a `julia.call` of a Julia builtin such as `tuple`,
+`getfield` or `isa` (builtins take and return boxed values, as the code around a
+dynamic call does), or `jl_array_copy` (`copy` of an `Array` before Julia 1.11).
 """
-function is_nonwriting_builtin_call(call::LLVM.CallInst)::Bool
-    jlcall = LLVM.called_operand(call)
-    isa(jlcall, LLVM.Function) || return false
-    LLVM.name(jlcall) == "julia.call" || return false
-    fn = operands(call)[1]
+function is_nonwriting_runtime_call(call::LLVM.CallInst)::Bool
+    fn = LLVM.called_operand(call)
     isa(fn, LLVM.Function) || return false
+    builtin = LLVM.name(fn) == "julia.call"
+    if builtin
+        fn = operands(call)[1]
+        isa(fn, LLVM.Function) || return false
+    end
     nm = LLVM.name(fn)
     if startswith(nm, "ijl_")
         nm = nm[2:end]
     end
+    builtin || return nm == "jl_array_copy"
     return nm in (
         "jl_f_tuple",
         "jl_f_getfield",
@@ -320,6 +323,45 @@ function is_nonwriting_builtin_call(call::LLVM.CallInst)::Bool
         "jl_f_isdefined",
         "jl_f_ifelse",
     )
+end
+
+"""
+    local_memory_base(ptr::LLVM.Value)
+
+The memory `ptr` points into, through GEPs and casts, when it belongs to the
+function: a stack slot (`alloca`) or an object it allocates (`is_fresh_object`).
+`nothing` otherwise.
+"""
+function local_memory_base(@nospecialize(ptr::LLVM.Value))
+    base = ptr
+    while isa(base, LLVM.BitCastInst) ||
+            isa(base, LLVM.AddrSpaceCastInst) ||
+            isa(base, LLVM.GetElementPtrInst)
+        base = operands(base)[1]
+    end
+    return (isa(base, LLVM.AllocaInst) || is_fresh_object(base)) ? base : nothing
+end
+
+"""
+    is_pointerfree_copy(call::LLVM.CallInst, enzyme_ctx)::Bool
+
+Whether a `memcpy` / `memmove` copies bytes of a Julia type that holds no
+references, known from the type either pointer points to. Such bytes cannot
+refer to memory.
+"""
+function is_pointerfree_copy(call::LLVM.CallInst, enzyme_ctx::EnzymeContext)::Bool
+    for ptr in (operands(call)[1], operands(call)[2])
+        base, _ = get_base_and_offset(ptr)
+        legal, jTy, byref = abs_typeof(base, enzyme_ctx)
+        legal || continue
+        if byref == GPUCompiler.BITS_VALUE && jTy <: Ptr
+            jTy = eltype(jTy)
+        end
+        if isa(jTy, DataType) && Base.isconcretetype(jTy) && Base.datatype_pointerfree(jTy)
+            return true
+        end
+    end
+    return false
 end
 
 const READONLY_OPERANDS_MD = "enzymejl_readonly_operands"

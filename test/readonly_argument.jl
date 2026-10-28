@@ -287,6 +287,19 @@ function (h::RODynLoop)(k)
     return s[1] + s[2] + s[3]
 end
 
+# Julia 1.12 unboxes the tuple the dynamic call returns with a `memcpy` into a
+# stack slot.
+struct RODynTuple{M}
+    v::M
+end
+(c::RODynTuple)(x) = sum(Base.inferencebarrier(getindex)(c.v, 2)::NTuple{3, Float64}) * x
+
+# A copy of held float data reads it: the bytes cannot refer to memory.
+struct ROCopyOut{M}
+    v::M
+end
+(c::ROCopyOut)(x) = sum(copy(c.v)) * x
+
 ro_dyn_first(t) = t[1]
 struct RODynReturned{T}
     data::T
@@ -311,6 +324,11 @@ struct RODynWriteArg{M}
 end
 (c::RODynWriteArg)(x) = Base.inferencebarrier(ro_dyn_set!)(c.v, x) + sum(c.v)
 
+struct ROCopyInto{M}
+    v::M
+end
+(c::ROCopyInto)(x) = (copyto!(c.v, [x, 2x]); sum(c.v))
+
 struct RODynWriteReturned{T}
     data::T
 end
@@ -324,7 +342,8 @@ end
     for f in (
             RODynCallee(ROScaler([1.0, 2.0]), 3.0), RODynArg([1.0, 2.0]), RODynLatest([1.0, 2.0]),
             RODynLoop(((1.0, 2.0, 3.0), [(0.5, 0.25), (0.9, 0.8), (0.7, 0.6)], [2.0, 0.0, 3.0])),
-            RODynReturned(([1.0, 2.0], 3.0)),
+            RODynReturned(([1.0, 2.0], 3.0)), RODynTuple([(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)]),
+            ROCopyOut([1.0, 2.0]),
         )
         expected = autodiff(ReverseWithPrimal, Const(f), Active, Active(0.7))
         @test autodiff(ReverseWithPrimal, f, Active, Active(0.7)) == expected
@@ -353,5 +372,8 @@ end
     @test f.data[1] == [1.0, 2.0]
     f = RODynWriteArg([1.0, 2.0])
     @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Forward, f, Duplicated(0.7, 1.0))
+    @test f.v == [1.0, 2.0]
+    f = ROCopyInto([1.0, 2.0])
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
     @test f.v == [1.0, 2.0]
 end

@@ -7219,18 +7219,13 @@ end
                     end
 
                     if isa(user, LLVM.StoreInst)
-                        base = operands(user)[2]
-                        while isa(base, LLVM.BitCastInst) ||
-                                isa(base, LLVM.AddrSpaceCastInst) ||
-                                isa(base, LLVM.GetElementPtrInst)
-                            base = operands(base)[1]
-                        end
+                        base = local_memory_base(operands(user)[2])
                         # we are capturing the variable
                         if operands(user)[1] == cur
                             # Into a stack slot, or into an object allocated here
                             # (the box Julia makes of a value passed to a dynamic
                             # call): follow where that memory goes.
-                            if isa(base, LLVM.AllocaInst) || is_fresh_object(base)
+                            if base !== nothing
                                 push!(doneInst, user)
                                 push!(todo, base)
                                 continue
@@ -7244,7 +7239,7 @@ end
                             # here only because it holds data of the argument.
                             # Storing into it writes local memory, not memory the
                             # argument refers to.
-                            if isa(base, LLVM.AllocaInst) || is_fresh_object(base)
+                            if base !== nothing
                                 continue
                             end
                             slegal, foundv, byref = abs_typeof(operands(user)[1], enzyme_ctx)
@@ -7262,9 +7257,9 @@ end
                         # time. Its rules compile that method's derivative with
                         # this check on the operands holding data of the argument.
                         # What it returns may hold that data too, as may what a
-                        # builtin that writes nothing returns.
+                        # runtime call that writes nothing returns.
                         if defer_readonly_operand!(user, cur) ||
-                                is_nonwriting_builtin_call(user)
+                                is_nonwriting_runtime_call(user)
                             slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
                             if slegal
                                 reg2 = active_reg(foundv, job.world)
@@ -7280,6 +7275,27 @@ end
                             intr = LLVM.API.LLVMGetIntrinsicID(called)
                             if intr == LLVM.Intrinsic("llvm.memset").id
                                 if cur != operands(user)[1]
+                                    continue
+                                end
+                            end
+                            # A copy into local memory, as for a store: of data of
+                            # the argument (follow the copy), or into memory reached
+                            # because it holds such data (Julia 1.12 unboxes a
+                            # tuple a dynamic call returns this way).
+                            if intr == LLVM.Intrinsic("llvm.memcpy").id ||
+                                    intr == LLVM.Intrinsic("llvm.memmove").id
+                                pointerfree = is_pointerfree_copy(user, enzyme_ctx)
+                                base = local_memory_base(operands(user)[1])
+                                if base !== nothing
+                                    if operands(user)[2] == cur && !pointerfree
+                                        push!(doneInst, user)
+                                        push!(todo, base)
+                                    end
+                                    continue
+                                end
+                                # Copying bytes without references out of data of
+                                # the argument only reads it.
+                                if pointerfree && operands(user)[1] != cur
                                     continue
                                 end
                             end
