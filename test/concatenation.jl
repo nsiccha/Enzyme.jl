@@ -108,6 +108,118 @@ concat_alias_loss(f, a, c) = sum(abs2, f(a, c))
     @test c == [2.0, 3.0]
 end
 
+# Views, reshapes and transposes beside dense arrays. Every case is linear in
+# `(u, c)`, so the gradient of a weighted sum and the tangent follow from
+# evaluating it on basis vectors with `c` zeroed.
+view_hcat_gathered(u, c) = hcat(view(u, [1, 3]), u[4:5], view(c, [2, 6]))
+view_hcat_range(u, c) = hcat(view(u, 1:2), u[5:6], view(c, 3:4))
+view_hcat_reshape(u, c) = hcat(reshape(view(u, 1:4), 2, 2), view(c, [1, 2]))
+view_vcat(u, c) = vcat(view(u, [2, 1]), u[3:4], view(c, 5:6))
+view_typed_vcat(u, c) = eltype(u)[view(u, [2, 1]); view(c, 1:2)]
+view_hvcat(u, c) = [view(u, [1, 2]) u[3:4]; view(c, 1:2) view(u, [6, 5])]
+view_stack(u, c) = stack((view(u, [1, 3]), u[4:5], view(c, 2:3)))
+view_stack_first(u, c) = stack((view(u, [1, 3]), view(c, 2:3)); dims = 1)
+view_hcat_columns(u, c) = hcat(view(u, :, 1:2), c[:, 1], view(c, :, 3))
+view_hcat_rows(u, c) = hcat(view(u, 1:2, :), view(c, 2:3, 1))
+view_hcat_transpose(u, c) = hcat(transpose(u), c[:, 1])
+view_hvcat_matrix(u, c) = [view(u, 1:2, 1:2) view(c, 1:2, 3); transpose(view(u, 3, :))]
+view_vcat_transpose(u, c) = vcat(transpose(view(u, :, 1)), c, adjoint(view(u, 2, :)))
+view_vcat_rows(u, c) = vcat(view(u, 1:2, :), c[3:3, :], view(c, 1:1, :))
+view_stack_second(u, c) = stack((view(u, :, 1:2), c[:, 2:3]); dims = 2)
+view_loss(f, u, c) = sum(f(u, c) .* concat_weights(f(u, c)))
+
+function view_expected(f, u, c)
+    weights = concat_weights(f(u, c))
+    expected = zero(u)
+    for i in eachindex(u)
+        basis = zero(u)
+        basis[i] = 1
+        expected[i] = sum(f(basis, zero(c)) .* weights)
+    end
+    return expected
+end
+
+const VIEW_CONCAT_CASES = (
+    (6,) => (
+        view_hcat_gathered, view_hcat_range, view_hcat_reshape, view_vcat,
+        view_typed_vcat, view_hvcat, view_stack, view_stack_first,
+    ),
+    (3, 3) => (
+        view_hcat_columns, view_hcat_rows, view_hcat_transpose, view_vcat_transpose,
+        view_vcat_rows, view_hvcat_matrix, view_stack_second,
+    ),
+)
+
+@testset "Concatenation of views and other arrays keeps operand activity separate" begin
+    for T in (Float32, Float64), (shape, cases) in VIEW_CONCAT_CASES
+        u = reshape(T[0.1i for i in 1:prod(shape)], shape)
+        c = reshape(T[0.3i for i in 1:prod(shape)], shape)
+        before = (copy(u), copy(c))
+        for f in cases
+            @testset "$f / $T" begin
+                du = ones(T, shape)
+                result = autodiff(ReverseWithPrimal, view_loss, Active, Const(f), Duplicated(u, du), Const(c))
+                @test result[2] ≈ view_loss(f, u, c)
+                @test du ≈ ones(T, shape) + view_expected(f, u, c)
+
+                tangent = ones(T, shape)
+                result = autodiff(ForwardWithPrimal, f, Duplicated, Duplicated(u, tangent), Const(c))
+                @test result[2] == f(u, c)
+                @test result[1] == f(tangent, zero(c))
+
+                result = autodiff(Forward, f, BatchDuplicated, BatchDuplicated(u, (tangent, 2 .* tangent)), Const(c))
+                @test result[1][1] == f(tangent, zero(c))
+                @test result[1][2] == f(2 .* tangent, zero(c))
+                @test tangent == ones(T, shape)
+                @test (u, c) == before
+            end
+        end
+    end
+end
+
+view_design_loss(v, w, x, I) = sum(hcat(view(v, I), w, view(x, I)) * [1.0, 2.0, 3.0])
+view_integer_hcat(w, k, I) = hcat(view(k, I), w)
+
+@testset "hcat of gathered views beside a dense vector" begin
+    v, w, x, I = collect(1.0:5.0), [0.5, -0.5], collect(6.0:10.0), [1, 3]
+    dv, dw = zero(v), zero(w)
+    autodiff(Reverse, view_design_loss, Active, Duplicated(v, dv), Duplicated(w, dw), Const(x), Const(I))
+    @test dv == [1.0, 0.0, 1.0, 0.0, 0.0]
+    @test dw == [2.0, 2.0]
+    @test (v, w, x, I) == (collect(1.0:5.0), [0.5, -0.5], collect(6.0:10.0), [1, 3])
+
+    k = [4, 5, 6]
+    result = autodiff(ForwardWithPrimal, view_integer_hcat, Duplicated, Duplicated(w, [1.0, 2.0]), Const(k), Const(I))
+    @test result[2] == [4.0 0.5; 6.0 -0.5]
+    @test result[1] == [0.0 1.0; 0.0 2.0]
+end
+
+struct ConcatWrappedVector <: AbstractVector{Float64}
+    data::Vector{Float64}
+end
+Base.size(a::ConcatWrappedVector) = size(a.data)
+Base.getindex(a::ConcatWrappedVector, i::Int) = a.data[i]
+
+concat_typed_hcat_sig(arrays...) = Tuple{typeof(Base._typed_hcat), Type{Float64}, Tuple{map(typeof, arrays)...}}
+
+@testset "Concatenation overrides take only Arrays and their views, reshapes and transposes" begin
+    interp = Enzyme.Compiler.Interpreter
+    v = [1.0, 2.0, 3.0, 4.0]
+    wrapped = ConcatWrappedVector(v)
+    for (operand, taken) in (
+            (v, true), (reshape(v, 2, 2), true), (view(v, [1, 3]), true), (view(v, 1:2), true),
+            (view(reshape(v, 2, 2), :, 1), true), (reshape(view(v, 1:4), 2, 2), true),
+            (transpose(v), true), (adjoint(view(v, 1:2)), true),
+            (wrapped, false), (view(wrapped, 1:2), false), (transpose(wrapped), false),
+            (1:4, false), (1.0:4.0, false),
+        )
+        @test interp.concat_operand(typeof(operand)) == taken
+    end
+    @test interp.concat_replacement(Base._typed_hcat, concat_typed_hcat_sig(view(v, [1, 2]), v[1:2])) !== nothing
+    @test interp.concat_replacement(Base._typed_hcat, concat_typed_hcat_sig(wrapped, v)) === nothing
+    @test interp.concat_replacement(Base._typed_hcat, concat_typed_hcat_sig(1.0:4.0, v)) === nothing
+end
+
 concat_fold_vcat(xs) = reduce(vcat, xs; init = Float64[])
 concat_fold_mapped_vcat(xs) = mapfoldl(reverse, vcat, xs; init = Float64[])
 concat_fold_hcat(xs) = reduce(hcat, xs; init = zeros(2, 0))
@@ -181,7 +293,12 @@ end
     interp = Enzyme.Compiler.Interpreter
     for (original, replacement, args) in (
             (Base._typed_hcat, interp.override_typed_hcat, (Float64, ([1.0], [1.0, 2.0]))),
+            (Base._typed_hcat, interp.override_typed_hcat, (Float64, (view([1.0, 2.0], 1:1), [1.0, 2.0]))),
+            (Base.typed_hvcat, interp.override_typed_hvcat, (Float64, (2,), view([1.0, 2.0], 1:1), [1.0, 2.0])),
+            (Base._stack, interp.override_stack, (:, (view([1.0, 2.0], 1:1), [1.0, 2.0]))),
+            (Base._stack, interp.override_stack, (1, (view([1.0, 2.0], 1:1), [1.0, 2.0]))),
             (Base._typed_vcat, interp.override_typed_vcat, (Float64, ([1.0 2.0], [1.0]))),
+            (Base._typed_vcat, interp.override_typed_vcat, (Float64, (view([1.0 2.0], 1:1, :), [1.0]))),
             (Base.typed_hvcat, interp.override_typed_hvcat, (Float64, (2,), [1.0], [1.0, 2.0])),
             (Base.typed_hvcat, interp.override_typed_hvcat, (Float64, (1, 1), [1.0 2.0], [1.0])),
             (Base._stack, interp.override_stack, (:, ([1.0], [1.0, 2.0]))),
