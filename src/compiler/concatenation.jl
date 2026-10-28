@@ -12,9 +12,9 @@ end
 concat_rows(a) = size(a, 1)
 concat_cols(a) = size(a, 2)
 
-# An `Array` operand fills an `Array` output as contiguous runs. Any other array
-# (a view, a reshape, a transpose, a GPU array) takes the block assignment Base's
-# own concatenation uses for it. The output is fresh either way.
+# An `Array` operand fills an `Array` output as contiguous runs. A view, reshape,
+# transpose or adjoint of one takes the block assignment Base's own
+# concatenation uses for it. The output is fresh either way.
 @inline copy_vector_block!(out::Array, offset, a::Array) = copyto!(out, offset, a, 1, length(a))
 
 @inline function copy_vector_block!(out, offset, a)
@@ -99,6 +99,20 @@ const DENSE_TYPED_HCAT_METHOD = which(Base._typed_hcat, Tuple{Type{Float64}, Tup
 const DENSE_TYPED_VCAT_METHOD = which(Base._typed_vcat, Tuple{Type{Float64}, Tuple{Matrix{Float64}, Vector{Float64}}})
 const DENSE_TYPED_VECTOR_VCAT_METHOD = which(Base._typed_vcat, Tuple{Type{Float64}, Tuple{Vector{Float64}, Vector{Float64}}})
 
+import LinearAlgebra: Adjoint, Transpose
+
+# The overrides take `Array`s and the views, reshapes, transposes and adjoints
+# of them. Any other array type (GPU, sparse, static, offset or user-defined
+# arrays) keeps Base's concatenation.
+concat_operand(::Type) = false
+concat_operand(::Type{<:Array}) = true
+concat_operand(::Type{<:SubArray{<:Any, <:Any, P}}) where {P} = concat_operand(P)
+concat_operand(::Type{<:Base.ReshapedArray{<:Any, <:Any, P}}) where {P} = concat_operand(P)
+concat_operand(::Type{<:Transpose{<:Any, P}}) where {P} = concat_operand(P)
+concat_operand(::Type{<:Adjoint{<:Any, P}}) where {P} = concat_operand(P)
+
+concat_operands(types) = all(concat_operand, types)
+
 concat_replacement(f, sig) = nothing
 
 function concat_replacement(::typeof(Base.vcat), sig)
@@ -113,11 +127,13 @@ end
 
 function concat_replacement(::typeof(Base._typed_hcat), sig)
     sig <: Tuple{typeof(Base._typed_hcat), Type, Tuple{Vararg{AbstractVecOrMat}}} || return nothing
+    concat_operands(fieldtypes(fieldtypes(sig)[3])) || return nothing
     return DENSE_TYPED_HCAT_METHOD, override_typed_hcat
 end
 
 function concat_replacement(::typeof(Base._typed_vcat), sig)
     sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{AbstractVecOrMat}}} || return nothing
+    concat_operands(fieldtypes(fieldtypes(sig)[3])) || return nothing
     method = sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{AbstractVector}}} ?
         DENSE_TYPED_VECTOR_VCAT_METHOD : DENSE_TYPED_VCAT_METHOD
     return method, override_typed_vcat
@@ -369,16 +385,19 @@ const DENSE_NUMERIC_CAT_METHOD = which(Base._cat, Tuple{Int, Vector{Float64}, Ve
 
 function concat_replacement(::typeof(Base.typed_hvcat), sig)
     sig <: Tuple{typeof(Base.typed_hvcat), Type, Tuple{Vararg{Int}}, AbstractVecOrMat, Vararg{AbstractVecOrMat}} || return nothing
+    concat_operands(fieldtypes(sig)[4:end]) || return nothing
     return DENSE_TYPED_HVCAT_METHOD, override_typed_hvcat
 end
 
 function concat_replacement(::typeof(Base.stack), sig)
     sig <: Tuple{typeof(Base.stack), Tuple{AbstractArray, Vararg{AbstractArray}}} || return nothing
+    concat_operands(fieldtypes(fieldtypes(sig)[2])) || return nothing
     return DENSE_STACK_METHOD, override_stack_default
 end
 
 function concat_replacement(::typeof(Core.kwcall), sig)
     sig <: Tuple{typeof(Core.kwcall), NamedTuple{(:dims,), <:Tuple{Union{Integer, Colon}}}, typeof(Base.stack), Tuple{AbstractArray, Vararg{AbstractArray}}} || return nothing
+    concat_operands(fieldtypes(fieldtypes(sig)[4])) || return nothing
     return DENSE_KW_STACK_METHOD, override_kw_stack
 end
 

@@ -194,6 +194,32 @@ view_integer_hcat(w, k, I) = hcat(view(k, I), w)
     @test result[1] == [0.0 1.0; 0.0 2.0]
 end
 
+struct ConcatWrappedVector <: AbstractVector{Float64}
+    data::Vector{Float64}
+end
+Base.size(a::ConcatWrappedVector) = size(a.data)
+Base.getindex(a::ConcatWrappedVector, i::Int) = a.data[i]
+
+concat_typed_hcat_sig(arrays...) = Tuple{typeof(Base._typed_hcat), Type{Float64}, Tuple{map(typeof, arrays)...}}
+
+@testset "Concatenation overrides take only Arrays and their views, reshapes and transposes" begin
+    interp = Enzyme.Compiler.Interpreter
+    v = [1.0, 2.0, 3.0, 4.0]
+    wrapped = ConcatWrappedVector(v)
+    for (operand, taken) in (
+            (v, true), (reshape(v, 2, 2), true), (view(v, [1, 3]), true), (view(v, 1:2), true),
+            (view(reshape(v, 2, 2), :, 1), true), (reshape(view(v, 1:4), 2, 2), true),
+            (transpose(v), true), (adjoint(view(v, 1:2)), true),
+            (wrapped, false), (view(wrapped, 1:2), false), (transpose(wrapped), false),
+            (1:4, false), (1.0:4.0, false),
+        )
+        @test interp.concat_operand(typeof(operand)) == taken
+    end
+    @test interp.concat_replacement(Base._typed_hcat, concat_typed_hcat_sig(view(v, [1, 2]), v[1:2])) !== nothing
+    @test interp.concat_replacement(Base._typed_hcat, concat_typed_hcat_sig(wrapped, v)) === nothing
+    @test interp.concat_replacement(Base._typed_hcat, concat_typed_hcat_sig(1.0:4.0, v)) === nothing
+end
+
 concat_fold_vcat(xs) = reduce(vcat, xs; init = Float64[])
 concat_fold_mapped_vcat(xs) = mapfoldl(reverse, vcat, xs; init = Float64[])
 concat_fold_hcat(xs) = reduce(hcat, xs; init = zeros(2, 0))
