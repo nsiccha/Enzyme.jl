@@ -114,6 +114,8 @@ end
 view_hcat_gathered(u, c) = hcat(view(u, [1, 3]), u[4:5], view(c, [2, 6]))
 view_hcat_range(u, c) = hcat(view(u, 1:2), u[5:6], view(c, 3:4))
 view_hcat_reshape(u, c) = hcat(reshape(view(u, 1:4), 2, 2), view(c, [1, 2]))
+view_vcat(u, c) = vcat(view(u, [2, 1]), u[3:4], view(c, 5:6))
+view_typed_vcat(u, c) = eltype(u)[view(u, [2, 1]); view(c, 1:2)]
 view_hvcat(u, c) = [view(u, [1, 2]) u[3:4]; view(c, 1:2) view(u, [6, 5])]
 view_stack(u, c) = stack((view(u, [1, 3]), u[4:5], view(c, 2:3)))
 view_stack_first(u, c) = stack((view(u, [1, 3]), view(c, 2:3)); dims = 1)
@@ -121,6 +123,9 @@ view_hcat_columns(u, c) = hcat(view(u, :, 1:2), c[:, 1], view(c, :, 3))
 view_hcat_rows(u, c) = hcat(view(u, 1:2, :), view(c, 2:3, 1))
 view_hcat_transpose(u, c) = hcat(transpose(u), c[:, 1])
 view_hvcat_matrix(u, c) = [view(u, 1:2, 1:2) view(c, 1:2, 3); transpose(view(u, 3, :))]
+view_hvcat_scalar(u, c) = [view(u, 1:2, 1:2) view(c, 1:2, 3); transpose(view(c, 3, 1:2)) u[3, 3]]
+view_vcat_transpose(u, c) = vcat(transpose(view(u, :, 1)), c, adjoint(view(u, 2, :)))
+view_vcat_rows(u, c) = vcat(view(u, 1:2, :), c[3:3, :], view(c, 1:1, :))
 view_stack_second(u, c) = stack((view(u, :, 1:2), c[:, 2:3]); dims = 2)
 view_loss(f, u, c) = sum(f(u, c) .* concat_weights(f(u, c)))
 
@@ -137,12 +142,12 @@ end
 
 const VIEW_CONCAT_CASES = (
     (6,) => (
-        view_hcat_gathered, view_hcat_range, view_hcat_reshape,
-        view_hvcat, view_stack, view_stack_first,
+        view_hcat_gathered, view_hcat_range, view_hcat_reshape, view_vcat,
+        view_typed_vcat, view_hvcat, view_stack, view_stack_first,
     ),
     (3, 3) => (
-        view_hcat_columns, view_hcat_rows, view_hcat_transpose,
-        view_hvcat_matrix, view_stack_second,
+        view_hcat_columns, view_hcat_rows, view_hcat_transpose, view_vcat_transpose,
+        view_vcat_rows, view_hvcat_matrix, view_hvcat_scalar, view_stack_second,
     ),
 )
 
@@ -268,6 +273,7 @@ end
             (Base._stack, interp.override_stack, (:, (view([1.0, 2.0], 1:1), [1.0, 2.0]))),
             (Base._stack, interp.override_stack, (1, (view([1.0, 2.0], 1:1), [1.0, 2.0]))),
             (Base._typed_vcat, interp.override_typed_vcat, (Float64, ([1.0 2.0], [1.0]))),
+            (Base._typed_vcat, interp.override_typed_vcat, (Float64, (view([1.0 2.0], 1:1, :), [1.0]))),
             (Base.typed_hvcat, interp.override_typed_hvcat, (Float64, (2,), [1.0], [1.0, 2.0])),
             (Base.typed_hvcat, interp.override_typed_hvcat, (Float64, (1, 1), [1.0 2.0], [1.0])),
             (Base._stack, interp.override_stack, (:, ([1.0], [1.0, 2.0]))),

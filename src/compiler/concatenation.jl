@@ -5,23 +5,34 @@
 @inline function copy_hcat!(out, offset, arrays::Tuple)
     a = first(arrays)
     n = length(a)
-    copyto!(out, offset, a, 1, n)
+    copy_vector_block!(out, offset, a)
     return copy_hcat!(out, offset + n, Base.tail(arrays))
 end
 
 concat_rows(a) = size(a, 1)
 concat_cols(a) = size(a, 2)
 
-# An `Array` operand fills an `Array` output as one contiguous run. Any other
-# array (a view, a reshape, a transpose, a GPU array) takes the block assignment
-# Base's own concatenation uses for it. The output is fresh either way.
-@inline copy_hcat_block!(out::Array, col, a::Array) =
-    copyto!(out, (col - 1) * size(out, 1) + 1, a, 1, length(a))
+# An `Array` operand fills an `Array` output as contiguous runs. Any other array
+# (a view, a reshape, a transpose, a GPU array) takes the block assignment Base's
+# own concatenation uses for it. The output is fresh either way.
+@inline copy_vector_block!(out::Array, offset, a::Array) = copyto!(out, offset, a, 1, length(a))
 
-@inline function copy_hcat_block!(out, col, a)
-    out[:, col:(col + concat_cols(a) - 1)] = a
+@inline function copy_vector_block!(out, offset, a)
+    out[offset:(offset + length(a) - 1)] = a
     return out
 end
+
+@inline copy_block!(out::Array, row, col, a::Array) = copy_columns!(out, row, col, a)
+
+@inline function copy_block!(out, row, col, a)
+    out[row:(row + concat_rows(a) - 1), col:(col + concat_cols(a) - 1)] = a
+    return out
+end
+
+# A full-height `Array` block is a single run.
+@inline copy_hcat_block!(out::Array, col, a::Array) =
+    copyto!(out, (col - 1) * size(out, 1) + 1, a, 1, length(a))
+@inline copy_hcat_block!(out, col, a) = copy_block!(out, 1, col, a)
 
 @inline copy_hcat_columns!(out, col, ::Tuple{}) = out
 
@@ -62,11 +73,11 @@ end
 
 @inline function copy_matrix_vcat!(out, row, arrays::Tuple)
     a = first(arrays)
-    copy_columns!(out, row, 1, a)
+    copy_block!(out, row, 1, a)
     return copy_matrix_vcat!(out, row + size(a, 1), Base.tail(arrays))
 end
 
-@inline function override_typed_vcat(::Type{T}, arrays::Tuple{Vararg{Vector}}) where {T}
+@inline function override_typed_vcat(::Type{T}, arrays::Tuple{Vararg{AbstractVector}}) where {T}
     out = similar(first(arrays), T, concat_sum(length, arrays))
     return copy_hcat!(out, 1, arrays)
 end
@@ -106,8 +117,8 @@ function concat_replacement(::typeof(Base._typed_hcat), sig)
 end
 
 function concat_replacement(::typeof(Base._typed_vcat), sig)
-    sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{VecOrMat}}} || return nothing
-    method = sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{Vector}}} ?
+    sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{AbstractVecOrMat}}} || return nothing
+    method = sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{AbstractVector}}} ?
         DENSE_TYPED_VECTOR_VCAT_METHOD : DENSE_TYPED_VCAT_METHOD
     return method, override_typed_vcat
 end
@@ -164,18 +175,11 @@ end
 
 @inline copy_hvcat!(out, offsets, i, ::Tuple{}) = out
 
-@inline copy_hvcat_block!(out::Array, row, col, a::Array) = copy_columns!(out, row, col, a)
-
-@inline function copy_hvcat_block!(out, row, col, a)
-    out[row:(row + concat_rows(a) - 1), col:(col + concat_cols(a) - 1)] = a
-    return out
-end
-
 @inline function copy_hvcat!(out, offsets, i, arrays::Tuple)
     i > length(offsets) && return out
     a = first(arrays)
     row, col = offsets[i]
-    copy_hvcat_block!(out, row, col, a)
+    copy_block!(out, row, col, a)
     return copy_hvcat!(out, offsets, i + 1, Base.tail(arrays))
 end
 
