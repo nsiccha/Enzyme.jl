@@ -7342,6 +7342,15 @@ end
     if params.run_enzyme
         # Generate the adjoint
         erase_memcpy_from_undef!(mod)
+        # Before Julia 1.12 an `sret` buffer holds its GC-tracked pointers inline, and a
+        # callee returning (a copy of) an argument fills it with one `memcpy`. Enzyme
+        # copies the pointers of a constant source into the shadow unchanged, so the
+        # shadow of e.g. `unalias(dest, view(c, i))` pointed into the `Const` array `c`.
+        # Field-wise stores reach the mixed-activity handler like any other store of a
+        # constant pointer. Julia 1.12+ passes those pointers in `returnRoots` instead.
+        @static if VERSION < v"1.12"
+            memcpy_sret_split!(mod)
+        end
         memcpy_alloca_to_loadstore(mod, job.world, enzyme_ctx)
         force_recompute!(mod)
         API.EnzymeDetectReadonlyOrThrow(mod)

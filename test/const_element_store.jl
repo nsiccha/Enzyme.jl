@@ -353,6 +353,64 @@ view_copy_first(sv, f, x, idx) = f(x, sv[1], idx)
     end
 end
 
+# Before Julia 1.12, `unalias(dest, src)` returns the view `src` through its `sret`
+# buffer with one `memcpy`, as does any non-inlined function returning a view. Enzyme
+# copied the parent pointer of a constant source into the shadow unchanged, so when
+# the copy met active data, Reverse added derivatives into the `Const` array and
+# Forward took its values as the tangent.
+function view_copy_into_rows(u, c)
+    B = zeros(2, 2)
+    copyto!(view(B, 1, :), u[[1, 3]])
+    copyto!(view(B, 2, :), view(c, 2:3))
+    return sum(B .* [1.0 2.0; 3.0 4.0])
+end
+function view_copy_into_vector(u, c)
+    v = zeros(2)
+    copyto!(v, view(c, 2:3))
+    return sum(v .* u[1:2]) + u[3]^2
+end
+@noinline view_copy_pass(v) = v
+view_copy_returned(u, c) = sum(view_copy_pass(view(c, 2:3)) .* u[1:2])
+
+@testset "Copies of views of constant arrays into active data" begin
+    u = [0.1i for i in 1:6]
+    c = [0.3i for i in 1:6]
+    @testset "$(nameof(f))" for (f, du_want, dc_want) in (
+            (view_copy_into_rows, [1.0, 0, 2.0, 0, 0, 0], [0, 3.0, 4.0, 0, 0, 0]),
+            (view_copy_into_vector, [c[2], c[3], 2u[3], 0, 0, 0], [0, u[1], u[2], 0, 0, 0]),
+            (view_copy_returned, [c[2], c[3], 0, 0, 0, 0], [0, u[1], u[2], 0, 0, 0]),
+        )
+        c0 = copy(c)
+        for mode in (Reverse, set_runtime_activity(Reverse))
+            du = zero(u)
+            autodiff(mode, f, Active, Duplicated(u, du), Const(c))
+            @test du ≈ du_want
+            @test c == c0
+        end
+
+        du = zero(u)
+        dc = zero(c)
+        autodiff(Reverse, f, Active, Duplicated(u, du), Duplicated(c, dc))
+        @test du ≈ du_want
+        @test dc ≈ dc_want
+
+        @test autodiff(Forward, f, Duplicated(u, ones(6)), Const(c))[1] ≈ sum(du_want)
+        bres = autodiff(Forward, f, BatchDuplicated(u, (ones(6), 2 .* ones(6))), Const(c))[1]
+        @test bres[1] ≈ sum(du_want)
+        @test bres[2] ≈ 2 * sum(du_want)
+
+        du = zero(u)
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal, Const{typeof(f)}, Active, Duplicated{typeof(u)}, Const{typeof(c)}
+        )
+        tape, prim, _ = fwd(Const(f), Duplicated(u, du), Const(c))
+        @test prim ≈ f(u, c0)
+        rev(Const(f), Duplicated(u, du), Const(c), 1.0, tape)
+        @test du ≈ du_want
+        @test c == c0
+    end
+end
+
 # Julia 1.13 constructs a reshaped Array by copying the source MemoryRef into
 # a new header. A constant row reduction can make that header active when it
 # shares the reshaped array with a broadcast over active data.
