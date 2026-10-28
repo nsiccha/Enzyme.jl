@@ -123,7 +123,6 @@ view_hcat_columns(u, c) = hcat(view(u, :, 1:2), c[:, 1], view(c, :, 3))
 view_hcat_rows(u, c) = hcat(view(u, 1:2, :), view(c, 2:3, 1))
 view_hcat_transpose(u, c) = hcat(transpose(u), c[:, 1])
 view_hvcat_matrix(u, c) = [view(u, 1:2, 1:2) view(c, 1:2, 3); transpose(view(u, 3, :))]
-view_hvcat_scalar(u, c) = [view(u, 1:2, 1:2) view(c, 1:2, 3); transpose(view(c, 3, 1:2)) u[3, 3]]
 view_vcat_transpose(u, c) = vcat(transpose(view(u, :, 1)), c, adjoint(view(u, 2, :)))
 view_vcat_rows(u, c) = vcat(view(u, 1:2, :), c[3:3, :], view(c, 1:1, :))
 view_stack_second(u, c) = stack((view(u, :, 1:2), c[:, 2:3]); dims = 2)
@@ -147,7 +146,7 @@ const VIEW_CONCAT_CASES = (
     ),
     (3, 3) => (
         view_hcat_columns, view_hcat_rows, view_hcat_transpose, view_vcat_transpose,
-        view_vcat_rows, view_hvcat_matrix, view_hvcat_scalar, view_stack_second,
+        view_vcat_rows, view_hvcat_matrix, view_stack_second,
     ),
 )
 

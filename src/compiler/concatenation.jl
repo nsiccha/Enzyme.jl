@@ -269,11 +269,14 @@ end
     end
 end
 
-# Any other slice or output is copied the way Base's `_dim_stack!` copies it.
+# Any other slice or output takes a block assignment into the output. Base's
+# `_dim_stack!` copies into a view of it instead, and Enzyme differentiates
+# `copyto!` from a view of Const data into a view wrongly: Reverse adds the
+# gradient into the Const data and Forward returns it as the tangent.
 @inline function copy_stack_block!(::Val{D}, out, i, a) where {D}
     before = ntuple(Returns(Colon()), Val(D - 1))
     after = ntuple(Returns(Colon()), Val(ndims(out) - D))
-    copyto!(view(out, before..., i, after...), a)
+    out[before..., i, after...] = a
     return out
 end
 
