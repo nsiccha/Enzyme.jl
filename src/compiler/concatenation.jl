@@ -5,12 +5,42 @@
 @inline function copy_hcat!(out, offset, arrays::Tuple)
     a = first(arrays)
     n = length(a)
-    copyto!(out, offset, a, 1, n)
+    copy_vector_block!(out, offset, a)
     return copy_hcat!(out, offset + n, Base.tail(arrays))
 end
 
 concat_rows(a) = size(a, 1)
 concat_cols(a) = size(a, 2)
+
+# An `Array` operand fills an `Array` output as contiguous runs. A view, reshape,
+# transpose or adjoint of one takes the block assignment Base's own
+# concatenation uses for it. The output is fresh either way.
+@inline copy_vector_block!(out::Array, offset, a::Array) = copyto!(out, offset, a, 1, length(a))
+
+@inline function copy_vector_block!(out, offset, a)
+    out[offset:(offset + length(a) - 1)] = a
+    return out
+end
+
+@inline copy_block!(out::Array, row, col, a::Array) = copy_columns!(out, row, col, a)
+
+@inline function copy_block!(out, row, col, a)
+    out[row:(row + concat_rows(a) - 1), col:(col + concat_cols(a) - 1)] = a
+    return out
+end
+
+# A full-height `Array` block is a single run.
+@inline copy_hcat_block!(out::Array, col, a::Array) =
+    copyto!(out, (col - 1) * size(out, 1) + 1, a, 1, length(a))
+@inline copy_hcat_block!(out, col, a) = copy_block!(out, 1, col, a)
+
+@inline copy_hcat_columns!(out, col, ::Tuple{}) = out
+
+@inline function copy_hcat_columns!(out, col, arrays::Tuple)
+    a = first(arrays)
+    copy_hcat_block!(out, col, a)
+    return copy_hcat_columns!(out, col + concat_cols(a), Base.tail(arrays))
+end
 
 @inline function override_hcat(arrays::Vector{T}...) where {T}
     height = length(first(arrays))
@@ -28,7 +58,7 @@ end
         )
     )
     out = similar(first(arrays), T, height, concat_sum(concat_cols, arrays))
-    return copy_hcat!(out, 1, arrays)
+    return copy_hcat_columns!(out, 1, arrays)
 end
 
 @inline copy_matrix_vcat!(out, row, ::Tuple{}) = out
@@ -43,11 +73,11 @@ end
 
 @inline function copy_matrix_vcat!(out, row, arrays::Tuple)
     a = first(arrays)
-    copy_columns!(out, row, 1, a)
+    copy_block!(out, row, 1, a)
     return copy_matrix_vcat!(out, row + size(a, 1), Base.tail(arrays))
 end
 
-@inline function override_typed_vcat(::Type{T}, arrays::Tuple{Vararg{Vector}}) where {T}
+@inline function override_typed_vcat(::Type{T}, arrays::Tuple{Vararg{AbstractVector}}) where {T}
     out = similar(first(arrays), T, concat_sum(length, arrays))
     return copy_hcat!(out, 1, arrays)
 end
@@ -69,6 +99,20 @@ const DENSE_TYPED_HCAT_METHOD = which(Base._typed_hcat, Tuple{Type{Float64}, Tup
 const DENSE_TYPED_VCAT_METHOD = which(Base._typed_vcat, Tuple{Type{Float64}, Tuple{Matrix{Float64}, Vector{Float64}}})
 const DENSE_TYPED_VECTOR_VCAT_METHOD = which(Base._typed_vcat, Tuple{Type{Float64}, Tuple{Vector{Float64}, Vector{Float64}}})
 
+import LinearAlgebra: Adjoint, Transpose
+
+# The overrides take `Array`s and the views, reshapes, transposes and adjoints
+# of them. Any other array type (GPU, sparse, static, offset or user-defined
+# arrays) keeps Base's concatenation.
+concat_operand(::Type) = false
+concat_operand(::Type{<:Array}) = true
+concat_operand(::Type{<:SubArray{<:Any, <:Any, P}}) where {P} = concat_operand(P)
+concat_operand(::Type{<:Base.ReshapedArray{<:Any, <:Any, P}}) where {P} = concat_operand(P)
+concat_operand(::Type{<:Transpose{<:Any, P}}) where {P} = concat_operand(P)
+concat_operand(::Type{<:Adjoint{<:Any, P}}) where {P} = concat_operand(P)
+
+concat_operands(types) = all(concat_operand, types)
+
 concat_replacement(f, sig) = nothing
 
 function concat_replacement(::typeof(Base.vcat), sig)
@@ -82,13 +126,15 @@ function concat_replacement(::typeof(Base.hcat), sig)
 end
 
 function concat_replacement(::typeof(Base._typed_hcat), sig)
-    sig <: Tuple{typeof(Base._typed_hcat), Type, Tuple{Vararg{VecOrMat}}} || return nothing
+    sig <: Tuple{typeof(Base._typed_hcat), Type, Tuple{Vararg{AbstractVecOrMat}}} || return nothing
+    concat_operands(fieldtypes(fieldtypes(sig)[3])) || return nothing
     return DENSE_TYPED_HCAT_METHOD, override_typed_hcat
 end
 
 function concat_replacement(::typeof(Base._typed_vcat), sig)
-    sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{VecOrMat}}} || return nothing
-    method = sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{Vector}}} ?
+    sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{AbstractVecOrMat}}} || return nothing
+    concat_operands(fieldtypes(fieldtypes(sig)[3])) || return nothing
+    method = sig <: Tuple{typeof(Base._typed_vcat), Type, Tuple{Vararg{AbstractVector}}} ?
         DENSE_TYPED_VECTOR_VCAT_METHOD : DENSE_TYPED_VCAT_METHOD
     return method, override_typed_vcat
 end
@@ -149,7 +195,7 @@ end
     i > length(offsets) && return out
     a = first(arrays)
     row, col = offsets[i]
-    copy_columns!(out, row, col, a)
+    copy_block!(out, row, col, a)
     return copy_hvcat!(out, offsets, i + 1, Base.tail(arrays))
 end
 
@@ -237,6 +283,17 @@ end
         end
         return out
     end
+end
+
+# Any other slice or output takes a block assignment into the output. Base's
+# `_dim_stack!` copies into a view of it instead, and Enzyme differentiates
+# `copyto!` from a view of Const data into a view wrongly: Reverse adds the
+# gradient into the Const data and Forward returns it as the tangent.
+@inline function copy_stack_block!(::Val{D}, out, i, a) where {D}
+    before = ntuple(Returns(Colon()), Val(D - 1))
+    after = ntuple(Returns(Colon()), Val(ndims(out) - D))
+    out[before..., i, after...] = a
+    return out
 end
 
 struct StackAxis{A, I, D}
@@ -327,17 +384,20 @@ const DENSE_PROMOTED_CAT_METHOD = which(Base._cat, Tuple{Int, Array{Float64, 3},
 const DENSE_NUMERIC_CAT_METHOD = which(Base._cat, Tuple{Int, Vector{Float64}, Vector{Float64}})
 
 function concat_replacement(::typeof(Base.typed_hvcat), sig)
-    sig <: Tuple{typeof(Base.typed_hvcat), Type, Tuple{Vararg{Int}}, VecOrMat, Vararg{VecOrMat}} || return nothing
+    sig <: Tuple{typeof(Base.typed_hvcat), Type, Tuple{Vararg{Int}}, AbstractVecOrMat, Vararg{AbstractVecOrMat}} || return nothing
+    concat_operands(fieldtypes(sig)[4:end]) || return nothing
     return DENSE_TYPED_HVCAT_METHOD, override_typed_hvcat
 end
 
 function concat_replacement(::typeof(Base.stack), sig)
-    sig <: Tuple{typeof(Base.stack), Tuple{Array, Vararg{Array}}} || return nothing
+    sig <: Tuple{typeof(Base.stack), Tuple{AbstractArray, Vararg{AbstractArray}}} || return nothing
+    concat_operands(fieldtypes(fieldtypes(sig)[2])) || return nothing
     return DENSE_STACK_METHOD, override_stack_default
 end
 
 function concat_replacement(::typeof(Core.kwcall), sig)
-    sig <: Tuple{typeof(Core.kwcall), NamedTuple{(:dims,), <:Tuple{Union{Integer, Colon}}}, typeof(Base.stack), Tuple{Array, Vararg{Array}}} || return nothing
+    sig <: Tuple{typeof(Core.kwcall), NamedTuple{(:dims,), <:Tuple{Union{Integer, Colon}}}, typeof(Base.stack), Tuple{AbstractArray, Vararg{AbstractArray}}} || return nothing
+    concat_operands(fieldtypes(fieldtypes(sig)[4])) || return nothing
     return DENSE_KW_STACK_METHOD, override_kw_stack
 end
 
