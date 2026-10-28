@@ -248,6 +248,161 @@ function is_inactive_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospeciali
 end
 
 """
+    readonly_checked_params(primalf, TT, err_if_written, world)::Vector{LLVM.Value}
+
+The parameters of `primalf` whose data the readonly check follows. `err_if_written`
+is `true` for the function argument alone (`err_if_func_written`), or a tuple with
+one entry per element of `TT.parameters`, the function first, as the rules of a
+dynamic call request it (`src/rules/jitrules.jl`). Only arguments whose type can
+hold derivative data (`DupState` / `MixedState`) are followed.
+"""
+function readonly_checked_params(primalf::LLVM.Function, @nospecialize(TT::Type), err_if_written::Union{Bool, Tuple}, world::UInt)::Vector{LLVM.Value}
+    checked = LLVM.Value[]
+    parms = collect(LLVM.parameters(primalf))
+    # Lowered parameters: `swiftself`, then one per argument that is not a ghost.
+    idx = Int(has_swiftself(primalf))
+    for (i, T) in enumerate(TT.parameters)
+        source_typ = eltype(T)
+        if isghostty(source_typ) || Core.Compiler.isconstType(source_typ)
+            continue
+        end
+        idx += 1
+        check = err_if_written isa Bool ? (i == 1 && err_if_written) : err_if_written[i]
+        check || continue
+        reg = active_reg(source_typ, world)
+        if reg == DupState || reg == MixedState
+            push!(checked, parms[idx])
+        end
+    end
+    return checked
+end
+
+"""
+    is_fresh_object(val::LLVM.Value)::Bool
+
+Whether `val` is an object this function allocates (`julia.gc_alloc_obj`), such as
+the box Julia makes of a value it passes to a dynamic call.
+"""
+function is_fresh_object(@nospecialize(val::LLVM.Value))::Bool
+    isa(val, LLVM.CallInst) || return false
+    fn = LLVM.called_operand(val)
+    return isa(fn, LLVM.Function) && LLVM.name(fn) == "julia.gc_alloc_obj"
+end
+
+"""
+    is_nonwriting_builtin_call(call::LLVM.CallInst)::Bool
+
+Whether `call` is a `julia.call` of a Julia builtin that reads its arguments or
+builds a new object from them (`tuple`, `getfield`, `isa`, ...) but writes no
+memory they refer to. Builtins take and return boxed values, as the code around a
+dynamic call does.
+"""
+function is_nonwriting_builtin_call(call::LLVM.CallInst)::Bool
+    jlcall = LLVM.called_operand(call)
+    isa(jlcall, LLVM.Function) || return false
+    LLVM.name(jlcall) == "julia.call" || return false
+    fn = operands(call)[1]
+    isa(fn, LLVM.Function) || return false
+    nm = LLVM.name(fn)
+    if startswith(nm, "ijl_")
+        nm = nm[2:end]
+    end
+    return nm in (
+        "jl_f_tuple",
+        "jl_f_getfield",
+        "jl_f__svec_ref",
+        "jl_f_typeassert",
+        "jl_f_isa",
+        "jl_f_is",
+        "jl_f_typeof",
+        "jl_f_sizeof",
+        "jl_f_nfields",
+        "jl_f_isdefined",
+        "jl_f_ifelse",
+    )
+end
+
+const READONLY_OPERANDS_MD = "enzymejl_readonly_operands"
+
+"""
+    dynamic_call_operands(call::LLVM.CallInst)
+
+For a `julia.call` / `julia.call2` that dispatches at run time (`jl_apply_generic`,
+`jl_invoke`, `invokelatest`, `invoke_in_world`, `_apply_iterate`), the index in
+`arg_operands_view(call)` of the function it calls, the first of the operands the
+dynamic-call rules (`generic_setup`, `src/rules/jitrules.jl`) pass on, and whether
+the arguments after it are splatted (`_apply_iterate`). `nothing` for any other
+call. The indices follow the handlers in `src/rules/llvmrules.jl`.
+"""
+function dynamic_call_operands(call::LLVM.CallInst)
+    jlcall = LLVM.called_operand(call)
+    isa(jlcall, LLVM.Function) || return nothing
+    jlname = LLVM.name(jlcall)
+    (jlname == "julia.call" || jlname == "julia.call2") || return nothing
+    fn = operands(call)[1]
+    isa(fn, LLVM.Function) || return nothing
+    nm = LLVM.name(fn)
+    if jlname == "julia.call2"
+        return nm in ("ijl_invoke", "jl_invoke") ? (3, false) : nothing
+    end
+    if nm in ("ijl_apply_generic", "jl_apply_generic")
+        return (2, false)
+    elseif nm in (
+            "ijl_f__apply_latest",
+            "ijl_f__call_latest",
+            "ijl_f_invokelatest",
+            "jl_f__apply_latest",
+            "jl_f__call_latest",
+            "jl_f_invokelatest",
+        )
+        return (3, false)
+    elseif nm in ("ijl_f_invoke_in_world", "jl_f_invoke_in_world", "ijl_f__call_in_world", "jl_f__call_in_world")
+        return (4, false)
+    elseif nm in ("ijl_f__apply_iterate", "jl_f__apply_iterate")
+        return (4, true)
+    end
+    return nothing
+end
+
+"""
+    readonly_operands(call::LLVM.Instruction)::Vector{Int}
+
+The operands of a dynamic call whose data the readonly check left to the method
+the call reaches (`defer_readonly_operand!`), numbered as the dynamic-call rules
+see them: 1 is the called function, 2 its first argument.
+"""
+function readonly_operands(call::LLVM.Instruction)::Vector{Int}
+    haskey(metadata(call), READONLY_OPERANDS_MD) || return Int[]
+    mds = operands(metadata(call)[READONLY_OPERANDS_MD])[1]::MDString
+    return Int[parse(Int, s) for s in split(Base.convert(String, mds), ",")]
+end
+
+"""
+    defer_readonly_operand!(call::LLVM.CallInst, val::LLVM.Value)::Bool
+
+Whether the readonly check can leave `val`, an operand of `call`, to the method a
+dynamic call reaches (`dynamic_call_operands`). It can when `val` is the called
+function or, unless the arguments are splatted, one of its arguments. The
+positions are then recorded on `call` (`readonly_operands`), and the rules of
+`src/rules/jitrules.jl` compile the derivative of that method with the check on
+them. What the call returns is followed like the other values the walk meets.
+"""
+function defer_readonly_operand!(call::LLVM.CallInst, @nospecialize(val::LLVM.Value))::Bool
+    dyn = dynamic_call_operands(call)
+    dyn === nothing && return false
+    first, splat = dyn
+    positions = readonly_operands(call)
+    for (i, op) in enumerate(arg_operands_view(call))
+        op == val || continue
+        (i < first || (splat && i != first)) && return false
+        push!(positions, i - first + 1)
+    end
+    metadata(call)[READONLY_OPERANDS_MD] =
+        MDNode(LLVM.Metadata[MDString(join(sort!(unique!(positions)), ","))])
+    return true
+end
+
+"""
     is_readonly(attr::LLVM.Attribute)::Bool
 
 Whether `attr` on its own establishes that the function or argument position it

@@ -243,3 +243,106 @@ end
     @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(1.5))
     @test f.r[] == 0.0
 end
+
+# Dynamic calls (`Base.inferencebarrier`, or any call whose result Julia cannot
+# infer) reach a method known only at run time. When data the callable holds
+# reaches one, as the called function (a field Julia boxes to pass it) or as an
+# argument, the check is left to the rules of that call: they compile the
+# method's derivative with the check on those operands. What such a call
+# returns is followed like any other value.
+struct ROScaler{M}
+    v::M
+end
+(s::ROScaler)(x) = sum(s.v .* x)
+
+struct RODynCallee{M}
+    s::ROScaler{M}
+    t::Float64
+end
+(c::RODynCallee)(x) = Base.inferencebarrier(c.s)(x) * c.t
+
+ro_dyn_scaled(v, x) = sum(v .* x)
+struct RODynArg{M}
+    v::M
+end
+(c::RODynArg)(x) = Base.inferencebarrier(ro_dyn_scaled)(c.v, x)
+
+ro_dyn_step(P, s, a) = (P[1] * s[1] + a, P[2] * s[2], s[3])
+ro_dyn_stepv(props, j, s, a) = ro_dyn_step(props[j], s, a)
+struct RODynLoop{T}
+    t::T
+end
+function (h::RODynLoop)(k)
+    seed, props, amounts = h.t
+    s = seed
+    for j in eachindex(amounts)
+        s = amounts[j] > 1 ? Base.inferencebarrier(ro_dyn_stepv)(props, j, s, amounts[j] * k) :
+            (props[j][1] * s[1], s[2] * k, s[3])
+    end
+    return s[1] + s[2] + s[3]
+end
+
+ro_dyn_first(t) = t[1]
+struct RODynReturned{T}
+    data::T
+end
+(c::RODynReturned)(x) = sum(Base.inferencebarrier(ro_dyn_first)(c.data)) * x
+
+# Controls: each writes data the callable holds through a dynamic call, as the
+# called function, as an argument, or into what one returned.
+struct ROSetter{M}
+    v::M
+end
+(s::ROSetter)(x) = (s.v[1] = x; x)
+struct RODynWriteCallee{M}
+    s::ROSetter{M}
+    t::Float64
+end
+(c::RODynWriteCallee)(x) = Base.inferencebarrier(c.s)(x) * c.t + sum(c.s.v)
+
+ro_dyn_set!(v, x) = (v[1] = x; x)
+struct RODynWriteArg{M}
+    v::M
+end
+(c::RODynWriteArg)(x) = Base.inferencebarrier(ro_dyn_set!)(c.v, x) + sum(c.v)
+
+struct RODynWriteReturned{T}
+    data::T
+end
+function (c::RODynWriteReturned)(x)
+    v = Base.inferencebarrier(ro_dyn_first)(c.data)::Vector{Float64}
+    v[1] = x
+    return sum(v)
+end
+
+@testset "Readonly check: data passed to dynamic calls" begin
+    for f in (
+            RODynCallee(ROScaler([1.0, 2.0]), 3.0), RODynArg([1.0, 2.0]),
+            RODynLoop(((1.0, 2.0, 3.0), [(0.5, 0.25), (0.9, 0.8), (0.7, 0.6)], [2.0, 0.0, 3.0])),
+            RODynReturned(([1.0, 2.0], 3.0)),
+        )
+        expected = autodiff(ReverseWithPrimal, Const(f), Active, Active(0.7))
+        @test autodiff(ReverseWithPrimal, f, Active, Active(0.7)) == expected
+        dexpected = autodiff(ForwardWithPrimal, Const(f), Duplicated(0.7, 1.0))
+        @test autodiff(ForwardWithPrimal, f, Duplicated(0.7, 1.0)) == dexpected
+    end
+    @test autodiff(Reverse, RODynCallee(ROScaler([1.0, 2.0]), 3.0), Active, Active(0.7))[1][1] == 9.0
+    @test autodiff(
+        Reverse,
+        RODynLoop(((1.0, 2.0, 3.0), [(0.5, 0.25), (0.9, 0.8), (0.7, 0.6)], [2.0, 0.0, 3.0])),
+        Active, Active(0.7),
+    )[1][1] ≈ 4.56
+
+    f = RODynWriteCallee(ROSetter([1.0, 2.0]), 3.0)
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
+    @test f.s.v == [1.0, 2.0]
+    f = RODynWriteArg([1.0, 2.0])
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
+    @test f.v == [1.0, 2.0]
+    f = RODynWriteReturned(([1.0, 2.0], 3.0))
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
+    @test f.data[1] == [1.0, 2.0]
+    f = RODynWriteArg([1.0, 2.0])
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Forward, f, Duplicated(0.7, 1.0))
+    @test f.v == [1.0, 2.0]
+end
