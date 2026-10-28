@@ -249,6 +249,19 @@ end
     @test autodiff(Reverse, f_dict, Duplicated(params, dparams), Active(5.0)) == ((nothing, 10.0),)
     @test dparams[:var] == 5.0
 
+    # A `String` key hashes through the `memhash_seed` ccall, so every dictionary operation
+    # here loads the symbol from a PLT stub. `check_ir` has to resolve each of those loads to
+    # the same declaration; resolving one to a bare address instead leaves Enzyme
+    # differentiating an anonymous call ("No create nofree of unknown value").
+    function f_strdict(x)
+        d = Dict{String, Float64}()
+        d["a"] = x
+        d["bb"] = 2 * x
+        return d["a"] + d["bb"]
+    end
+
+    @test autodiff(Reverse, f_strdict, Active, Active(3.0))[1][1] == 3.0
+
 
     mutable struct MD
         v::Float64
@@ -306,7 +319,7 @@ end
     x = [2.0]
     dx = [0.0]
     @test Enzyme.autodiff(Reverse, invsin2, Active, Duplicated(x, dx)) == ((nothing,),)
-    if julia_typed_pointers
+    if julia_typed_pointers || VERSION >= v"1.13.2-DEV"
         @test dx[1] == -0.4161468365471424
     else
         @test_broken dx[1] == -0.4161468365471424
@@ -667,11 +680,12 @@ end
 @testset "Broadcast noalias" begin
     x = ones(30)
 
-    @static if VERSION < v"1.11-"
-        autodiff(Reverse, bc0_test_function, Active, Const(x))
-    else
-        # TODO
+    @static if v"1.11-" <= VERSION < v"1.12-"
+        # TODO; not measured on Julia 1.11 since a constant argument merged by Base's
+        # unalias phi has a zero-filled shadow.
         @test_broken autodiff(Reverse, bc0_test_function, Active, Const(x))
+    else
+        @test autodiff(Reverse, bc0_test_function, Active, Const(x)) == ((nothing,),)
     end
 
     x = rand(Float32, 2, 3)
@@ -2062,4 +2076,43 @@ mutable_global_3697(x) = x * MutableGlobal3697.bump()
         @test MutableGlobal3697.counter == c + 1
         MutableGlobal3697.bump()
     end
+end
+
+# A mutable field reached through a `const` global must be read at runtime too.
+# On Julia 1.10 such an object is a raw address in the IR, and folding the load
+# froze the callee the field held at the first compilation.
+cube_const_ref(x) = x^3 + sin(x)
+quartic_const_ref(x) = x^4
+
+module MutableConstField
+    const callee = Ref{Any}(identity)
+    const scale = Ref(2.0)
+    mutable struct Holder
+        f::Any
+        const g::Any
+    end
+    const holder = Holder(identity, sin)
+end
+
+const_ref_call(x) = MutableConstField.callee[](x)::Float64 * 2
+const_ref_scale(x) = MutableConstField.scale[] * x
+const_holder_call(x) = MutableConstField.holder.f(x)::Float64 + MutableConstField.holder.g(x)::Float64
+
+@testset "Mutable fields of const globals are not folded" begin
+    MutableConstField.callee[] = cube_const_ref
+    @test autodiff(Reverse, const_ref_call, Active, Active(2.0))[1][1] ≈ 2 * (12 + cos(2.0))
+    @test autodiff(Forward, const_ref_call, Duplicated(2.0, 1.0))[1] ≈ 2 * (12 + cos(2.0))
+    MutableConstField.callee[] = quartic_const_ref
+    @test autodiff(Reverse, const_ref_call, Active, Active(2.0))[1][1] ≈ 64.0
+    @test autodiff(Forward, const_ref_call, Duplicated(2.0, 1.0))[1] ≈ 64.0
+
+    @test autodiff(Reverse, const_ref_scale, Active, Active(2.0))[1][1] == 2.0
+    MutableConstField.scale[] = 3.0
+    @test autodiff(Reverse, const_ref_scale, Active, Active(2.0))[1][1] == 3.0
+
+    # `g` is a `const` field, so only `f` may change.
+    MutableConstField.holder.f = cube_const_ref
+    @test autodiff(Reverse, const_holder_call, Active, Active(2.0))[1][1] ≈ 12 + 2 * cos(2.0)
+    MutableConstField.holder.f = quartic_const_ref
+    @test autodiff(Reverse, const_holder_call, Active, Active(2.0))[1][1] ≈ 32 + cos(2.0)
 end

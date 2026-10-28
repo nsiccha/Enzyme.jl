@@ -271,3 +271,223 @@ end
     RO = Enzyme.Compiler.set_readonly(Enzyme.Compiler.AllEffects)
     @test RO == Enzyme.Compiler.ReadOnlyEffects
 end
+
+# A loop whose body calls a function that only writes on a throwing path (the
+# bounds check) and loads an array's `Memory` pointer: the load must be hoisted,
+# or Enzyme caches a GC pointer per iteration and the tape grows with the loop.
+@noinline lookup_or_throw(r, i) = r[i]
+function sum_squares_indirect(x, r)
+    a = Vector{Float64}(undef, length(x))
+    for i in eachindex(x)
+        j = lookup_or_throw(r, i)
+        a[i] = x[j] * x[j]
+    end
+    return sum(a)
+end
+function sum_squares_indirect_grad!(dx, x, r)
+    Enzyme.autodiff(Reverse, sum_squares_indirect, Active, Duplicated(x, dx), Const(r))
+    return nothing
+end
+
+@testset "Loop-invariant load hoisted past a read-only-or-throw call" begin
+    function bytes(n)
+        x = 0.5 .+ collect(1:n) ./ n
+        r = collect(1:n)
+        dx = zero(x)
+        sum_squares_indirect_grad!(dx, x, r)
+        @test dx ≈ 2 .* x
+        return @allocated sum_squares_indirect_grad!(dx, x, r)
+    end
+    # Only `a` and its shadow may grow with `n`; a per-iteration tape of the
+    # `Memory` pointer and its shadow would double that. Relies on
+    # EnzymeAD/Enzyme#3264 (Enzyme_jll 0.0.296), which states
+    # `enzyme_ReadOnlyOrThrow` in LLVM memory attributes so that LICM can hoist
+    # the load past `lookup_or_throw`.
+    @test bytes(2000) - bytes(10) < 3 * sizeof(Float64) * (2000 - 10)
+end
+
+function quadratic_form(x, A)
+    s = 0.0
+    @inbounds for j in axes(A, 2), i in axes(A, 1)
+        s += A[i, j] * x[j] * x[i]
+    end
+    return s
+end
+
+@testset "Runtime checks of a reverse loop nest stay in the inner loop" begin
+    hoist = Enzyme.Compiler.hoist_runtime_checks_ptr()
+    hoist_default = hoist == C_NULL ? nothing : unsafe_load(hoist)
+
+    n = 64
+    A = cos.((1:n) .* (1:n)')
+    x = sin.(1:n)
+    dx = zero(x)
+    autodiff(Reverse, quadratic_form, Active, Duplicated(x, dx), Const(A))
+    @test dx ≈ (A + A') * x
+
+    # The reverse pass walks the outer loop backwards. Hoisting the alias checks
+    # of the vectorized inner loop into it (LLVM 18 and later) adds a stride
+    # check that always fails, so the vectorized loop would never run.
+    ir = sprint() do io
+        Enzyme.Compiler.enzyme_code_llvm(io, quadratic_form, Active, Tuple{Duplicated{Vector{Float64}}, Const{Matrix{Float64}}})
+    end
+    # Value names are kept (the reverse blocks are named `invert...`), so the
+    # absence of LLVM's `stride.check` below is meaningful.
+    @test occursin("invert", ir)
+    # The inner loop is vectorized at all. Without this the test would also
+    # pass if the reverse loop were never vectorized, as it was before the
+    # post-AD pipeline unrolled after vectorizing.
+    @test occursin("vector.body", ir)
+    @test !occursin("stride.check", ir)
+
+    # Julia's own code keeps LLVM's setting.
+    if hoist != C_NULL
+        @test unsafe_load(hoist) == hoist_default
+    end
+end
+
+function horner_loop(x, n)
+    s = 0.0
+    for _ in 1:n
+        s = s * x + 1.0
+    end
+    return s
+end
+function horner_fixed(x)
+    s = 0.0
+    for _ in 1:8
+        s = s * x + 1.0
+    end
+    return s
+end
+pre_ad_ir(f, types) = sprint() do io
+    Enzyme.Compiler.enzyme_code_llvm(io, f, Active, types; run_enzyme = false, second_stage = false)
+end
+
+@testset "Unrolling before AD" begin
+    # A loop with a runtime trip count is not runtime unrolled, as the reverse
+    # pass inherits the loop's shape.
+    ir = pre_ad_ir(horner_loop, Tuple{Active{Float64}, Const{Int}})
+    @test count("fmul", ir) == 1
+    # A loop with a small constant trip count is still fully unrolled.
+    ir = pre_ad_ir(horner_fixed, Tuple{Active{Float64}})
+    @test count("fmul", ir) == 8
+
+    # d/dx of sum_{k=0}^{n-1} x^k
+    x = 0.5
+    @test autodiff(Reverse, horner_loop, Active, Active(x), Const(9))[1][1] ≈ sum(k * x^(k - 1) for k in 1:8)
+    @test autodiff(Reverse, horner_fixed, Active, Active(x))[1][1] ≈ sum(k * x^(k - 1) for k in 1:7)
+end
+
+function sum_squares_ptr(x)
+    s = 0.0
+    # Load through a pointer so the loop has no bounds checks, and vectorizes
+    # also under `--check-bounds=yes`.
+    GC.@preserve x begin
+        p = pointer(x)
+        @simd for i in 1:length(x)
+            s += abs2(unsafe_load(p, i))
+        end
+    end
+    return s
+end
+
+@testset "Reverse loop vectorizes without gathers" begin
+    x = collect(1.0:100.0)
+    dx = zero(x)
+    autodiff(Reverse, sum_squares_ptr, Active, Duplicated(x, dx))
+    @test dx ≈ 2 .* x
+    # Unrolling the reverse loop before vectorizing it left a strided loop that
+    # the vectorizer could only vectorize with gathers and scatters.
+    ir = sprint() do io
+        Enzyme.Compiler.enzyme_code_llvm(io, sum_squares_ptr, Active, Tuple{Duplicated{Vector{Float64}}})
+    end
+    @test !occursin("masked.gather", ir)
+    @test !occursin("masked.scatter", ir)
+end
+
+mutable struct TypeNamesPair
+    a::Vector{Float64}
+    b::Float64
+end
+typenames_loss(p::TypeNamesPair) = sum(abs2, p.a) * p.b
+
+@testset "EmitTypeNames" begin
+    # The printed type names are debug output only; turning them on must not change
+    # the derivative.
+    Enzyme.Compiler.EmitTypeNames[] = true
+    try
+        p = TypeNamesPair([1.0, 2.0], 3.0)
+        dp = TypeNamesPair([0.0, 0.0], 0.0)
+        autodiff(Reverse, typenames_loss, Active, Duplicated(p, dp))
+        @test dp.a ≈ [6.0, 12.0]
+        @test dp.b ≈ 5.0
+    finally
+        Enzyme.Compiler.EmitTypeNames[] = false
+    end
+end
+
+# The fake use that keeps the argument of a function with a custom rule alive
+# must survive in a nounwind function, or the Attributor drops stores of fields
+# the primal body does not read but the rule does (#3733).
+struct FakeUseCache
+    du::Vector{Float64}
+    dual_du::Vector{Float64}
+end
+fakeuse_tmp(c::FakeUseCache) = c.du
+
+fakeuse_shadow(c::FakeUseCache) = FakeUseCache(zero(c.du), zero(c.dual_du))
+
+function Enzyme.EnzymeRules.forward(
+        config::Enzyme.EnzymeRules.FwdConfig, ::Const{typeof(fakeuse_tmp)},
+        ::Type{<:Annotation}, c::Const{FakeUseCache}
+    )
+    s = fakeuse_shadow(c.val).du
+    return Enzyme.EnzymeRules.needs_primal(config) ? Duplicated(c.val.du, s) : s
+end
+
+function fakeuse_square!(du, u, c)
+    o = fakeuse_tmp(c)
+    o .= u .* u
+    du .= o
+    return nothing
+end
+
+@testset "Fake use survives in a nounwind function" begin
+    c = FakeUseCache(zeros(3), zeros(3))
+    x = [1.0, 2.0, 3.0]
+    dx = zeros(3)
+    ddx = zeros(3)
+    autodiff(Forward, fakeuse_square!, Duplicated(dx, ddx), Duplicated(x, [1.0, 0, 0]), Const(c))
+    @test ddx == [2.0, 0.0, 0.0]
+end
+
+# A temporary large enough that its buffer is malloc'd rather than pooled.
+function scaled_first(a)
+    t = similar(a)
+    t .= a .* 2
+    return t[1]
+end
+
+function scaled_first_grads!(dx, x, n)
+    for _ in 1:n
+        fill!(dx, 0)
+        autodiff(Reverse, Const(scaled_first), Active, Duplicated(x, dx))
+    end
+    return nothing
+end
+
+@static if VERSION >= v"1.11"
+    @testset "Shadow memory length is set before the next safepoint" begin
+        x = randn(1000)
+        dx = zeros(1000)
+        scaled_first_grads!(dx, x, 10)
+        @test dx[1] == 2.0
+        GC.gc()
+        before = Base.gc_num()
+        scaled_first_grads!(dx, x, 100_000)
+        # An unset length makes the GC account a huge malloc'd buffer as
+        # promoted, which forces full collections.
+        @test Base.GC_Diff(Base.gc_num(), before).full_sweep == 0
+    end
+end

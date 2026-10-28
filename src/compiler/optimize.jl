@@ -30,7 +30,17 @@ SafeAtomicToRegularStorePass() = NewPMFunctionPass("safe_atomic_to_regular_store
 Addr13NoAliasPass() = NewPMModulePass("addr13_noalias", addr13NoAlias)
 RemoveAlwaysInlineRootsPass() = NewPMModulePass("remove_alwaysinline_roots", remove_alwaysinline_roots!)
 
-function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti = nothing)
+# `mark_loads_dereferenceable!` for the compilation `enzyme_ctx`.
+struct MarkLoadsDereferenceable
+    enzyme_ctx::Union{EnzymeContext, Nothing}
+end
+(pass::MarkLoadsDereferenceable)(fn::LLVM.Function) = mark_loads_dereferenceable!(fn, pass.enzyme_ctx)
+
+MarkLoadsDereferenceablePass(enzyme_ctx::Union{EnzymeContext, Nothing}) =
+    NewPMFunctionPass("enzyme_mark_loads_dereferenceable", MarkLoadsDereferenceable(enzyme_ctx))
+
+# `enzyme_ctx` is the compilation `mod` belongs to, `nothing` outside of one.
+function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, enzyme_ctx::Union{EnzymeContext, Nothing}, tti = nothing)
     @dispose pb = NewPMPassBuilder() begin
         if tti !== nothing
             LLVM.target_transform_info!(pb, tti)
@@ -89,12 +99,19 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti
     end
 
     function middle_optimize!(second_stage = false)
+        # Infer which functions only write on paths that throw before the loop
+        # passes below run: with EnzymeAD/Enzyme#3264, Enzyme also states this as
+        # LLVM `memory` attributes, which lets LICM hoist loads (e.g. of an array's
+        # `Memory` pointer) past calls to such functions instead of Enzyme having
+        # to cache them per loop iteration.
+        API.EnzymeDetectReadonlyOrThrow(mod)
         return @dispose pb = NewPMPassBuilder() begin
             if tti !== nothing
                 LLVM.target_transform_info!(pb, tti)
             end
             registerEnzymeAndPassPipeline!(pb)
             register!(pb, RestoreAllocaType())
+            register!(pb, MarkLoadsDereferenceablePass(enzyme_ctx))
             add!(pb, NewPMAAManager()) do aam
                 add!(aam, ScopedNoAliasAA())
                 add!(aam, TypeBasedAA())
@@ -119,6 +136,10 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti
                     add!(fpm, AllocOptPass())
                     add!(fpm, RestoreAllocaType())
 
+                    # Loaded pointers to heap objects of a known type are `dereferenceable`
+                    # (see `mark_load_dereferenceable!`), so that LICM can hoist loads such as
+                    # an array's `Memory` pointer out of loops.
+                    add!(fpm, MarkLoadsDereferenceablePass(enzyme_ctx))
                     add!(fpm, NewPMLoopPassManager(use_memory_ssa = true)) do lpm
                         add!(lpm, LoopIdiomRecognizePass())
                         add!(lpm, LoopRotatePass())
@@ -135,7 +156,11 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti
                         add!(lpm, LoopDeletionPass())
                     end
                     # todo peeling=false?
-                    add!(fpm, LoopUnrollPass(opt_level = 2, partial = false)) # what opt level?
+                    # Only fully unroll before AD. Runtime unrolling a loop with an
+                    # unknown trip count gives it a strided body and a remainder loop,
+                    # which the reverse pass inherits and the vectorizer after AD turns
+                    # into gathers and scatters.
+                    add!(fpm, LoopUnrollPass(opt_level = 2, partial = false, runtime = false)) # what opt level?
                     add!(fpm, AllocOptPass())
                     add!(fpm, RestoreAllocaType())
                     add!(fpm, SROAPass())
@@ -221,9 +246,18 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti
     run!(GCInvariantVerifierPass(strong = false), mod)
 
     nodecayed_phis!(mod)
+    fold_array_data_phis!(mod)
 
     return run!(GCInvariantVerifierPass(strong = false), mod)
 end
+
+# Julia's `aggressiveSimplifyCFGOptions`
+const aggressiveSimplifyCFGOptions = (
+    forward_switch_cond = true,
+    switch_range_to_icmp = true,
+    switch_to_lookup = true,
+    hoist_common_insts = true,
+)
 
 function addOptimizationPasses!(mpm::LLVM.NewPMPassManager)
     add!(mpm, NewPMFunctionPassManager()) do fpm
@@ -283,11 +317,17 @@ function addOptimizationPasses!(mpm::LLVM.NewPMPassManager)
         end
         add!(fpm, InstCombinePass())
         add!(fpm, JLInstSimplifyPass())
+        add!(fpm, IRCEPass())
         add!(fpm, NewPMLoopPassManager()) do lpm
+            add!(lpm, LoopInstSimplifyPass())
             add!(lpm, IndVarSimplifyPass())
             add!(lpm, LoopDeletionPass())
+            # As in Julia, only unroll loops whose trip count is known and small
+            # here, so that no loop remains. Partial and runtime unrolling happen
+            # after vectorization, as unrolling first leaves the vectorizer a
+            # strided loop that it can only vectorize with gathers and scatters.
+            add!(lpm, LoopFullUnrollPass())
         end
-        add!(fpm, LoopUnrollPass(opt_level = 2))
 
         # Run our own SROA on heap objects before LLVM's
         add!(fpm, AllocOptPass())
@@ -325,10 +365,19 @@ function addOptimizationPasses!(mpm::LLVM.NewPMPassManager)
         end
         add!(fpm, InstCombinePass())
         add!(fpm, JLInstSimplifyPass())
+
+        # Vectorization, following Julia's `buildVectorPipeline`.
+        add!(fpm, InjectTLIMappings())
         add!(fpm, LoopVectorizePass())
-        add!(fpm, SimplifyCFGPass())
+        add!(fpm, LoopLoadEliminationPass())
+        add!(fpm, InstCombinePass())
+        add!(fpm, JLInstSimplifyPass())
+        add!(fpm, SimplifyCFGPass(; aggressiveSimplifyCFGOptions...))
         add!(fpm, SLPVectorizerPass())
+        add!(fpm, VectorCombinePass())
         add!(fpm, ADCEPass())
+        # Unroll vectorized loops, as well as loops that failed to vectorize.
+        add!(fpm, LoopUnrollPass(opt_level = 2))
     end
 end
 
@@ -399,13 +448,6 @@ function addJuliaLegalizationPasses!(mpm::LLVM.NewPMPassManager, lower_intrinsic
         add!(mpm, NewPMFunctionPassManager()) do fpm
             add!(fpm, InstCombinePass())
             add!(fpm, JLInstSimplifyPass())
-            aggressiveSimplifyCFGOptions =
-                (
-                forward_switch_cond = true,
-                switch_range_to_icmp = true,
-                switch_to_lookup = true,
-                hoist_common_insts = true,
-            )
             add!(fpm, SimplifyCFGPass(; aggressiveSimplifyCFGOptions...))
         end
     else
@@ -483,6 +525,83 @@ function fixup_callconv!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
     return
 end
 
+# Since LLVM 18 the loop vectorizer hoists the runtime alias checks of an inner
+# loop into its outer loop (`-hoist-runtime-checks`). The hoisted checks assume
+# that the outer loop walks memory forwards: for one that walks it backwards
+# they add a stride check that always fails, so the vectorized inner loop never
+# runs. A reverse pass walks the loop nest of its primal backwards, so the
+# post-AD pipeline does not hoist the checks, as before LLVM 18. The option is a
+# global of Julia's LLVM, so it is only turned off while Enzyme's passes run.
+const HoistRuntimeChecksLock = ReentrantLock()
+const HoistRuntimeChecksUsers = Ref(0)
+const HoistRuntimeChecksDefault = Ref(false)
+const HoistRuntimeChecksWarned = Ref(false)
+
+# The address of `llvm::VectorizerParams::HoistRuntimeChecks`, or `C_NULL` if
+# Julia's LLVM predates the option (LLVM 16 and earlier) or does not export it.
+function hoist_runtime_checks_ptr()
+    handle = Libdl.dlopen(String(Base.libllvm_path()))
+    ptr = Libdl.dlsym(handle, :_ZN4llvm16VectorizerParams18HoistRuntimeChecksE; throw_error = false)
+    return ptr === nothing ? Ptr{Bool}(C_NULL) : Ptr{Bool}(ptr)
+end
+
+# LLVM 18 and later have the option, so a failed lookup there means this build
+# of Julia's LLVM does not export it. Say so once rather than silently keeping
+# the hoisting on. Nothing is said while precompiling: the flag would be
+# serialized as spent and every later session would stay silent.
+function warn_missing_runtime_check_hoisting!()
+    if LLVM.version().major < 18 || generating_output()
+        return
+    end
+    lock(HoistRuntimeChecksLock)
+    warned = true
+    try
+        warned = HoistRuntimeChecksWarned[]
+        HoistRuntimeChecksWarned[] = true
+    finally
+        unlock(HoistRuntimeChecksLock)
+    end
+    if !warned
+        @safe_warn "Enzyme could not find llvm::VectorizerParams::HoistRuntimeChecks in Julia's LLVM $(LLVM.version()); runtime-check hoisting stays on, so reverse-mode derivatives of loop nests may always take the scalar fallback of their vectorized inner loops"
+    end
+    return
+end
+
+function disable_runtime_check_hoisting!()
+    ptr = hoist_runtime_checks_ptr()
+    if ptr == C_NULL
+        warn_missing_runtime_check_hoisting!()
+        return ptr
+    end
+    lock(HoistRuntimeChecksLock)
+    try
+        if HoistRuntimeChecksUsers[] == 0
+            HoistRuntimeChecksDefault[] = unsafe_load(ptr)
+            unsafe_store!(ptr, false)
+        end
+        HoistRuntimeChecksUsers[] += 1
+    finally
+        unlock(HoistRuntimeChecksLock)
+    end
+    return ptr
+end
+
+function restore_runtime_check_hoisting!(ptr::Ptr{Bool})
+    if ptr == C_NULL
+        return
+    end
+    lock(HoistRuntimeChecksLock)
+    try
+        HoistRuntimeChecksUsers[] -= 1
+        if HoistRuntimeChecksUsers[] == 0
+            unsafe_store!(ptr, HoistRuntimeChecksDefault[])
+        end
+    finally
+        unlock(HoistRuntimeChecksLock)
+    end
+    return
+end
+
 function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, machine::Bool = true; callconv::Bool = true, tti = nothing)
     define_ntuple_type!(mod)
     if callconv
@@ -515,6 +634,7 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
         register!(pb, SafeAtomicToRegularStorePass())
         register!(pb, RestoreAllocaType())
         register!(pb, RemoveAlwaysInlineRootsPass())
+        register!(pb, RestoreSafepointEffectsPass())
         add!(pb, NewPMAAManager()) do aam
             add!(aam, ScopedNoAliasAA())
             add!(aam, TypeBasedAA())
@@ -522,6 +642,7 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
         end
         add!(pb, NewPMModulePassManager()) do mpm
             addOptimizationPasses!(mpm)
+            add!(mpm, RestoreSafepointEffectsPass())
             if machine
                 # TODO enable validate_return_roots
                 # validate_return_roots!(mod)
@@ -529,7 +650,12 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
                 addMachinePasses!(mpm)
             end
         end
-        run!(pb, mod, tm)
+        hoisting = disable_runtime_check_hoisting!()
+        try
+            run!(pb, mod, tm)
+        finally
+            restore_runtime_check_hoisting!(hoisting)
+        end
     end
     for f in functions(mod)
         if isempty(blocks(f))
@@ -544,3 +670,228 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
     # flush(stderr)
     return
 end
+
+const FUNCTION_ATTRIBUTE_INDEX =
+    reinterpret(LLVM.API.LLVMAttributeIndex, LLVM.API.LLVMAttributeFunctionIndex)
+
+"""
+    callsite_function_attributes(call::LLVM.CallBase)::Vector{LLVM.Attribute}
+
+The function attributes written on `call` itself, not those of its callee.
+"""
+function callsite_function_attributes(call::LLVM.CallBase)::Vector{LLVM.Attribute}
+    count = LLVM.API.LLVMGetCallSiteAttributeCount(call, FUNCTION_ATTRIBUTE_INDEX)
+    refs = Vector{LLVM.API.LLVMAttributeRef}(undef, count)
+    if count > 0
+        LLVM.API.LLVMGetCallSiteAttributes(call, FUNCTION_ATTRIBUTE_INDEX, refs)
+    end
+    attrs = LLVM.Attribute[]
+    for ref in refs
+        push!(attrs, LLVM.Attribute(ref))
+    end
+    return attrs
+end
+
+"""
+    excludes_safepoint(attr::LLVM.Attribute)::Bool
+
+Whether Julia's GC lowering (`LateLowerGCFrame`) reads the function or call-site
+attribute `attr` as "this call cannot reach a GC safepoint", and so roots nothing
+across the call: `readnone`, `readonly` or `argmemonly` up to LLVM 15, and from
+LLVM 16 a `memory` effect that only reads, or only accesses argument memory.
+"""
+function excludes_safepoint(attr::LLVM.Attribute)::Bool
+    attr isa LLVM.EnumAttribute || return false
+    if LLVM.version().major <= 15
+        return kind(attr) == READNONE_ATTR_KIND ||
+            kind(attr) == READONLY_ATTR_KIND ||
+            kind(attr) == kind(EnumAttribute("argmemonly"))
+    end
+    kind(attr) == kind(EnumAttribute("memory")) || return false
+    effect = MemoryEffect(value(attr))
+    return is_readonly(effect) || (
+        is_readnone(getModRef(effect, InaccessibleMem)) &&
+            is_readnone(getModRef(effect, Other))
+    )
+end
+
+function excludes_safepoint(attrs::AbstractVector)::Bool
+    for attr in attrs
+        excludes_safepoint(attr) && return true
+    end
+    return false
+end
+
+"""
+    calls_safepoint(f::LLVM.Function)::Bool
+
+Whether the body of `f` holds a call that Julia's GC lowering takes as a GC
+safepoint (`julia.safepoint`, an allocation, a runtime call, an indirect call),
+leaving out calls to functions defined in the same module, which
+[`restore_safepoint_effects!`](@ref) follows separately.
+"""
+function calls_safepoint(f::LLVM.Function)::Bool
+    for bb in blocks(f), inst in instructions(bb)
+        isa(inst, LLVM.CallBase) || continue
+        callee = LLVM.called_operand(inst)
+        isa(callee, LLVM.InlineAsm) && continue
+        if isa(callee, LLVM.Function)
+            isempty(blocks(callee)) || continue
+            startswith(LLVM.name(callee), "llvm.") && continue
+            excludes_safepoint(collect(function_attributes(callee))) && continue
+        end
+        excludes_safepoint(callsite_function_attributes(inst)) && continue
+        return true
+    end
+    return false
+end
+
+"""
+    calls_of(f::LLVM.Function)::Vector{LLVM.CallBase}
+
+Every call or invoke of `f`, directly or through a constant cast of it.
+"""
+function calls_of(f::LLVM.Function)::Vector{LLVM.CallBase}
+    calls = LLVM.CallBase[]
+    for u in LLVM.uses(f)
+        user = LLVM.user(u)
+        if isa(user, LLVM.CallBase)
+            LLVM.called_operand(user) == f && push!(calls, user)
+        elseif isa(user, LLVM.ConstantExpr)
+            for cu in LLVM.uses(user)
+                call = LLVM.user(cu)
+                if isa(call, LLVM.CallBase) && LLVM.called_operand(call) == user
+                    push!(calls, call)
+                end
+            end
+        end
+    end
+    return calls
+end
+
+"""
+    safepoint_effects(attr::LLVM.EnumAttribute)::LLVM.EnumAttribute
+
+The LLVM 16+ `memory` attribute `attr` with read-write access to inaccessible
+memory added, which is how Julia declares `julia.safepoint` itself.
+"""
+function safepoint_effects(attr::LLVM.EnumAttribute)::LLVM.EnumAttribute
+    effect = MemoryEffect(value(attr))
+    widened = effect.data | (MRI_ModRef << getLocationPos(InaccessibleMem))
+    return EnumAttribute("memory", widened)
+end
+
+"""
+    restore_safepoint_effects!(f::LLVM.Function)
+
+Replace the attributes of `f` that tell GC lowering it cannot reach a safepoint
+(see [`excludes_safepoint`](@ref)) by ones that keep its effects on visible
+memory but add inaccessible memory: `readnone` becomes `inaccessiblememonly`,
+`argmemonly` becomes `inaccessiblemem_or_argmemonly`, `readonly` is dropped, and
+on LLVM 16+ the `memory` effect gains inaccessible read-write access. The same
+attributes are removed from, or widened on, every call site of `f`. Returns
+whether it changed anything.
+"""
+function restore_safepoint_effects!(f::LLVM.Function)::Bool
+    changed = false
+    attrs = function_attributes(f)
+    if LLVM.version().major <= 15
+        readnone = false
+        argmemonly = false
+        inaccessible = false
+        for attr in collect(attrs)
+            attr isa LLVM.EnumAttribute || continue
+            if kind(attr) == kind(EnumAttribute("inaccessiblememonly")) ||
+                    kind(attr) == kind(EnumAttribute("inaccessiblemem_or_argmemonly"))
+                inaccessible = true
+            end
+            excludes_safepoint(attr) || continue
+            readnone |= kind(attr) == READNONE_ATTR_KIND
+            argmemonly |= kind(attr) == kind(EnumAttribute("argmemonly"))
+            delete!(attrs, attr)
+            changed = true
+        end
+        if argmemonly
+            delete!(attrs, EnumAttribute("inaccessiblememonly"))
+            push!(attrs, EnumAttribute("inaccessiblemem_or_argmemonly"))
+        elseif readnone && !inaccessible
+            push!(attrs, EnumAttribute("inaccessiblememonly"))
+        end
+    else
+        for attr in collect(attrs)
+            excludes_safepoint(attr) || continue
+            delete!(attrs, attr)
+            push!(attrs, safepoint_effects(attr))
+            changed = true
+        end
+    end
+
+    for call in calls_of(f)
+        for attr in callsite_function_attributes(call)
+            excludes_safepoint(attr) || continue
+            LLVM.API.LLVMRemoveCallSiteEnumAttribute(call, FUNCTION_ATTRIBUTE_INDEX, kind(attr))
+            if LLVM.version().major > 15
+                LLVM.API.LLVMAddCallSiteAttribute(call, FUNCTION_ATTRIBUTE_INDEX, safepoint_effects(attr))
+            end
+            changed = true
+        end
+    end
+    return changed
+end
+
+"""
+    restore_safepoint_effects!(mod::LLVM.Module)
+
+Before GC lowering, give back to every function defined in `mod` that may reach a
+GC safepoint the memory effects that a safepoint has.
+
+`handle_compiled` annotates the Julia definitions of known functions (math
+functions such as `tanh`, `sqrt` and `pow`, `eps`, `Base.mightalias`,
+`Threads.threadid`, ...) as `readnone` or `readonly` (`memory(none)` /
+`memory(read)` on LLVM 16+), which is true of the value they compute and lets
+Enzyme recompute them. Their bodies are still Julia code with a GC safepoint.
+Julia's GC lowering treats a call to such a function as a point where no
+collection can happen, so a GC-tracked value that is live across the call gets
+no root, for example a shadow array that the reverse pass allocates. A
+collection requested by another thread stops this thread at the callee's
+safepoint and frees that value, and the reverse pass then reads and writes freed
+memory.
+
+A function may reach a safepoint when its body has a call that GC lowering takes
+as one (see [`calls_safepoint`](@ref)), or calls a function defined here that
+may.
+
+It runs as [`RestoreSafepointEffectsPass`](@ref) at the end of the optimization
+passes of `post_optimize!`, right before GC lowering: after `removeDeadArgs!`,
+whose attributor and `EnzymeDetectReadonlyOrThrow` take `julia.safepoint` as
+read-only and mark such functions `readonly` again, and after the optimizations
+that the original effects allow, such as merging the forward and reverse calls
+of `tanh(x)`. Returns whether it changed anything.
+"""
+function restore_safepoint_effects!(mod::LLVM.Module)::Bool
+    reaching = Set{LLVM.Function}()
+    todo = LLVM.Function[]
+    for f in functions(mod)
+        isempty(blocks(f)) && continue
+        if calls_safepoint(f)
+            push!(reaching, f)
+            push!(todo, f)
+        end
+    end
+    while !isempty(todo)
+        f = pop!(todo)
+        for call in calls_of(f)
+            caller = LLVM.parent(LLVM.parent(call))
+            caller in reaching && continue
+            push!(reaching, caller)
+            push!(todo, caller)
+        end
+    end
+    changed = false
+    for f in reaching
+        changed |= restore_safepoint_effects!(f)
+    end
+    return changed
+end
+
+RestoreSafepointEffectsPass() = NewPMModulePass("restore_safepoint_effects", restore_safepoint_effects!)

@@ -229,7 +229,7 @@ end
         dispose(buf)
 
         ptr = reinterpret(Ptr{Cvoid}, UInt(0x2788))
-        Enzyme.Compiler.autodiff_cache[ptr] = ("thunk", bitcode)
+        Enzyme.Compiler.autodiff_cache[ptr] = Enzyme.Compiler.CachedThunk("thunk", bitcode, Enzyme.Compiler.JuliaValueTable())
         try
             Enzyme.@with Enzyme.Compiler.ENZYME_CONTEXT =>
                     Enzyme.Compiler.EnzymeContext(GPUCompiler.tls_world_age()) begin
@@ -563,6 +563,138 @@ end # VERSION >= v"1.12"
     end
 end
 
+# Julia 1.10 reloads an addrspace(13) pointer phi from a phi of its parent objects. When
+# those only ever hold the one argument, the parent phis are folded away, so that the
+# reload comes straight from the argument (see test/data_pointer_phi.jl).
+@static if VERSION < v"1.11-"
+    @testset "nodecayed_phis! folds parent phis that only hold one object" begin
+        @test @filecheck begin
+            # The header and latch reload the data pointer straight from %y.
+            @check_label "@kernel_reload"
+            @check_not "nodecayed"
+            @check "loop:"
+            @check_not "nodecayed"
+            @check_not "phi {} addrspace(10)*"
+            @check "bitcast {} addrspace(10)* %y"
+            @check_not "nodecayed"
+            @check "load i8 addrspace(13)*"
+            @check_not "nodecayed"
+            @check "latch:"
+            @check_not "nodecayed"
+            @check_not "phi {} addrspace(10)*"
+            @check "bitcast {} addrspace(10)* %y"
+            @check_not "nodecayed"
+            @check "load i8 addrspace(13)*"
+            @check_not "nodecayed"
+            @check "ret double"
+            LLVM.Context() do ctx
+                mod = parse(
+                    LLVM.Module, """
+                    source_filename = "start"
+                    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+                    target triple = "x86_64-linux-gnu"
+
+                    declare double @g(double)
+
+                    define double @kernel_reload({} addrspace(10)* nocapture readonly %y, i64 %n) #0 {
+                    top:
+                      %hdr = addrspacecast {} addrspace(10)* %y to { i8 addrspace(13)*, i64, i16, i16, i32 } addrspace(11)*
+                      %fld = getelementptr inbounds { i8 addrspace(13)*, i64, i16, i16, i32 }, { i8 addrspace(13)*, i64, i16, i16, i32 } addrspace(11)* %hdr, i64 0, i32 0
+                      %data.pre = load i8 addrspace(13)*, i8 addrspace(13)* addrspace(11)* %fld, align 8
+                      br label %loop
+
+                    loop:
+                      %iv = phi i64 [ 0, %top ], [ %iv.next, %latch ]
+                      %acc = phi double [ 0.0, %top ], [ %acc.next, %latch ]
+                      %data = phi i8 addrspace(13)* [ %data.pre, %top ], [ %data.latch, %latch ]
+                      %p = bitcast i8 addrspace(13)* %data to double addrspace(13)*
+                      %e = getelementptr inbounds double, double addrspace(13)* %p, i64 %iv
+                      %x = load double, double addrspace(13)* %e, align 8
+                      %c = fcmp ogt double %x, 0.0
+                      br i1 %c, label %call, label %latch
+
+                    call:
+                      %r = call double @g(double %x)
+                      %data.re = load i8 addrspace(13)*, i8 addrspace(13)* addrspace(11)* %fld, align 8
+                      br label %latch
+
+                    latch:
+                      %data.latch = phi i8 addrspace(13)* [ %data.re, %call ], [ %data, %loop ]
+                      %v = phi double [ %r, %call ], [ 0.0, %loop ]
+                      %p2 = bitcast i8 addrspace(13)* %data.latch to double addrspace(13)*
+                      %e2 = getelementptr inbounds double, double addrspace(13)* %p2, i64 %iv
+                      %x2 = load double, double addrspace(13)* %e2, align 8
+                      %w = fadd double %v, %x2
+                      %acc.next = fadd double %acc, %w
+                      %iv.next = add i64 %iv, 1
+                      %done = icmp eq i64 %iv.next, %n
+                      br i1 %done, label %exit, label %loop
+
+                    exit:
+                      ret double %acc.next
+                    }
+
+                    attributes #0 = { "enzymejl_world"="1" }
+                    """
+                )
+
+                Enzyme.Compiler.nodecayed_phis!(mod)
+                LLVM.verify(mod)
+                string(mod)
+            end
+        end
+    end
+
+    # An undef incoming reaches the phi on a path that does not pass the one object, so that
+    # object does not dominate the phi: the parent phi stays, and the module still verifies.
+    @testset "nodecayed_phis! keeps parent phis whose one object does not dominate them" begin
+        @test @filecheck begin
+            @check_label "@kernel_undef"
+            @check "merge:"
+            @check "phi {} addrspace(10)*"
+            @check_same "[ undef, %skip ]"
+            @check "load double addrspace(13)*"
+            @check "ret double"
+            LLVM.Context() do ctx
+                mod = parse(
+                    LLVM.Module, """
+                    source_filename = "start"
+                    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+                    target triple = "x86_64-linux-gnu"
+
+                    define double @kernel_undef({} addrspace(10)* addrspace(11)* nocapture readonly %field, i1 %c, i64 %i) #0 {
+                    top:
+                      br i1 %c, label %have, label %skip
+
+                    have:
+                      %obj = load atomic {} addrspace(10)*, {} addrspace(10)* addrspace(11)* %field unordered, align 8
+                      %hdr = bitcast {} addrspace(10)* %obj to double addrspace(13)* addrspace(10)*
+                      %hdr11 = addrspacecast double addrspace(13)* addrspace(10)* %hdr to double addrspace(13)* addrspace(11)*
+                      %data.have = load double addrspace(13)*, double addrspace(13)* addrspace(11)* %hdr11, align 8
+                      br label %merge
+
+                    skip:
+                      br label %merge
+
+                    merge:
+                      %data = phi double addrspace(13)* [ %data.have, %have ], [ undef, %skip ]
+                      %e = getelementptr inbounds double, double addrspace(13)* %data, i64 %i
+                      %x = load double, double addrspace(13)* %e, align 8
+                      ret double %x
+                    }
+
+                    attributes #0 = { "enzymejl_world"="1" }
+                    """
+                )
+
+                Enzyme.Compiler.nodecayed_phis!(mod)
+                LLVM.verify(mod)
+                string(mod)
+            end
+        end
+    end
+end
+
 
 # --- fix_decayaddr! -----------------------------------------------------------
 
@@ -608,7 +740,7 @@ function decay_egal_module()
     )
     GPUCompiler.prepare_job!(job)
     mod, _ = GPUCompiler.emit_llvm(job)
-    Enzyme.Compiler.optimize!(mod, Enzyme.Compiler.JIT.get_tm())
+    Enzyme.Compiler.optimize!(mod, Enzyme.Compiler.JIT.get_tm(), #=enzyme_ctx=# nothing)
     return mod
 end
 
@@ -878,6 +1010,149 @@ end
         selfref_gep = functions(mod)["selfref_gep"]
         @test !Enzyme.Compiler.unfold_root_phi_loads!(selfref_gep)
         @test root_phi_addrspaces(selfref_gep) == [0]
+
+        @test LLVM.verify(mod) === nothing
+    end
+end
+
+@testset "unfold_root_phi_loads! with the load hoisted past the phi's block" begin
+    # LLVM hoists the load of the merged root into a later block, such as the
+    # preheader of the loop that uses it (`copyto!` from a row view on 1.13.1).
+    LLVM.Context() do ctx
+        mod = parse(
+            LLVM.Module, """
+            source_filename = "start"
+            target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+            target triple = "x86_64-linux-gnu"
+
+            declare i64 @llvm.smax.i64(i64, i64)
+            declare void @fill({} addrspace(10)**)
+
+            define {} addrspace(10)* @preheader(i1 %c, i64 %n, {} addrspace(10)** nonnull dereferenceable(8) %arg) {
+            top:
+              %roots = alloca {} addrspace(10)*, align 8
+              br i1 %c, label %a, label %b
+
+            a:
+              call void @fill({} addrspace(10)** %roots)
+              br label %merge
+
+            b:
+              br label %merge
+
+            merge:
+              %p = phi {} addrspace(10)** [ %roots, %a ], [ %arg, %b ]
+              %m = call i64 @llvm.smax.i64(i64 %n, i64 0)
+              %cc = icmp ult i64 %m, 4
+              br i1 %cc, label %ph, label %exit
+
+            ph:
+              %ld = load {} addrspace(10)*, {} addrspace(10)** %p, align 8
+              ret {} addrspace(10)* %ld
+
+            exit:
+              ret {} addrspace(10)* null
+            }
+
+            define {} addrspace(10)* @store_between(i1 %c, i64 %n, {} addrspace(10)** nonnull dereferenceable(8) %arg, i64* %out) {
+            top:
+              %roots = alloca {} addrspace(10)*, align 8
+              br i1 %c, label %a, label %b
+
+            a:
+              call void @fill({} addrspace(10)** %roots)
+              br label %merge
+
+            b:
+              br label %merge
+
+            merge:
+              %p = phi {} addrspace(10)** [ %roots, %a ], [ %arg, %b ]
+              %cc = icmp ult i64 %n, 4
+              br i1 %cc, label %ph, label %exit
+
+            ph:
+              store i64 %n, i64* %out, align 8
+              %ld = load {} addrspace(10)*, {} addrspace(10)** %p, align 8
+              ret {} addrspace(10)* %ld
+
+            exit:
+              ret {} addrspace(10)* null
+            }
+
+            define {} addrspace(10)* @not_dereferenceable(i1 %c, i64 %n, {} addrspace(10)** %arg) {
+            top:
+              %roots = alloca {} addrspace(10)*, align 8
+              br i1 %c, label %a, label %b
+
+            a:
+              call void @fill({} addrspace(10)** %roots)
+              br label %merge
+
+            b:
+              br label %merge
+
+            merge:
+              %p = phi {} addrspace(10)** [ %roots, %a ], [ %arg, %b ]
+              %cc = icmp ult i64 %n, 4
+              br i1 %cc, label %ph, label %exit
+
+            ph:
+              %ld = load {} addrspace(10)*, {} addrspace(10)** %p, align 8
+              ret {} addrspace(10)* %ld
+
+            exit:
+              ret {} addrspace(10)* null
+            }
+
+            define {} addrspace(10)* @two_preds(i1 %c, i1 %d, {} addrspace(10)** nonnull dereferenceable(8) %arg) {
+            top:
+              %roots = alloca {} addrspace(10)*, align 8
+              br i1 %c, label %a, label %b
+
+            a:
+              call void @fill({} addrspace(10)** %roots)
+              br label %merge
+
+            b:
+              br label %merge
+
+            merge:
+              %p = phi {} addrspace(10)** [ %roots, %a ], [ %arg, %b ]
+              br i1 %d, label %ph, label %other
+
+            other:
+              br label %ph
+
+            ph:
+              %ld = load {} addrspace(10)*, {} addrspace(10)** %p, align 8
+              ret {} addrspace(10)* %ld
+            }
+            """
+        )
+
+        # A read-only intrinsic between the phi and the load does not block the
+        # rewrite, and both incoming pointers may be loaded speculatively.
+        preheader = functions(mod)["preheader"]
+        @test Enzyme.Compiler.unfold_root_phi_loads!(preheader)
+        @test root_phi_addrspaces(preheader) == [10]
+
+        # A store before the load could change what it reads.
+        store_between = functions(mod)["store_between"]
+        @test !Enzyme.Compiler.unfold_root_phi_loads!(store_between)
+        @test root_phi_addrspaces(store_between) == [0]
+
+        # Loading the argument where the program did not is only safe when it is
+        # known to be dereferenceable.
+        not_dereferenceable = functions(mod)["not_dereferenceable"]
+        @test !Enzyme.Compiler.unfold_root_phi_loads!(not_dereferenceable)
+        @test root_phi_addrspaces(not_dereferenceable) == [0]
+
+        # The load's block has two predecessors, so the phi's block does not
+        # lead straight to it.
+        two_preds = functions(mod)["two_preds"]
+        @test !Enzyme.Compiler.unfold_root_phi_loads!(two_preds)
+        @test root_phi_addrspaces(two_preds) == [0]
 
         @test LLVM.verify(mod) === nothing
     end
