@@ -19,6 +19,10 @@ struct ReadonlyArg{Active} end
 
 @inline is_readonly_arg(@nospecialize(activity)) = activity isa ReadonlyArg
 
+# The activity `generic_setup` passes for an operand.
+activity_value(B::LLVM.IRBuilder, active::Bool, readonly::Bool) =
+    unsafe_to_llvm(B, readonly ? ReadonlyArg{active}() : active)
+
 """
     readonly_args(activity::Tuple)
 
@@ -1977,11 +1981,9 @@ function generic_setup(
         inverted = nothing
         active = !is_constant_value(gutils, op)
         checked = (i + firstconst) in readonly
-        inactive_val = unsafe_to_llvm(B, checked ? ReadonlyArg{false}() : false)
-        active_val = unsafe_to_llvm(B, checked ? ReadonlyArg{true}() : true)
 
         if !active
-            push!(ActivityList, inactive_val)
+            push!(ActivityList, activity_value(B, false, checked))
         else
             inverted = invert_pointer(gutils, op, B)
             if lookup
@@ -1998,12 +2000,12 @@ function generic_setup(
                     select!(
                         B,
                         icmp!(B, LLVM.API.LLVMIntNE, val, inv_0),
-                        active_val,
-                        inactive_val,
+                        activity_value(B, true, checked),
+                        activity_value(B, false, checked),
                     ),
                 )
             else
-                push!(ActivityList, active_val)
+                push!(ActivityList, activity_value(B, true, checked))
             end
         end
 

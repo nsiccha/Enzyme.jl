@@ -267,6 +267,11 @@ struct RODynArg{M}
 end
 (c::RODynArg)(x) = Base.inferencebarrier(ro_dyn_scaled)(c.v, x)
 
+struct RODynLatest{M}
+    v::M
+end
+(c::RODynLatest)(x) = Base.invokelatest(ro_dyn_scaled, c.v, x)
+
 ro_dyn_step(P, s, a) = (P[1] * s[1] + a, P[2] * s[2], s[3])
 ro_dyn_stepv(props, j, s, a) = ro_dyn_step(props[j], s, a)
 struct RODynLoop{T}
@@ -317,14 +322,18 @@ end
 
 @testset "Readonly check: data passed to dynamic calls" begin
     for f in (
-            RODynCallee(ROScaler([1.0, 2.0]), 3.0), RODynArg([1.0, 2.0]),
+            RODynCallee(ROScaler([1.0, 2.0]), 3.0), RODynArg([1.0, 2.0]), RODynLatest([1.0, 2.0]),
             RODynLoop(((1.0, 2.0, 3.0), [(0.5, 0.25), (0.9, 0.8), (0.7, 0.6)], [2.0, 0.0, 3.0])),
             RODynReturned(([1.0, 2.0], 3.0)),
         )
         expected = autodiff(ReverseWithPrimal, Const(f), Active, Active(0.7))
         @test autodiff(ReverseWithPrimal, f, Active, Active(0.7)) == expected
+        rmode = set_runtime_activity(ReverseWithPrimal)
+        @test autodiff(rmode, f, Active, Active(0.7)) == autodiff(rmode, Const(f), Active, Active(0.7))
         dexpected = autodiff(ForwardWithPrimal, Const(f), Duplicated(0.7, 1.0))
         @test autodiff(ForwardWithPrimal, f, Duplicated(0.7, 1.0)) == dexpected
+        bexpected = autodiff(Forward, Const(f), BatchDuplicated(0.7, (1.0, 2.0)))
+        @test autodiff(Forward, f, BatchDuplicated(0.7, (1.0, 2.0))) == bexpected
     end
     @test autodiff(Reverse, RODynCallee(ROScaler([1.0, 2.0]), 3.0), Active, Active(0.7))[1][1] == 9.0
     @test autodiff(
