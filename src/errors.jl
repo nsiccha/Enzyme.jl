@@ -1216,7 +1216,9 @@ end
 # copy(factors')` in `getproperty(::Cholesky, :L)`, or Base's `unalias`), a
 # zero-filled copy of the object it points to is therefore a valid shadow: a
 # derivative accumulated into that copy is discarded too, and active data written
-# through the merged value is read back through the same copy.
+# through the merged value is read back through the same copy. A load of a field
+# that only holds constant data (`mark_constant_fields!`) is such data as well,
+# where it reaches active memory other than such a field.
 function constant_argument_data(
         gutils::GradientUtils,
         @nospecialize(cur::LLVM.Value),
@@ -1227,6 +1229,7 @@ function constant_argument_data(
     while is_object_cast(cur) || isa(cur, LLVM.ExtractValueInst)
         cur = operands(cur)[1]
     end
+    is_constant_field_load(cur) && return true
     if isa(cur, LLVM.PHIInst)
         cur in seen && return true
         push!(seen, cur)
@@ -1918,6 +1921,13 @@ function julia_error(
         # Positioned at the mixed activity site: for a phi, before the terminator of
         # the incoming block (`mixed_activity_condition`).
         b = IRBuilder(B)
+
+        # A field that only holds constant data, and whose every load is inactive
+        # (`mark_constant_fields!`): no derivative is read from or accumulated into
+        # its shadow, so the primal serves, as for data that cannot hold derivatives.
+        if isa(val, LLVM.StoreInst) && haskey(metadata(val), CONSTANT_FIELD_STORE)
+            return make_batched(new_from_original(gutils, data2), b).ref
+        end
 
         function make_replacement(@nospecialize(cur::LLVM.Value), prevbb::LLVM.IRBuilder)::LLVM.Value
             ncur = new_from_original(gutils, cur)

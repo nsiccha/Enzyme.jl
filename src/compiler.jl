@@ -3448,6 +3448,7 @@ const DumpPostEnzyme = Ref(false)
 const DumpPostWrap = Ref(false)
 
 include("compiler/narrow_tuple_fields.jl")
+include("compiler/constant_fields.jl")
 
 function enzyme!(
     job::CompilerJob,
@@ -3590,6 +3591,10 @@ function enzyme!(
                 throw(AssertionError(msg))
     end
     @assert length(args_typeInfo) == length(collect(parameters(primalf)))
+
+    if !runtimeActivity
+        mark_constant_fields!(mod, primalf, args_activity)
+    end
 
     # The return of createprimal and gradient has this ABI
     #  It returns a struct containing the following values
@@ -5382,6 +5387,9 @@ end
 # like `INACTIVE_GUARANTEED_CONST` and stays.
 const INACTIVE_GUARANTEED_CONST = "guaranteed_const"
 const INACTIVE_FROM_ACTIVITY = "activity_derived"
+# A load of a field that only holds constant data (`mark_constant_fields!`). Like
+# `INACTIVE_FROM_ACTIVITY`, it is derived from the current activities.
+const INACTIVE_CONSTANT_FIELD = "constant_field"
 
 inactive_md(reason::String) = MDNode(LLVM.Metadata[MDString(reason)])
 
@@ -5397,8 +5405,9 @@ function strip_activity_inactive_md!(mod::LLVM.Module)
     # allocation that replaces a stack slot, see `enzyme_fromstack`).
     for f in functions(mod), bb in blocks(f), inst in instructions(bb)
         md = metadata(inst)
+        haskey(md, CONSTANT_FIELD_STORE) && delete!(md, CONSTANT_FIELD_STORE)
         haskey(md, "enzyme_inactive") || continue
-        if inactive_reason(md["enzyme_inactive"]) == INACTIVE_FROM_ACTIVITY
+        if inactive_reason(md["enzyme_inactive"]) in (INACTIVE_FROM_ACTIVITY, INACTIVE_CONSTANT_FIELD)
             delete!(md, "enzyme_inactive")
         end
     end
