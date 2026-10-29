@@ -2,6 +2,44 @@ struct BuiltinWrapper{F}
     f::F
 end
 
+"""
+    ReadonlyArg{Active}()
+
+The activity `generic_setup` passes, instead of `Active::Bool`, for an operand of a
+dynamic call that holds data of an argument the readonly check covers
+(`readonly_operands`). The derivative of the method the call reaches is then
+compiled with that check on the operand (`readonly_args`). The check follows the
+operand's primal memory, so it applies whether or not the operand is
+differentiable.
+"""
+struct ReadonlyArg{Active} end
+
+@inline is_active_arg(active::Bool) = active
+@inline is_active_arg(::ReadonlyArg{Active}) where {Active} = Active
+
+@inline is_readonly_arg(@nospecialize(activity)) = activity isa ReadonlyArg
+
+# The activity `generic_setup` passes for an operand.
+activity_value(B::LLVM.IRBuilder, active::Bool, readonly::Bool) =
+    unsafe_to_llvm(B, readonly ? ReadonlyArg{active}() : active)
+
+"""
+    readonly_args(activity::Tuple)
+
+The `err_if_func_written` a dynamic call's rules compile the method it reaches
+with: `Val(false)`, or one entry per operand, the function first, marking those
+whose activity is `ReadonlyArg`.
+"""
+@inline function readonly_args(activity::Tuple)
+    flags = map(is_readonly_arg, activity)
+    return any(flags) ? Val(flags) : Val(false)
+end
+
+# `readonly_args` for a splatting call (`_apply_iterate`), whose `nargs` arguments
+# are not the operands: only the called function can be checked.
+@inline readonly_callee(@nospecialize(activity), ::Val{nargs}) where {nargs} =
+    is_readonly_arg(activity) ? Val((true, ntuple(Returns(false), Val(nargs))...)) : Val(false)
+
 @generated function (w::BuiltinWrapper{F})(args::Vararg{Any,N}) where {F, N}
    cargs = Expr[]
    for i in 1:N
@@ -150,7 +188,7 @@ function setup_macro_wraps(
                     end
                 end
                 :(
-                    if ActivityTup[$i+1] && !guaranteed_const($(primtypes[i]))
+                    if is_active_arg(ActivityTup[$i + 1]) && !guaranteed_const($(primtypes[i]))
                         @assert $(primtypes[i]) !== DataType
                         $dupexpr
                     else
@@ -199,7 +237,7 @@ function setup_macro_wraps(
                     end
                 end
                 :(
-                    if ActivityTup[$i+1] && !guaranteed_const($(primtypes[i]))
+                    if is_active_arg(ActivityTup[$i + 1]) && !guaranteed_const($(primtypes[i]))
                         @assert $(primtypes[i]) !== DataType
                         if $aref == ActiveState
                             iterate_unwrap_augfwd_act($(primargs[i])...)
@@ -216,7 +254,7 @@ function setup_macro_wraps(
         else
             if forwardMode
                 quote
-                    if ActivityTup[$i+1] && !guaranteed_const($(primtypes[i]))
+                    if is_active_arg(ActivityTup[$i + 1]) && !guaranteed_const($(primtypes[i]))
                         $((Width == 1) ? :Duplicated : :BatchDuplicated)(
                             $(primargs[i]),
                             $(shadowargs[i]),
@@ -226,7 +264,7 @@ function setup_macro_wraps(
                     end
                 end
             else
-                Expr(:call, create_activity_wrapper, Val(Width), :(Val(ActivityTup[$i+1])), :(Val($aref)), primargs[i], shadowargs[i])
+                Expr(:call, create_activity_wrapper, Val(Width), :(Val(is_active_arg(ActivityTup[$i + 1]))), :(Val($aref)), primargs[i], shadowargs[i])
             end
         end
         push!(wrapped, expr)
@@ -320,7 +358,7 @@ function body_runtime_generic_fwd(N, Width, wrapped, primtypes, dfns)
             end
         end
 
-        dupClosure = ActivityTup[1]
+        dupClosure = is_active_arg(ActivityTup[1])
         if dupClosure && guaranteed_const(FT)
             dupClosure = false
         end
@@ -336,7 +374,7 @@ function body_runtime_generic_fwd(N, Width, wrapped, primtypes, dfns)
             Val(true),
             Val(false),
             FFIABI,
-            Val(false),
+            readonly_args(ActivityTup),
             runtimeActivity,
             strongZero
         ) #=erriffuncwritten=#
@@ -506,7 +544,7 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
         $(MakeTypes...)
 
         FT = Core.Typeof(f)
-        dupClosure0 = if ActivityTup[1]
+        dupClosure0 = if is_active_arg(ActivityTup[1])
             !guaranteed_const(FT)
         else
             false
@@ -542,7 +580,7 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
                 Val(true),
                 Val(false),
                 FFIABI,
-                Val(false),
+                readonly_args(ActivityTup),
                 runtimeActivity,
                 strongZero,
             ) #=erriffuncwritten=#
@@ -750,7 +788,7 @@ function body_runtime_generic_rev(
             $(MakeTypes...)
 
             FT = Core.Typeof(f)
-            dupClosure0 = if ActivityTup[1]
+            dupClosure0 = if is_active_arg(ActivityTup[1])
                 !guaranteed_const(FT)
             else
                 false
@@ -778,7 +816,7 @@ function body_runtime_generic_rev(
                 Val(true),
                 Val(false),
                 FFIABI,
-                Val(false),
+                readonly_args(ActivityTup),
                 runtimeActivity,
                 strongZero
             ) #=erriffuncwritten=#
@@ -1101,7 +1139,7 @@ function fwddiff_with_return(
     ReturnPrimal = Val(true)
     ModifiedBetween = Val(Enzyme.falses_from_args(Nargs + 1))
 
-    dupClosure = dupClosure0 && !guaranteed_const(FT)
+    dupClosure = is_active_arg(dupClosure0) && !guaranteed_const(FT)
     FA = dupClosure ? Duplicated{FT} : Const{FT}
 
     tt = Enzyme.vaEltypes(tt′)
@@ -1143,7 +1181,7 @@ function fwddiff_with_return(
         ReturnPrimal,
         Val(false),
         FFIABI,
-        Val(false),
+        readonly_callee(dupClosure0, Val(Nargs)),
         runtimeActivity,
         strongZero
     )(
@@ -1354,7 +1392,7 @@ function augfwd_with_return(
             end
         end
 
-        dupClosure = dupClosure0 && !guaranteed_const(FT)
+        dupClosure = is_active_arg(dupClosure0) && !guaranteed_const(FT)
         FA = dupClosure ? Duplicated{FT} : Const{FT}
 
         fa = if dupClosure
@@ -1377,7 +1415,7 @@ function augfwd_with_return(
             Val(true),
             Val(false),
             FFIABI,
-            Val(false),
+            readonly_callee(dupClosure0, Val(Nargs)),
             runtimeActivity,
             strongZero
         ) #=erriffuncwritten=#
@@ -1680,7 +1718,7 @@ end
             ReturnPrimal = Val(true)
             ModifiedBetween = Val($ModifiedBetween0)
 
-            dupClosure = $dupClosure0 && !guaranteed_const($FT)
+            dupClosure = is_active_arg($dupClosure0) && !guaranteed_const($FT)
             FA = dupClosure ? Duplicated{$FT} : Const{$FT}
 
             tt = $tt
@@ -1705,7 +1743,7 @@ end
                 Val(true),
                 Val(false),
                 FFIABI,
-                Val(false),
+                readonly_callee($dupClosure0, Val($Nargs)),
                 runtimeActivity,
                 strongZero
             ) #=erriffuncwritten=#
@@ -1929,6 +1967,9 @@ function generic_setup(
         push!(vals, val)
     end
 
+    # Operands holding data the readonly check left to the method this call reaches.
+    readonly = readonly_operands(orig)
+
     for (i, op) in enumerate(ops)
         val = new_from_original(gutils, op)
         if lookup
@@ -1939,9 +1980,10 @@ function generic_setup(
 
         inverted = nothing
         active = !is_constant_value(gutils, op)
+        checked = (i + firstconst) in readonly
 
         if !active
-            push!(ActivityList, unsafe_to_llvm(B, false))
+            push!(ActivityList, activity_value(B, false, checked))
         else
             inverted = invert_pointer(gutils, op, B)
             if lookup
@@ -1958,12 +2000,12 @@ function generic_setup(
                     select!(
                         B,
                         icmp!(B, LLVM.API.LLVMIntNE, val, inv_0),
-                        unsafe_to_llvm(B, true),
-                        unsafe_to_llvm(B, false),
+                        activity_value(B, true, checked),
+                        activity_value(B, false, checked),
                     ),
                 )
             else
-                push!(ActivityList, unsafe_to_llvm(B, true))
+                push!(ActivityList, activity_value(B, true, checked))
             end
         end
 

@@ -129,8 +129,10 @@ struct EnzymeCompilerParams{Params<:AbstractCompilerParams} <: AbstractEnzymeCom
     expectedTapeType::Type
     # Whether to use the pointer ABI, default true
     ABI::Type{<:ABI}
-    # Whether to error if the function is written to
-    err_if_func_written::Bool
+    # Whether to error if the function is written to: `true` / `false`, or, as the
+    # rules of a dynamic call ask, one entry per argument (the function first)
+    # marking the arguments whose data must not be written
+    err_if_func_written::Union{Bool, Tuple}
 
     # Whether runtime activity is enabled
     runtimeActivity::Bool
@@ -7163,13 +7165,10 @@ end
 
     TapeType::Type = Cvoid
 
-    if params.err_if_func_written
-        FT = TT.parameters[1]
-        Ty = eltype(FT)
-        reg = active_reg(Ty, job.world)
-        if reg == DupState || reg == MixedState
-            swiftself = has_swiftself(primalf)
-            todo = LLVM.Value[parameters(primalf)[1+swiftself]]
+    if params.err_if_func_written !== false
+        checked = readonly_checked_params(primalf, TT, params.err_if_func_written, job.world)
+        if !isempty(checked)
+            todo = checked
             done = Set{LLVM.Value}()
             doneInst = Set{LLVM.Instruction}()
             # The single call of each callee whose body is walked below.
@@ -7220,15 +7219,13 @@ end
                     end
 
                     if isa(user, LLVM.StoreInst)
-                        base = operands(user)[2]
-                        while isa(base, LLVM.BitCastInst) ||
-                                isa(base, LLVM.AddrSpaceCastInst) ||
-                                isa(base, LLVM.GetElementPtrInst)
-                            base = operands(base)[1]
-                        end
+                        base = local_memory_base(operands(user)[2])
                         # we are capturing the variable
                         if operands(user)[1] == cur
-                            if isa(base, LLVM.AllocaInst)
+                            # Into a stack slot, or into an object allocated here
+                            # (the box Julia makes of a value passed to a dynamic
+                            # call): follow where that memory goes.
+                            if base !== nothing
                                 push!(doneInst, user)
                                 push!(todo, base)
                                 continue
@@ -7238,10 +7235,11 @@ end
                         if operands(user)[2] == cur
                             # A stack slot of this function, such as the copy of a
                             # by-value argument that `lower_convention` stores into
-                            # (`.innerparm`), is reached here only because it holds
-                            # data of the argument. Storing into it writes local
-                            # memory, not memory the argument refers to.
-                            if isa(base, LLVM.AllocaInst)
+                            # (`.innerparm`), or an object it allocates, is reached
+                            # here only because it holds data of the argument.
+                            # Storing into it writes local memory, not memory the
+                            # argument refers to.
+                            if base !== nothing
                                 continue
                             end
                             slegal, foundv, byref = abs_typeof(operands(user)[1], enzyme_ctx)
@@ -7255,11 +7253,49 @@ end
                     end
 
                     if isa(user, LLVM.CallInst)
+                        # The method a dynamic call reaches is known only at run
+                        # time. Its rules compile that method's derivative with
+                        # this check on the operands holding data of the argument.
+                        # What it returns may hold that data too, as may what a
+                        # runtime call that writes nothing returns.
+                        if defer_readonly_operand!(user, cur) ||
+                                is_nonwriting_runtime_call(user)
+                            slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
+                            if slegal
+                                reg2 = active_reg(foundv, job.world)
+                                if reg2 == ActiveState || reg2 == AnyState
+                                    continue
+                                end
+                            end
+                            push!(todo, user)
+                            continue
+                        end
                         called = LLVM.called_operand(user)
                         if isa(called, LLVM.Function)
                             intr = LLVM.API.LLVMGetIntrinsicID(called)
                             if intr == LLVM.Intrinsic("llvm.memset").id
                                 if cur != operands(user)[1]
+                                    continue
+                                end
+                            end
+                            # A copy into local memory, as for a store: of data of
+                            # the argument (follow the copy), or into memory reached
+                            # because it holds such data (Julia 1.12 unboxes a
+                            # tuple a dynamic call returns this way).
+                            if intr == LLVM.Intrinsic("llvm.memcpy").id ||
+                                    intr == LLVM.Intrinsic("llvm.memmove").id
+                                pointerfree = is_pointerfree_copy(user, enzyme_ctx)
+                                base = local_memory_base(operands(user)[1])
+                                if base !== nothing
+                                    if operands(user)[2] == cur && !pointerfree
+                                        push!(doneInst, user)
+                                        push!(todo, base)
+                                    end
+                                    continue
+                                end
+                                # Copying bytes without references out of data of
+                                # the argument only reads it.
+                                if pointerfree && operands(user)[1] != cur
                                     continue
                                 end
                             end
@@ -8638,7 +8674,7 @@ function thunk_job(
         ReturnPrimal::Bool,
         ShadowInit::Bool,
         @nospecialize(ABI::Type),
-        ErrIfFuncWritten::Bool,
+        ErrIfFuncWritten::Union{Bool, Tuple},
         RuntimeActivity::Bool,
         StrongZero::Bool,
         AtomicAdd::Union{Bool, Nothing},
@@ -8770,7 +8806,7 @@ end
         ReturnPrimal::Bool,
         ShadowInit::Bool,
         @nospecialize(ABI::Type),
-        ErrIfFuncWritten::Bool,
+        ErrIfFuncWritten::Union{Bool, Tuple},
         RuntimeActivity::Bool,
         StrongZero::Bool,
         AtomicAdd::Union{Bool, Nothing},
@@ -9173,18 +9209,18 @@ function compiles_lazily(Mode::API.CDerivativeMode, @nospecialize(ABI::Type), un
     return !Interpreter.in_enzyme_inference()
 end
 
-function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Bool, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
+function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
     @nospecialize
     return thunk_codeinfo(thunk, false, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero, AtomicAdd)
 end
 
-function runtime_thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Bool, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
+function runtime_thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
     @nospecialize
     return thunk_codeinfo(runtime_thunk, true, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero, AtomicAdd)
 end
 
 # The body of the generators of `thunk` and `runtime_thunk`.
-function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Bool, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing})
+function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing})
     
     slotnames = Core.svec(Symbol("#self#"), 
                     :fakeworld, :fa, :a, :tt, :mode, :width,
@@ -9300,7 +9336,7 @@ import GPUCompiler: deferred_codegen_jobs
 
 function deferred_id_codegen end
 
-function deferred_id_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ExpectedTapeType::Type), ErrIfFuncWritten::Bool, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(expectedtapetype::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
+function deferred_id_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ExpectedTapeType::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(expectedtapetype::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
     @nospecialize
     
     slotnames = Core.svec(Symbol("#self#"),
