@@ -684,3 +684,66 @@ overlay_written(active, base, slots) = overlay_write(ConstFieldOverlay(base, act
         @test b1 == b2
     end
 end
+
+# A read that picks a constant or an active entry by a branch. LLVM folds the two
+# loads into one load through a select (or phi) of the two pointers, which merges
+# a pointer into the `Const` array with an active one.
+function branch_read_loop(active, base, slots, idx)
+    s = 0.0
+    @inbounds for j in idx
+        k = slots[j]
+        s += exp(iszero(k) ? base[j] : active[k])
+    end
+    return s
+end
+function branch_read_unrolled(active, base, slots, idx)
+    s = 0.0
+    @inbounds for t in 1:4
+        j = idx[t]
+        k = slots[j]
+        s += exp(iszero(k) ? base[j] : active[k])
+    end
+    return s
+end
+branch_read_overlay(active, base, slots, idx) =
+    sum(exp, ConstFieldOverlay(base, active, slots)[idx])
+
+@testset "Reads that pick constant or active data by a branch" begin
+    T = 10_000
+    base = collect(0.001 .* (1:T))
+    idx = [1, 5, 9, 4000, 4001, 7777, 8000]
+    slots = zeros(Int32, T)
+    slots[5], slots[4000], slots[8000] = 1, 2, 3
+    active = [0.2, 0.3, 0.4]
+    base0 = copy(base)
+    @testset "$(nameof(f))" for f in (branch_read_loop, branch_read_unrolled, branch_read_overlay)
+        want = zero(active)
+        autodiff(
+            set_runtime_activity(Reverse), f, Active, Duplicated(active, want),
+            Const(base), Const(slots), Const(idx)
+        )
+        @test any(!iszero, want)
+        da = zero(active)
+        g() = (
+            fill!(da, 0); autodiff(
+                Reverse, f, Active, Duplicated(active, da),
+                Const(base), Const(slots), Const(idx)
+            )
+        )
+        g()
+        @test da == want
+        @test (@allocated g()) < sizeof(base) ÷ 10
+        @test base == base0
+        v = [1.0, -0.5, 2.0]
+        @test autodiff(
+            Forward, f, Duplicated(active, v), Const(base), Const(slots),
+            Const(idx)
+        )[1] ≈ sum(want .* v)
+        d1, d2 = zero(active), zero(active)
+        autodiff(
+            Reverse, f, Active, BatchDuplicated(active, (d1, d2)), Const(base),
+            Const(slots), Const(idx)
+        )
+        @test d1 == want && d2 == want
+    end
+end

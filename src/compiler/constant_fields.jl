@@ -22,6 +22,14 @@
 # through a tagged load into constant memory is not differentiated, which is the
 # documented behaviour for values stored into `Const` arguments.
 #
+# A read such as `iszero(s) ? base[j] : active[s]` meets the same problem without
+# any struct: LLVM folds its two loads into one load through a select or phi of
+# the two pointers, which merges a pointer into constant data with an active one.
+# That pointer has no shadow either, so the handler raised
+# `EnzymeRuntimeActivityError` for it, or copied the whole array on every
+# execution. `split_constant_merges!` puts the load back on each side, so the
+# constant side loads a value that has no derivative.
+#
 # The tags hold only for the activities of the current compilation;
 # `strip_activity_inactive_md!` removes them after `enzyme!`.
 const CONSTANT_FIELD_STORE = "enzymejl_constant_field"
@@ -40,8 +48,6 @@ mutable struct ConstantFields
     callee::Dict{LLVM.Function, Bool}
     # (root base, byte offset) => whether the field is still assumed constant.
     constant::Dict{Tuple{LLVM.Value, Int}, Bool}
-    # Phis of constant and active objects to split into phis of loaded values.
-    unsink::Set{LLVM.PHIInst}
 end
 
 function ConstantFields(primalf::LLVM.Function, const_args::Set{LLVM.Value})
@@ -51,7 +57,7 @@ function ConstantFields(primalf::LLVM.Function, const_args::Set{LLVM.Value})
         Dict{LLVM.Value, Vector{Tuple{LLVM.StoreInst, Int}}}(),
         Dict{LLVM.Value, Vector{Tuple{Int, Int}}}(),
         Dict{LLVM.Function, Set{LLVM.BasicBlock}}(), Dict{LLVM.Function, Bool}(),
-        Dict{Tuple{LLVM.Value, Int}, Bool}(), Set{LLVM.PHIInst}(),
+        Dict{Tuple{LLVM.Value, Int}, Bool}(),
     )
 end
 
@@ -441,11 +447,11 @@ end
 # Whether every use of `val`, a pointer read from a constant field (or derived
 # from one), stays away from active data: a load or store through it, a store
 # into a constant field, a comparison, or an argument of an internal function
-# whose parameter is used likewise. A phi that also merges active data must be one
-# `unsink_constant_field_phi!` can split; it is recorded in `cf.unsink`. Anything
-# else would merge the pointer with active data where it has no shadow, so the
-# mixed-activity handler would copy the whole array there, possibly in a loop,
-# while without the tag one copy is made where the struct is built.
+# whose parameter is used likewise. A phi or select that also merges active data
+# must be one `split_constant_merges!` splits. Anything else would merge the
+# pointer with active data where it has no shadow, so the mixed-activity handler
+# would copy the whole array there, possibly in a loop, while without the tag one
+# copy is made where the struct is built.
 function constant_field_uses_safe(cf::ConstantFields, @nospecialize(val::LLVM.Value), visited::Set{LLVM.Value})::Bool
     val in visited && return true
     push!(visited, val)
@@ -468,13 +474,12 @@ function constant_field_uses_safe(cf::ConstantFields, @nospecialize(val::LLVM.Va
                     get(cf.constant, (constant_field_root(cf, base), offset), false)
             end
         elseif isa(user, LLVM.PHIInst) || isa(user, LLVM.SelectInst)
-            if constant_field_data(cf, user, Set{LLVM.Value}())
+            kind = constant_field_merge(cf, user)
+            if kind === :constant
                 constant_field_uses_safe(cf, user, visited)
-            elseif isa(user, LLVM.PHIInst) && constant_field_unsink_tree(user) !== nothing
-                push!(cf.unsink, user)
-                true
             else
-                false
+                # `split_constant_merges!` splits it.
+                kind === :mixed && constant_merge_splittable(user)
             end
         elseif isa(user, LLVM.ICmpInst)
             true
@@ -532,6 +537,141 @@ function constant_field_call_safe(cf::ConstantFields, call::LLVM.CallInst, @nosp
     return true
 end
 
+# Whether `val`, a pointer, points into constant data: casts, GEPs and
+# `julia.gc_loaded` of a value `constant_field_data` accepts.
+function constant_field_derived(cf::ConstantFields, @nospecialize(val::LLVM.Value))::Bool
+    while true
+        if isa(val, LLVM.BitCastInst) || isa(val, LLVM.AddrSpaceCastInst) ||
+                isa(val, LLVM.GetElementPtrInst)
+            val = operands(val)[1]
+        elseif isa(val, LLVM.CallInst) && called_function_name(val) == "julia.gc_loaded"
+            val = operands(val)[2]
+        else
+            break
+        end
+    end
+    return constant_field_data(cf, val, Set{LLVM.Value}())
+end
+
+# `:constant` if every pointer a phi or select merges is constant data, `:mixed` if
+# only some are, `:active` if none is.
+function constant_field_merge(cf::ConstantFields, merge::LLVM.Instruction)::Symbol
+    vals = isa(merge, LLVM.PHIInst) ? LLVM.Value[v for (v, _) in LLVM.incoming(merge)] :
+        LLVM.Value[operands(merge)[2], operands(merge)[3]]
+    nconst = 0
+    for v in vals
+        constant_field_derived(cf, v) && (nconst += 1)
+    end
+    nconst == length(vals) && return :constant
+    return nconst == 0 ? :active : :mixed
+end
+
+# The one load through `sel`, a select of pointers, right in its block: not
+# volatile or atomic, and of a value that is not a pointer.
+function constant_select_load(sel::LLVM.SelectInst)::Union{Nothing, LLVM.LoadInst}
+    isa(value_type(sel), LLVM.PointerType) || return nothing
+    uses = collect(LLVM.uses(sel))
+    length(uses) == 1 || return nothing
+    ld = LLVM.user(only(uses))
+    (isa(ld, LLVM.LoadInst) && LLVM.parent(ld) == LLVM.parent(sel)) || return nothing
+    (Bool(LLVM.API.LLVMGetVolatile(ld)) || LLVM.is_atomic(ld)) && return nothing
+    isa(value_type(ld), LLVM.PointerType) && return nothing
+    return ld
+end
+
+constant_merge_splittable(phi::LLVM.PHIInst) = constant_field_unsink_tree(phi) !== nothing
+constant_merge_splittable(sel::LLVM.SelectInst) = constant_select_load(sel) !== nothing
+
+# Rebuild the phis of `succ` with `to` as the predecessor that was `from` (the C
+# API cannot set the block of an incoming value).
+function retarget_phis!(builder::LLVM.IRBuilder, succ::LLVM.BasicBlock, from::LLVM.BasicBlock, to::LLVM.BasicBlock)
+    for phi in collect(instructions(succ))
+        isa(phi, LLVM.PHIInst) || break
+        incs = collect(LLVM.incoming(phi))
+        any(Base.Fix2(==, from) ∘ last, incs) || continue
+        position!(builder, phi)
+        new = phi!(builder, value_type(phi), LLVM.name(phi))
+        for (v, b) in incs
+            push!(LLVM.incoming(new), (v, b == from ? to : b))
+        end
+        for k in ("enzyme_type", "enzyme_inactive", "enzyme_active")
+            haskey(metadata(phi), k) && (metadata(new)[k] = metadata(phi)[k])
+        end
+        replace_uses!(phi, new)
+        LLVM.erase!(phi)
+    end
+    return
+end
+
+# `load(select(c, p, q))` becomes `c ? load(p) : load(q)`: a branch with one load
+# on each edge and a phi of the two values, as before LLVM folded it into a select
+# of pointers. Loading both would read `q` where the program does not, out of
+# bounds for `iszero(s) ? base[j] : active[s]` when `s` is 0.
+function unselect_constant_load!(sel::LLVM.SelectInst)::Bool
+    ld = constant_select_load(sel)
+    ld === nothing && return false
+    bb = LLVM.parent(ld)
+    f = LLVM.parent(bb)
+    c, p, q = operands(sel)
+    insts = collect(instructions(bb))
+    tail = insts[(findfirst(Base.Fix2(==, ld), insts)::Int + 1):end]
+    onp = LLVM.BasicBlock(f, "unselect.p")
+    onq = LLVM.BasicBlock(f, "unselect.q")
+    join = LLVM.BasicBlock(f, "unselect.join")
+    builder = LLVM.IRBuilder()
+    position!(builder, join)
+    for inst in tail
+        LLVM.API.LLVMInstructionRemoveFromParent(inst)
+        LLVM.API.LLVMInsertIntoBuilder(builder, inst)
+    end
+    for succ in unique(collect(successors(terminator(join))))
+        retarget_phis!(builder, succ, bb, join)
+    end
+    position!(builder, bb)
+    br!(builder, c, onp, onq)
+    loaded = LLVM.Instruction[]
+    for (blk, ptr) in ((onp, p), (onq, q))
+        position!(builder, blk)
+        v = load!(builder, value_type(ld), ptr)
+        alignment!(v, alignment(ld))
+        copy_metadata!(v, ld)
+        push!(loaded, v)
+        br!(builder, join)
+    end
+    position!(builder, first(instructions(join)))
+    merged = phi!(builder, value_type(ld), LLVM.name(ld))
+    push!(LLVM.incoming(merged), (loaded[1], onp))
+    push!(LLVM.incoming(merged), (loaded[2], onq))
+    haskey(metadata(ld), "enzyme_type") && (metadata(merged)["enzyme_type"] = metadata(ld)["enzyme_type"])
+    replace_uses!(ld, merged)
+    LLVM.erase!(ld)
+    LLVM.erase!(sel)
+    dispose(builder)
+    return true
+end
+
+split_constant_merge!(phi::LLVM.PHIInst) = unsink_constant_field_phi!(phi)
+split_constant_merge!(sel::LLVM.SelectInst) = unselect_constant_load!(sel)
+
+# Split every phi or select that merges constant data with other pointers and only
+# feeds loads, so that its constant operand needs no shadow: the mixed-activity
+# handler would otherwise copy the whole constant array there on every execution,
+# or raise `EnzymeRuntimeActivityError` for a pointer into it.
+function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
+    todo = LLVM.Instruction[]
+    for f in functions(mod), bb in blocks(f), inst in instructions(bb)
+        (isa(inst, LLVM.PHIInst) || isa(inst, LLVM.SelectInst)) || continue
+        isa(value_type(inst), LLVM.PointerType) || continue
+        in_unreachable(cf, inst) && continue
+        constant_field_merge(cf, inst) === :mixed || continue
+        constant_merge_splittable(inst) && push!(todo, inst)
+    end
+    for merge in todo
+        split_constant_merge!(merge)
+    end
+    return length(todo)
+end
+
 # Drop a field once one of its stores writes data that is not constant, or one of
 # its loads is used unsafely, under the current assumptions.
 function settle_constant_fields!(cf::ConstantFields)
@@ -549,7 +689,6 @@ function settle_constant_fields!(cf::ConstantFields)
             end
         end
         changed && continue
-        empty!(cf.unsink)
         for (base, ls) in cf.loads
             root = constant_field_root(cf, base)
             for (ld, off) in ls
@@ -648,13 +787,9 @@ function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospec
             ok && (cf.constant[(root, foff)] = true)
         end
     end
-    isempty(cf.constant) && return 0
-
     # A greatest fixpoint.
     settle_constant_fields!(cf)
-    for phi in cf.unsink
-        unsink_constant_field_phi!(phi)
-    end
+    split_constant_merges!(mod, cf)
 
     marked = 0
     for (base, ls) in cf.loads
