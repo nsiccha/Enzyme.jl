@@ -568,3 +568,119 @@ end
     rev(Const(returned_record_total), x, ts, 1.0, tape)
     @test x.dval ≈ want
 end
+
+# An array-like overlay reads from `active` where `slots` names a slot and from the
+# constant `base` elsewhere. Each consumer below receives the overlay by reference,
+# so its stack slot is active memory that holds the constant `base`. Every value
+# loaded from that field is constant, so the field needs no shadow of its own and
+# static activity copies nothing of `base`.
+struct ConstFieldOverlay{B, A, I} <: AbstractVector{Float64}
+    base::B
+    active::A
+    slots::I
+end
+Base.size(p::ConstFieldOverlay) = size(p.base)
+Base.IndexStyle(::Type{<:ConstFieldOverlay}) = IndexLinear()
+@inline function Base.getindex(p::ConstFieldOverlay, j::Int)
+    @boundscheck checkbounds(p.base, j)
+    s = @inbounds p.slots[j]
+    return iszero(s) ? @inbounds(p.base[j]) : @inbounds(p.active[s])
+end
+
+@noinline function overlay_gather(u, block, m, rows)
+    Z = reshape(view(u, block), m, 2)
+    s = 0.0
+    for x in Z[rows, 2]
+        s += exp(x)
+    end
+    return s
+end
+@noinline function overlay_squares(u, idx)
+    s = 0.0
+    for i in idx
+        s += u[i]^2
+    end
+    return s
+end
+@noinline overlay_base(u) = u.base
+@noinline function overlay_write(u)
+    u.base[1] = u.active[1]
+    return 2 * u.base[1] + u.active[2]
+end
+
+overlay_cell(active, base, slots, block, m, rows) =
+    overlay_gather(ConstFieldOverlay(base, active, slots), block, m, rows)
+function overlay_two_calls(active, base, slots, idx)
+    u = ConstFieldOverlay(base, active, slots)
+    return overlay_squares(u, idx) + 2 * overlay_squares(u, idx)
+end
+# Where the field's value reaches code the analysis does not follow, the field
+# keeps its zero-filled copy.
+overlay_dynamic(active, base, slots, idx) =
+    Base.inferencebarrier(overlay_squares)(ConstFieldOverlay(base, active, slots), idx)::Float64
+function overlay_returned(active, base, slots)
+    b = overlay_base(ConstFieldOverlay(base, active, slots))
+    return b[3] * active[1] + active[2]
+end
+overlay_written(active, base, slots) = overlay_write(ConstFieldOverlay(base, active, slots))
+
+@testset "Constant fields of structs passed to non-inlined calls" begin
+    T = 100_000
+    m = 200
+    block = 1000:(999 + 2m)
+    rows = collect(5:7:180)
+    idx = sort!(unique!(vcat(1:3, (999 + m) .+ rows, 50_000:50_020)))
+    base = collect(0.001 .* (1:T))
+    slots = zeros(Int32, T)
+    for (s, j) in enumerate(idx)
+        slots[j] = s
+    end
+    active = base[idx] .+ 0.01
+    base0 = copy(base)
+    RA = set_runtime_activity(Reverse)
+    reads = vcat(collect(1:2:T), idx)
+    @testset "$(nameof(f))" for (f, args) in (
+            (overlay_cell, (Const(base), Const(slots), Const(block), Const(m), Const(rows))),
+            (overlay_two_calls, (Const(base), Const(slots), Const(reads))),
+            (overlay_dynamic, (Const(base), Const(slots), Const(reads))),
+            (overlay_returned, (Const(base), Const(slots))),
+        )
+        want = zero(active)
+        autodiff(RA, f, Active, Duplicated(active, want), args...)
+        @test any(!iszero, want)
+        da = zero(active)
+        g() = (fill!(da, 0); autodiff(Reverse, f, Active, Duplicated(active, da), args...))
+        g()
+        @test da == want
+        @test base == base0
+        if f === overlay_cell || f === overlay_two_calls
+            @test (@allocated g()) < sizeof(base) ÷ 10
+        end
+        v = collect(range(0.5, 1.5; length = length(active)))
+        @test autodiff(Forward, f, Duplicated(active, v), args...)[1] ≈ sum(want .* v)
+        d1, d2 = zero(active), zero(active)
+        autodiff(Reverse, f, Active, BatchDuplicated(active, (d1, d2)), args...)
+        @test d1 == want && d2 == want
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal, Const{typeof(f)}, Active, Duplicated{typeof(active)},
+            map(typeof, args)...,
+        )
+        ds = zero(active)
+        tape, prim, _ = fwd(Const(f), Duplicated(active, ds), args...)
+        rev(Const(f), Duplicated(active, ds), args..., 1.0, tape)
+        @test ds == want
+        @test prim == f(active, getfield.(args, :val)...)
+        @test base == base0
+    end
+    # Values stored into `Const` memory are not differentiated (FAQ, "Activity of
+    # temporary storage"), as with runtime activity.
+    @testset "a write through the constant field" begin
+        b1, b2 = copy(base), copy(base)
+        want = zero(active)
+        autodiff(RA, overlay_written, Active, Duplicated(active, want), Const(b1), Const(slots))
+        da = zero(active)
+        autodiff(Reverse, overlay_written, Active, Duplicated(active, da), Const(b2), Const(slots))
+        @test da == want
+        @test b1 == b2
+    end
+end
