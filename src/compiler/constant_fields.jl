@@ -30,6 +30,15 @@
 # execution. `split_constant_merges!` puts the load back on each side, so the
 # constant side loads a value that has no derivative.
 #
+# Nested modes meet the struct again in the outer compilation. Reverse over
+# Forward inlines the inner derivative into the outer function, which then builds
+# the struct and passes it to the inner derivative of the non-inlined function, so
+# the outer Reverse needs the same proof. The externally visible wrapper of the
+# inner derivative stays in the module after it was inlined and builds the same
+# struct from its own parameters, which are not `Const`. It never runs in the
+# differentiated call, so the pass follows only code the differentiated function
+# can reach (`reachable_functions`).
+#
 # The tags hold only for the activities of the current compilation;
 # `strip_activity_inactive_md!` removes them after `enzyme!`.
 const CONSTANT_FIELD_STORE = "enzymejl_constant_field"
@@ -44,6 +53,7 @@ mutable struct ConstantFields
     stores::Dict{LLVM.Value, Vector{Tuple{LLVM.StoreInst, Int}}}
     # (offset, length) of each zero `memset`, a store of null to the fields it covers.
     zeroed::Dict{LLVM.Value, Vector{Tuple{Int, Int}}}
+    reachable::Set{LLVM.Function}
     unreachable::Dict{LLVM.Function, Set{LLVM.BasicBlock}}
     callee::Dict{LLVM.Function, Bool}
     # (root base, byte offset) => whether the field is still assumed constant.
@@ -55,10 +65,35 @@ function ConstantFields(primalf::LLVM.Function, const_args::Set{LLVM.Value})
         primalf, const_args, Dict{LLVM.Value, LLVM.Value}(), Set{LLVM.Value}(),
         Dict{LLVM.Value, Vector{Tuple{LLVM.LoadInst, Int}}}(),
         Dict{LLVM.Value, Vector{Tuple{LLVM.StoreInst, Int}}}(),
-        Dict{LLVM.Value, Vector{Tuple{Int, Int}}}(),
+        Dict{LLVM.Value, Vector{Tuple{Int, Int}}}(), reachable_functions(primalf),
         Dict{LLVM.Function, Set{LLVM.BasicBlock}}(), Dict{LLVM.Function, Bool}(),
         Dict{Tuple{LLVM.Value, Int}, Bool}(),
     )
+end
+
+# The functions that can run in a call of `primalf`: `primalf`, every function
+# another constant or global refers to (it may be called through a pointer), and
+# every function an instruction of one of these names, transitively.
+function reachable_functions(primalf::LLVM.Function)::Set{LLVM.Function}
+    reachable = Set{LLVM.Function}([primalf])
+    for f in functions(LLVM.parent(primalf))
+        for u in LLVM.uses(f)
+            isa(LLVM.user(u), LLVM.Instruction) && continue
+            push!(reachable, f)
+            break
+        end
+    end
+    todo = collect(reachable)
+    while !isempty(todo)
+        f = pop!(todo)
+        for bb in blocks(f), inst in instructions(bb), op in operands(inst)
+            if isa(op, LLVM.Function) && !(op in reachable)
+                push!(reachable, op)
+                push!(todo, op)
+            end
+        end
+    end
+    return reachable
 end
 
 is_tracked_pointer(@nospecialize(ty::LLVM.LLVMType)) =
@@ -100,9 +135,12 @@ function guaranteed_unreachable(f::LLVM.Function)::Set{LLVM.BasicBlock}
     return dead
 end
 
+# Whether `inst` never runs differentiated: it is in a function the differentiated
+# function cannot reach, or in a block from which every path ends in `unreachable`.
 function in_unreachable(cf::ConstantFields, inst::LLVM.Instruction)::Bool
     bb = LLVM.parent(inst)
     f = LLVM.parent(bb)
+    f in cf.reachable || return true
     dead = get(cf.unreachable, f, nothing)
     if dead === nothing
         dead = guaranteed_unreachable(f)
