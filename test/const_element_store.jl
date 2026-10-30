@@ -752,3 +752,117 @@ branch_read_overlay(active, base, slots, idx) =
         @test d1 == want && d2 == want
     end
 end
+
+# The overlay under nested modes. Each outer mode inlines the inner derivative of
+# `overlay_scaled` into the outer function, which then builds the overlay and passes
+# it to the inner derivative of the reader, so the outer pass needs the proof as
+# well. The generator reader also checks under `--check-bounds=yes` that a read of
+# `base` whose block also branches to the bounds check of `active` is split.
+@noinline overlay_scaled_sum(u, rows) = sum(exp(u[j] * u[3]) for j in rows)
+@noinline function overlay_scaled_loop(u, rows)
+    s = 0.0
+    for j in rows
+        s += exp(u[j] * u[3])
+    end
+    return s
+end
+overlay_scaled(active, base, slots, rows) =
+    overlay_scaled_sum(ConstFieldOverlay(base, active, slots), rows)
+overlay_scaled_looped(active, base, slots, rows) =
+    overlay_scaled_loop(ConstFieldOverlay(base, active, slots), rows)
+
+overlay_dir(F, f, active, da, base, slots, rows) =
+    autodiff(F, f, Duplicated(active, da), Const(base), Const(slots), Const(rows))[1]
+overlay_dir2(F, f, active, da, db, base, slots, rows) = autodiff(
+    F, Const(overlay_dir), Const(F), Const(f), Duplicated(active, da), Const(db),
+    Const(base), Const(slots), Const(rows),
+)[1]
+function overlay_grad!(R, f, g, active, base, slots, rows)
+    autodiff(R, f, Active, Duplicated(active, g), Const(base), Const(slots), Const(rows))
+    return nothing
+end
+
+function overlay_rev(R, F, f, active, u, v, base, slots, rows)
+    g = zero(active)
+    overlay_grad!(R, f, g, active, base, slots, rows)
+    return g
+end
+overlay_fwd(R, F, f, active, u, v, base, slots, rows) =
+    overlay_dir(F, f, active, v, base, slots, rows)
+# Reverse over Forward: the Hessian times `v`.
+function overlay_rev_fwd(R, F, f, active, u, v, base, slots, rows)
+    g = zero(active)
+    autodiff(
+        R, Const(overlay_dir), Active, Const(F), Const(f), Duplicated(active, g),
+        Const(v), Const(base), Const(slots), Const(rows),
+    )
+    return g
+end
+# Forward over Reverse: the Hessian times `v`.
+function overlay_fwd_rev(R, F, f, active, u, v, base, slots, rows)
+    g, dg = zero(active), zero(active)
+    autodiff(
+        F, Const(overlay_grad!), Const(R), Const(f), Duplicated(g, dg),
+        Duplicated(active, v), Const(base), Const(slots), Const(rows),
+    )
+    return dg
+end
+# Forward over Forward: `u' * H * v`.
+overlay_fwd_fwd(R, F, f, active, u, v, base, slots, rows) = autodiff(
+    F, Const(overlay_dir), Const(F), Const(f), Duplicated(active, u), Const(v),
+    Const(base), Const(slots), Const(rows),
+)[1]
+# Reverse over Forward over Forward: the third derivative contracted with `u` and `v`.
+function overlay_rev_fwd_fwd(R, F, f, active, u, v, base, slots, rows)
+    g = zero(active)
+    autodiff(
+        R, Const(overlay_dir2), Active, Const(F), Const(f), Duplicated(active, g),
+        Const(u), Const(v), Const(base), Const(slots), Const(rows),
+    )
+    return g
+end
+
+# Not built yet: Julia 1.12 cannot take Forward over Reverse of the generator's `sum`
+# over the overlay with runtime activity (`EnzymeNoDerivativeError`, "cannot handle
+# unknown binary operator: sub i64"; Enzyme todo `14jm2ow`). Static activity, whose
+# merge split removes that code, is compared with Reverse over Forward instead, which
+# computes the same Hessian-vector product.
+overlay_runtime_fwd_rev_broken(f, mode) =
+    f === overlay_scaled && mode === overlay_fwd_rev && VERSION >= v"1.12"
+
+@testset "Constant fields under nested modes" begin
+    T = 100_000
+    base = collect(range(-0.5, 0.5; length = T))
+    slots = zeros(Int32, T)
+    slots[1], slots[2], slots[3] = 1, 2, 3
+    active = base[1:3] .+ 0.1
+    rows = [1, 2, 5, 9]
+    u, v = [0.3, -0.7, 1.1], [1.0, -0.5, 2.0]
+    base0 = copy(base)
+    RR, FR = set_runtime_activity(Reverse), set_runtime_activity(Forward)
+    @testset "$(nameof(f)), $(nameof(mode))" for f in (overlay_scaled, overlay_scaled_looped),
+            mode in (
+                overlay_rev, overlay_fwd, overlay_rev_fwd, overlay_fwd_rev,
+                overlay_fwd_fwd, overlay_rev_fwd_fwd,
+            )
+        want = if overlay_runtime_fwd_rev_broken(f, mode)
+            @test_broken mode(RR, FR, f, active, u, v, base, slots, rows) isa Vector{Float64}
+            overlay_rev_fwd(RR, FR, f, active, u, v, base, slots, rows)
+        else
+            mode(RR, FR, f, active, u, v, base, slots, rows)
+        end
+        g() = mode(Reverse, Forward, f, active, u, v, base, slots, rows)
+        @test g() ≈ want rtol = 1.0e-12
+        @test (@allocated g()) < sizeof(base) ÷ 10
+        @test base == base0
+    end
+    @testset "$(nameof(f)): Hessian times a vector against differences of the gradient" for f in (overlay_scaled, overlay_scaled_looped)
+        h = 1.0e-6
+        gp, gm = zero(active), zero(active)
+        overlay_grad!(Reverse, f, gp, active .+ h .* v, base, slots, rows)
+        overlay_grad!(Reverse, f, gm, active .- h .* v, base, slots, rows)
+        fd = (gp .- gm) ./ (2h)
+        @test overlay_rev_fwd(Reverse, Forward, f, active, u, v, base, slots, rows) ≈ fd rtol = 1.0e-6
+        @test overlay_fwd_rev(Reverse, Forward, f, active, u, v, base, slots, rows) ≈ fd rtol = 1.0e-6
+    end
+end
