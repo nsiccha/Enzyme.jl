@@ -822,6 +822,14 @@ function overlay_rev_fwd_fwd(R, F, f, active, u, v, base, slots, rows)
     return g
 end
 
+# Not built yet: Julia 1.12 cannot take Forward over Reverse of the generator's `sum`
+# over the overlay with runtime activity (`EnzymeNoDerivativeError`, "cannot handle
+# unknown binary operator: sub i64"; Enzyme todo `14jm2ow`). Static activity, whose
+# merge split removes that code, is compared with Reverse over Forward instead, which
+# computes the same Hessian-vector product.
+overlay_runtime_fwd_rev_broken(f, mode) =
+    f === overlay_scaled && mode === overlay_fwd_rev && VERSION >= v"1.12"
+
 @testset "Constant fields under nested modes" begin
     T = 100_000
     base = collect(range(-0.5, 0.5; length = T))
@@ -837,7 +845,12 @@ end
                 overlay_rev, overlay_fwd, overlay_rev_fwd, overlay_fwd_rev,
                 overlay_fwd_fwd, overlay_rev_fwd_fwd,
             )
-        want = mode(RR, FR, f, active, u, v, base, slots, rows)
+        want = if overlay_runtime_fwd_rev_broken(f, mode)
+            @test_broken mode(RR, FR, f, active, u, v, base, slots, rows) isa Vector{Float64}
+            overlay_rev_fwd(RR, FR, f, active, u, v, base, slots, rows)
+        else
+            mode(RR, FR, f, active, u, v, base, slots, rows)
+        end
         g() = mode(Reverse, Forward, f, active, u, v, base, slots, rows)
         @test g() ≈ want rtol = 1.0e-12
         @test (@allocated g()) < sizeof(base) ÷ 10
