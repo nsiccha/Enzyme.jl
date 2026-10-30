@@ -374,13 +374,19 @@ end
 # not pointers, in block order. Load sinking turns `c ? base[j] : active[s]` into a
 # load through a phi of the two data pointers, which `nodecayed_phis!` makes a phi
 # of the two arrays: one active and one constant pointer, which has no shadow.
-# Repeating the loads in each predecessor (each must branch only to this block,
-# and no write may precede the loads) leaves a phi of loaded values instead,
-# whose constant operand simply has no derivative.
+# Repeating the loads in each predecessor (no write may precede them) leaves a
+# phi of loaded values instead, whose constant operand simply has no derivative.
+# A predecessor that also branches elsewhere first gets a block of its own on the
+# edge to this block (`split_constant_merges!`), so that the loads still run only
+# on that edge. Under `--check-bounds=yes` the read of `base` can need no block of
+# its own, and the block that picks it also branches to the bounds check of the
+# read of `active`.
 function constant_field_unsink_tree(phi::LLVM.PHIInst)
     bb = LLVM.parent(phi)
     for (_, pred) in LLVM.incoming(phi)
-        length(collect(successors(terminator(pred)))) == 1 || return nothing
+        term = terminator(pred)
+        (isa(term, LLVM.BrInst) || isa(term, LLVM.SwitchInst)) || return nothing
+        count(Base.Fix2(==, bb), successors(term)) == 1 || return nothing
     end
     tree = Set{LLVM.Instruction}()
     leaves = LLVM.LoadInst[]
@@ -691,11 +697,9 @@ end
 split_constant_merge!(phi::LLVM.PHIInst) = unsink_constant_field_phi!(phi)
 split_constant_merge!(sel::LLVM.SelectInst) = unselect_constant_load!(sel)
 
-# Split every phi or select that merges constant data with other pointers and only
-# feeds loads, so that its constant operand needs no shadow: the mixed-activity
-# handler would otherwise copy the whole constant array there on every execution,
-# or raise `EnzymeRuntimeActivityError` for a pointer into it.
-function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
+# Every phi or select that merges constant data with other pointers and only feeds
+# loads, which `split_constant_merge!` can split.
+function constant_merges(mod::LLVM.Module, cf::ConstantFields)::Vector{LLVM.Instruction}
     todo = LLVM.Instruction[]
     for f in functions(mod), bb in blocks(f), inst in instructions(bb)
         (isa(inst, LLVM.PHIInst) || isa(inst, LLVM.SelectInst)) || continue
@@ -703,6 +707,50 @@ function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
         in_unreachable(cf, inst) && continue
         constant_field_merge(cf, inst) === :mixed || continue
         constant_merge_splittable(inst) && push!(todo, inst)
+    end
+    return todo
+end
+
+# Put a block of its own on the edge from `pred`, which also branches elsewhere, to
+# `succ`.
+function split_edge!(builder::LLVM.IRBuilder, pred::LLVM.BasicBlock, succ::LLVM.BasicBlock)
+    edge = LLVM.BasicBlock(LLVM.parent(pred), "unsink.edge")
+    term = terminator(pred)
+    for i in 0:(Int(LLVM.API.LLVMGetNumSuccessors(term)) - 1)
+        if LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(term, i)) == succ
+            LLVM.API.LLVMSetSuccessor(term, i, edge)
+        end
+    end
+    position!(builder, edge)
+    br!(builder, succ)
+    retarget_phis!(builder, succ, pred, edge)
+    return
+end
+
+# Split every phi or select that merges constant data with other pointers and only
+# feeds loads, so that its constant operand needs no shadow: the mixed-activity
+# handler would otherwise copy the whole constant array there on every execution,
+# or raise `EnzymeRuntimeActivityError` for a pointer into it.
+function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
+    todo = constant_merges(mod, cf)
+    # Splitting an edge rebuilds the phis of the block it leads to, so the merges
+    # are collected again afterwards.
+    edges = Tuple{LLVM.BasicBlock, LLVM.BasicBlock}[]
+    for merge in todo
+        isa(merge, LLVM.PHIInst) || continue
+        bb = LLVM.parent(merge)
+        for (_, pred) in LLVM.incoming(merge)
+            length(collect(successors(terminator(pred)))) == 1 && continue
+            (pred, bb) in edges || push!(edges, (pred, bb))
+        end
+    end
+    if !isempty(edges)
+        builder = LLVM.IRBuilder()
+        for (pred, succ) in edges
+            split_edge!(builder, pred, succ)
+        end
+        dispose(builder)
+        todo = constant_merges(mod, cf)
     end
     for merge in todo
         split_constant_merge!(merge)
