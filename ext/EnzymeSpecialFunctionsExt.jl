@@ -36,6 +36,88 @@ EnzymeRules.@easy_rule(
     (@Constant, Ω - (SpecialFunctions.besselkx(nu - 1, x) + SpecialFunctions.besselkx(nu + 1, x)) / 2),
 )
 
+## Scaled complementary error function: derivatives of every order
+#
+# erfcx(x) = exp(x^2) erfc(x), and its derivatives y_k = erfcx^(k)(x) satisfy
+#
+#     y_1 = 2x y_0 - 2/sqrt(pi),    y_{k+1} = 2x y_k + 2k y_{k-1}  (k >= 1).
+#
+# libEnzyme's built-in rule for `Faddeeva_erfcx_re` is the first identity, and a higher
+# order differentiates it again. For x > 0 its two terms nearly cancel, because
+# x erfcx(x) -> 1/sqrt(pi): the first derivative loses about log10(2x^2) digits, and every
+# further order loses as many again. At x = exp(20) not one digit of the first derivative
+# is right, and the second is wrong by a factor of 1e17.
+#
+# Where every term of the recurrence has one sign (x <= 0), or 2x^2 is small (x <= 1),
+# it loses at most a few ulps and is used as it stands. Elsewhere the ratios
+# p_k = -y_k / (2 y_{k-1}) satisfy p_k = (k/2) / (x + p_{k+1}), with every term
+# positive: p_n is Laplace's continued fraction, an S-fraction that converges for every
+# x > 0, and y_n = erfcx(x) (-2 p_1) ... (-2 p_n) involves no subtraction at all.
+# `_erfcx_derivative(n, x)` has a rule of its own giving `_erfcx_derivative(n + 1, x)`,
+# so a nested mode of any order reaches this evaluation rather than differentiating it.
+
+@inline _erfcx_derivative(n::Integer, x::Real) = _erfcx_derivative(Int(n), float(x))
+
+@inline function _erfcx_derivative(n::Int, x::T) where {T <: Union{Float16, Float32}}
+    # Widen, compute, narrow, as `erfcx` itself does.
+    return T(_erfcx_derivative(n, Float64(x)))
+end
+
+function _erfcx_derivative(n::Int, x::T) where {T <: AbstractFloat}
+    n >= 0 || throw(DomainError(n, "the order of a derivative of erfcx must be nonnegative"))
+    y0 = SpecialFunctions.erfcx(x)
+    (n == 0 || isnan(x)) && return y0
+    # The first step's relative error is about (2x y_0 + 2/sqrt(pi)) / |y_1| ulps, 20 at
+    # x = 2, so a first derivative takes the recurrence that far; each later step can
+    # multiply the error by 2x^2 / (k + 1), so higher orders stop at x = 1.
+    if x <= (n == 1 ? T(2) : one(T))
+        two_x = 2x
+        prev = y0
+        y = muladd(two_x, y0, -2 / sqrt(T(π)))
+        for k in 1:(n - 1)
+            (prev, y) = (y, muladd(two_x, y, 2k * prev))
+        end
+        return y
+    end
+    isinf(x) && return zero(T)
+    # p_n = (n/2) / f with f = x + a_1 / (x + a_2 / (x + ...)), a_j = (n + j)/2, by the
+    # modified Lentz method. The tail contracts by about exp(-2 sqrt(2) x (sqrt(j) -
+    # sqrt(n))) after j terms, so at most a few hundred are needed for Float64 at x > 1.
+    # The cap allows four times that bound and only guards against a defect.
+    maxiter = 100 + 4 * ceil(Int, (sqrt(T(n)) + (precision(T) * log(T(2)) + 5) / (2 * sqrt(T(2)) * x))^2)
+    f = x
+    C = x
+    D = zero(T)
+    j = 0
+    while true
+        j += 1
+        j > maxiter && error("erfcx derivative of order $n at $x: continued fraction did not converge in $maxiter terms")
+        a = T(n + j) / 2
+        D = inv(x + a * D)
+        C = x + a / C
+        Δ = C * D
+        f *= Δ
+        abs(Δ - one(T)) <= eps(T) && break
+    end
+    p = T(n) / 2 / f
+    y = y0 * (-2p)
+    for k in (n - 1):-1:1
+        p = T(k) / 2 / (x + p)
+        y *= -2p
+    end
+    return y
+end
+
+EnzymeRules.@easy_rule(
+    SpecialFunctions.erfcx(x::Real),
+    (_erfcx_derivative(1, x),),
+)
+
+EnzymeRules.@easy_rule(
+    _erfcx_derivative(n::Integer, x::Real),
+    (@Constant, _erfcx_derivative(n + 1, x)),
+)
+
 # x/ref: https://github.com/JuliaMath/SpecialFunctions.jl/pull/506
 ## Incomplete beta derivatives via Boik & Robinson-Cox
 #

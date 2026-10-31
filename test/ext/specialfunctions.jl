@@ -19,9 +19,13 @@ end
         test_scalar(SpecialFunctions.erfc, x)
     end
 
+    # Rules for real arguments; a complex erfcx still reaches libopenspecfun.
+    if x isa Real
+        test_scalar(SpecialFunctions.erfcx, x)
+    end
+
     # Handled by openspec non defaultly done
     # test_scalar(SpecialFunctions.erfi, x)
-    # test_scalar(SpecialFunctions.erfcx, x)
     # test_scalar(SpecialFunctions.airyai, x)
     # test_scalar(SpecialFunctions.airyaiprime, x)
     # test_scalar(SpecialFunctions.airybi, x)
@@ -66,6 +70,67 @@ end
         # test_scalar(SpecialFunctions.gamma, x)
         # test_scalar(SpecialFunctions.digamma, x)
         # test_scalar(SpecialFunctions.trigamma, x)
+    end
+end
+
+# erfcx^(n)(x) in high-precision arithmetic. The recurrence below loses about
+# log2(2x^2) bits per order, so the precision grows with n and |x| to absorb that.
+function erfcx_derivative_reference(n, x)
+    return setprecision(BigFloat, 256 + n * ceil(Int, 2 * log2(max(abs(x), 1)) + 2)) do
+        X = BigFloat(x)
+        prev = SpecialFunctions.erfcx(X)
+        n == 0 && return prev
+        y = 2X * prev - 2 / sqrt(BigFloat(π))
+        for k in 1:(n - 1)
+            (prev, y) = (y, 2X * y + 2k * prev)
+        end
+        return y
+    end
+end
+
+# First three derivatives of log(erfcx(exp(x))), by the chain rule in 1024-bit arithmetic.
+function erfcx_tail_reference(x)
+    return setprecision(BigFloat, 1024) do
+        u = exp(BigFloat(x))
+        (y0, y1, y2, y3) = (erfcx_derivative_reference(n, u) for n in 0:3)
+        (l1, l2, l3) = (y1 / y0, y2 / y0 - (y1 / y0)^2, y3 / y0 - 3 * y1 * y2 / y0^2 + 2 * (y1 / y0)^3)
+        return Float64.((u * l1, u * l1 + u^2 * l2, u * l1 + 3 * u^2 * l2 + u^3 * l3))
+    end
+end
+
+@testset "erfcx derivatives of every order" begin
+    d1(x) = autodiff(Reverse, SpecialFunctions.erfcx, Active, Active(x))[1][1]
+    d1f(x) = autodiff(Forward, SpecialFunctions.erfcx, Duplicated(x, one(x)))[1]
+    d2(x) = autodiff(Forward, d1, Duplicated(x, one(x)))[1]
+    d2f(x) = autodiff(Forward, d1f, Duplicated(x, one(x)))[1]
+    d2r(x) = autodiff(Reverse, d1f, Active, Active(x))[1][1]
+    d3(x) = autodiff(Forward, d2, Duplicated(x, one(x)))[1]
+    # Forward over Reverse, Forward over Forward, Reverse over Forward, and a third order.
+    # The tail (x > 1) has relative errors of 1e-7 to 1e68 with the subtracting identity;
+    # 1.0e100 has a third derivative that underflows.
+    for x in (-3.0, -0.5, 0.0, 0.3, 1.0, 1.5, 2.0, 2.5, 5.0, 30.0, exp(10.0), exp(20.0), exp(25.0), 1.0e100)
+        for (n, ad) in ((1, d1), (1, d1f), (2, d2), (2, d2f), (2, d2r), (3, d3))
+            @test isapprox(ad(x), Float64(erfcx_derivative_reference(n, x)); rtol = 1.0e-13)
+        end
+    end
+    # Float32 is widened, as the primal is.
+    @test d1(3.0f0) isa Float32
+    @test isapprox(d2(3.0f0), Float32(erfcx_derivative_reference(2, 3.0)); rtol = 1.0e-6)
+    @test d1(Inf) == 0.0
+    @test isnan(d1(NaN))
+
+    # log(erfcx(exp(x))) tends to -x - log(sqrt(pi)), so its gradient tends to -1 and its
+    # higher derivatives to 0. Those come out of the chain rule as sums of O(1) terms that
+    # cancel, so they are checked to an absolute tolerance.
+    tail(x) = log(SpecialFunctions.erfcx(exp(x)))
+    g(x) = autodiff(Reverse, tail, Active, Active(x))[1][1]
+    h(x) = autodiff(Forward, g, Duplicated(x, 1.0))[1]
+    t(x) = autodiff(Forward, h, Duplicated(x, 1.0))[1]
+    for x in (0.0, 5.0, 10.0, 15.0, 20.0, 25.0)
+        (rg, rh, rt) = erfcx_tail_reference(x)
+        @test isapprox(g(x), rg; rtol = 1.0e-13)
+        @test isapprox(h(x), rh; atol = 1.0e-13)
+        @test isapprox(t(x), rt; atol = 1.0e-13)
     end
 end
 
