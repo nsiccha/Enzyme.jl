@@ -990,3 +990,88 @@ slot_overlay_swapped(u, i, plan) = SlotCall{:overlay_swapped}()(u, i, plan)
         @test unchanged(plan)
     end
 end
+
+# The same reloads when the vararg callable is the differentiated function, as
+# DifferentiationInterface passes one with its `Const` contexts: Enzyme's wrapper
+# builds the argument tuple in a stack slot and zero-initializes the slot first.
+# With many fields, dead-store elimination gives up on that initialization, which
+# then stays as one null store per pointer field, so every field of the slot is
+# written twice: once with null, once with the argument. `hcat` passes views of the
+# active vector at the plan's rows by reference to `typed_hcat`, where the
+# constant-field proof does not reach, so the mixed-activity handler needs the
+# Julia type of each reloaded row vector where it meets active data: at the merge
+# with Base's `unalias` copy (`view`), or stored into the view (`unsafe_view`).
+const WIDE_SLOT_FIELDS = 96
+@eval struct WideSlotPlan
+    op::SlotIndexView
+    $([:($(Symbol(:r, i))::Vector{Int}) for i in 1:WIDE_SLOT_FIELDS]...)
+end
+struct WideSlotCall{K} end
+@noinline function (::WideSlotCall{:hcat})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    slot_reads_rows(plan.op, plan.r1) && return 0.0
+    return sum(abs2, hcat(view(u, plan.r1), view(u, plan.r96)))
+end
+@noinline function (::WideSlotCall{:hcat_const})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    slot_reads_rows(plan.op, plan.r1) && return 0.0
+    return sum(abs2, hcat(view(u, plan.r1), view(u, plan.r96), plan.r2))
+end
+# Without Base's `unalias`, the reloaded rows are stored into the by-reference copy
+# of each view.
+@noinline function (::WideSlotCall{:hcat_unsafe_view})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    slot_reads_rows(plan.op, plan.r1) && return 0.0
+    return sum(abs2, hcat(Base.unsafe_view(u, plan.r1), Base.unsafe_view(u, plan.r96)))
+end
+
+function wide_slot_reverse(c, u, plan, want)
+    du = zero(u)
+    autodiff(Reverse, Const(c), Active, Duplicated(u, du), Const(1), Const(plan))
+    return du == want
+end
+function wide_slot_forward(c, u, plan, want)
+    v = collect(range(0.5, 1.5; length = length(u)))
+    return autodiff(Forward, Const(c), Duplicated(u, v), Const(1), Const(plan))[1] ≈ sum(want .* v)
+end
+function wide_slot_batch(c, u, plan, want)
+    d1, d2 = zero(u), zero(u)
+    autodiff(Reverse, Const(c), Active, BatchDuplicated(u, (d1, d2)), Const(1), Const(plan))
+    return d1 == want && d2 == want
+end
+function wide_slot_split(c, u, plan, want)
+    fwd, rev = autodiff_thunk(
+        ReverseSplitWithPrimal, Const{typeof(c)}, Active, Duplicated{typeof(u)},
+        Const{Int}, Const{typeof(plan)},
+    )
+    ds = zero(u)
+    tape, prim, _ = fwd(Const(c), Duplicated(u, ds), Const(1), Const(plan))
+    rev(Const(c), Duplicated(u, ds), Const(1), Const(plan), 1.0, tape)
+    return ds == want && prim == c(u, 1, plan)
+end
+
+@testset "Const struct fields reloaded from a wide vararg tuple" begin
+    plan = WideSlotPlan(
+        view([7, 8, 9], [1, 3]), ([mod1(3i + j, 20) for j in 1:3] for i in 1:WIDE_SLOT_FIELDS)...,
+    )
+    plan0 = deepcopy(plan)
+    unchanged(p) = all(getfield(p, i) == getfield(plan0, i) for i in 1:fieldcount(WideSlotPlan))
+    u = collect(0.5:0.5:10.0)
+    @testset "$k" for k in (:hcat, :hcat_const, :hcat_unsafe_view)
+        c = WideSlotCall{k}()
+        want = zero(u)
+        autodiff(set_runtime_activity(Reverse), Const(c), Active, Duplicated(u, want), Const(1), Const(plan))
+        @test any(!iszero, want)
+        @testset "$(nameof(check))" for check in (wide_slot_reverse, wide_slot_forward, wide_slot_batch, wide_slot_split)
+            if VERSION >= v"1.12"
+                # Julia 1.12 keeps the tuple's pointers in a roots slot. Their reloads are
+                # typed, but the tag is gone where the mixed-activity handler meets them,
+                # and every static mode raises EnzymeRuntimeActivityError (Enzyme todo 0qtmgmj).
+                @test_broken check(c, u, plan, want)
+            else
+                @test check(c, u, plan, want)
+            end
+            @test unchanged(plan)
+        end
+    end
+end
