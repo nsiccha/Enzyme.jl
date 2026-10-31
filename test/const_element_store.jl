@@ -929,12 +929,20 @@ end
     (slot_empty(plan.op) || slot_empty(plan.op2)) && return 0.0
     return overlay_squares(ConstFieldOverlay(plan.base, u, plan.slots), plan.idx)
 end
+# Each parameter of one comparison receives both views, as RKPPL's partition plan
+# compares two inline views of its `Const` plan with `==` beside its overlay read.
+@noinline function (::SlotCall{:overlay_swapped})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    (slot_reads_rows(plan.op, plan.op2) || slot_reads_rows(plan.op2, plan.op)) && return 0.0
+    return overlay_squares(ConstFieldOverlay(plan.base, u, plan.slots), plan.idx)
+end
 slot_unsafe_view(u, i, plan) = SlotCall{:unsafe_view}()(u, i, plan)
 slot_view(u, i, plan) = SlotCall{:view}()(u, i, plan)
 slot_forwarded(u, i, plan) = SlotCall{:forwarded}()(u, i, plan)
 slot_two_fields(u, i, plan) = SlotCall{:two_fields}()(u, i, plan)
 slot_overlay(u, i, plan) = SlotCall{:overlay}()(u, i, plan)
 slot_overlay_two_fields(u, i, plan) = SlotCall{:overlay_two_fields}()(u, i, plan)
+slot_overlay_swapped(u, i, plan) = SlotCall{:overlay_swapped}()(u, i, plan)
 
 @testset "Const struct fields reloaded from a vararg tuple" begin
     T = 10_000
@@ -950,7 +958,10 @@ slot_overlay_two_fields(u, i, plan) = SlotCall{:overlay_two_fields}()(u, i, plan
     unchanged(p) = p.rows == plan0.rows && p.base == plan0.base && p.slots == plan0.slots &&
         p.op == plan0.op && p.op2 == plan0.op2
     u = collect(0.5:0.5:5.0)
-    @testset "$(nameof(f))" for f in (slot_unsafe_view, slot_view, slot_forwarded, slot_two_fields, slot_overlay)
+    @testset "$(nameof(f))" for f in (
+            slot_unsafe_view, slot_view, slot_forwarded, slot_two_fields, slot_overlay,
+            slot_overlay_two_fields, slot_overlay_swapped,
+        )
         want = zero(u)
         autodiff(set_runtime_activity(Reverse), f, Active, Duplicated(u, want), Const(1), Const(plan))
         @test any(!iszero, want)
@@ -959,7 +970,7 @@ slot_overlay_two_fields(u, i, plan) = SlotCall{:overlay_two_fields}()(u, i, plan
         g()
         @test du == want
         @test unchanged(plan)
-        if f === slot_overlay
+        if f in (slot_overlay, slot_overlay_two_fields, slot_overlay_swapped)
             @test (@allocated g()) < sizeof(base) ÷ 10
         end
         v = collect(range(0.5, 1.5; length = length(u)))
@@ -976,27 +987,6 @@ slot_overlay_two_fields(u, i, plan) = SlotCall{:overlay_two_fields}()(u, i, plan
         rev(Const(f), Duplicated(u, ds), Const(1), Const(plan), 1.0, tape)
         @test ds == want
         @test prim == f(u, 1, plan)
-        @test unchanged(plan)
-    end
-    @testset "slot_overlay_two_fields" begin
-        want = zero(u)
-        autodiff(
-            set_runtime_activity(Reverse), slot_overlay_two_fields, Active, Duplicated(u, want),
-            Const(1), Const(plan),
-        )
-        @test any(!iszero, want)
-        du = zero(u)
-        static_matches() = try
-            autodiff(Reverse, slot_overlay_two_fields, Active, Duplicated(u, du), Const(1), Const(plan))
-            du == want
-        catch err
-            err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
-            false
-        end
-        @test static_matches()
-        g() = (fill!(du, 0); autodiff(Reverse, slot_overlay_two_fields, Active, Duplicated(u, du), Const(1), Const(plan)))
-        g()
-        @test (@allocated g()) < sizeof(base) ÷ 10
         @test unchanged(plan)
     end
 end
