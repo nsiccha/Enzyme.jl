@@ -73,10 +73,10 @@ end
     end
 end
 
-# erfcx^(n)(x) in 1024-bit arithmetic. The recurrence below loses about log2(2x^2) bits
-# per order, which that precision absorbs for every x and order tested.
+# erfcx^(n)(x) in high-precision arithmetic. The recurrence below loses about
+# log2(2x^2) bits per order, so the precision grows with n and |x| to absorb that.
 function erfcx_derivative_reference(n, x)
-    return setprecision(BigFloat, 1024) do
+    return setprecision(BigFloat, 256 + n * ceil(Int, 2 * log2(max(abs(x), 1)) + 2)) do
         X = BigFloat(x)
         prev = SpecialFunctions.erfcx(X)
         n == 0 && return prev
