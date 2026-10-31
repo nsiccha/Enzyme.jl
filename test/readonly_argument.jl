@@ -407,11 +407,18 @@ ro_dx(f, x) = only(autodiff(Forward, f, Duplicated(x, 1.0)))
     hv = zero(u)
     autodiff(Reverse, ro_dir, Active, Const(ro_va_sum), Duplicated(copy(u), hv), Const(v))
     @test hv ≈ 4 .* v
-    # Forward over Reverse
+    # Forward over Reverse. On Julia 1.12 its Hessian-vector product through a
+    # dynamic call comes back zero, with registered Enzyme as well (Enzyme todo
+    # `2026-10-31T18-49-30-104-0x51ygt`); the gradient is right.
     du = zero(u)
     hv = zero(u)
     autodiff(Forward, ro_grad!, Const(ro_va_sum), Duplicated(du, hv), Duplicated(copy(u), copy(v)))
-    @test hv ≈ 4 .* v
+    @test du ≈ 4 .* u
+    if VERSION >= v"1.12"
+        @test_broken hv ≈ 4 .* v
+    else
+        @test hv ≈ 4 .* v
+    end
     # Forward over Forward: v' H v
     @test only(autodiff(Forward, ro_dir, Const(ro_va_sum), Duplicated(copy(u), copy(v)), Const(v))) ≈
         4 * dot(v, v)
