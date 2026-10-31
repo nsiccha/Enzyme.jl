@@ -922,9 +922,8 @@ end
     slot_empty(plan.op) && return 0.0
     return overlay_squares(ConstFieldOverlay(plan.base, u, plan.slots), plan.idx)
 end
-# Not built: a method that receives two places of the slot makes the constant-field
-# proof give the slot up, so on Julia 1.10 a `Const` array that can hold
-# derivatives, read beside active data, has no shadow there.
+# A method that receives two places of the slot: the `Const` array that can hold
+# derivatives, read beside active data, keeps its constant-field proof.
 @noinline function (::SlotCall{:overlay_two_fields})(u, contexts::Vararg{Any, N}) where {N}
     plan = getfield(contexts, 2)
     (slot_empty(plan.op) || slot_empty(plan.op2)) && return 0.0
@@ -994,11 +993,10 @@ slot_overlay_two_fields(u, i, plan) = SlotCall{:overlay_two_fields}()(u, i, plan
             err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
             false
         end
-        if VERSION < v"1.12"
-            @test_broken static_matches()
-        else
-            @test static_matches()
-        end
+        @test static_matches()
+        g() = (fill!(du, 0); autodiff(Reverse, slot_overlay_two_fields, Active, Duplicated(u, du), Const(1), Const(plan)))
+        g()
+        @test (@allocated g()) < sizeof(base) ÷ 10
         @test unchanged(plan)
     end
 end
