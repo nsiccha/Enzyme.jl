@@ -29,10 +29,25 @@ activity_value(B::LLVM.IRBuilder, active::Bool, readonly::Bool) =
 The `err_if_func_written` a dynamic call's rules compile the method it reaches
 with: `Val(false)`, or one entry per operand, the function first, marking those
 whose activity is `ReadonlyArg`.
+
+It is computed from the type of `activity` alone, so inference knows the result
+wherever it knows that type. The rules pass it to `thunk`, and when an outer
+differentiation compiles a rule's body (nested AD through a dynamic call), the
+thunk the body calls must be a constant there: only a call to a constant thunk
+address is replaced by the thunk's code (`import_cached_autodiff!`), and a call
+through any other pointer cannot be differentiated ("Did not have return index set
+when differentiating function"). Computed from the values, `any` over a tuple
+without a `ReadonlyArg` did not fold, so the result was
+`Union{Val{(false, …)}, Val{false}}` and the thunk was picked at run time.
 """
-@inline function readonly_args(activity::Tuple)
-    flags = map(is_readonly_arg, activity)
-    return any(flags) ? Val(flags) : Val(false)
+@generated function readonly_args(activity::Tuple)
+    params = activity.parameters
+    flags = Vector{Bool}(undef, length(params))
+    for i in eachindex(params)
+        flags[i] = params[i] <: ReadonlyArg
+    end
+    any(flags) || return :(Val(false))
+    return :(Val($(Tuple(flags))))
 end
 
 # `readonly_args` for a splatting call (`_apply_iterate`), whose `nargs` arguments
