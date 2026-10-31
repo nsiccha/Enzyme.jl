@@ -377,3 +377,55 @@ end
     @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
     @test f.v == [1.0, 2.0]
 end
+
+# Nested differentiation through a dynamic call. The inner call's rules pass
+# `readonly_args` to `thunk`, and the outer differentiation of a rule's body can
+# use the inner thunk's code only where the thunk it calls is a constant: it must
+# infer as one `Val`, also when no operand is checked. `ro_va_sq` ignores its
+# trailing varargs, so Julia calls it through its boxed-argument ABI, which Enzyme
+# handles as a dynamic call.
+@noinline ro_va_sq(u, s, rest...) = s .* u .* u
+ro_va_sum(u) = sum(ro_va_sq(u, 2.0, u, 3.0))
+ro_dyn_sq(v, x) = sum(v .* x .* x)
+struct RODynSq{M}
+    v::M
+end
+(c::RODynSq)(x) = Base.inferencebarrier(ro_dyn_sq)(c.v, x)
+
+ro_dir(f, u, v) = only(autodiff(Forward, f, Duplicated(u, v)))
+ro_grad!(f, du, u) = (autodiff(Reverse, f, Active, Duplicated(u, du)); nothing)
+ro_dx(f, x) = only(autodiff(Forward, f, Duplicated(x, 1.0)))
+
+@testset "Readonly check: nested differentiation through a dynamic call" begin
+    @test (@inferred Enzyme.Compiler.readonly_args((false, true, false, false, true, true))) === Val(false)
+    @test (@inferred Enzyme.Compiler.readonly_args((false, Enzyme.Compiler.ReadonlyArg{true}(), true))) ===
+        Val((false, true, false))
+
+    u = [0.3, -1.2, 2.0]
+    v = [1.0, 0.5, -2.0]
+    # Reverse over Forward: a Hessian-vector product, 4v
+    hv = zero(u)
+    autodiff(Reverse, ro_dir, Active, Const(ro_va_sum), Duplicated(copy(u), hv), Const(v))
+    @test hv ≈ 4 .* v
+    # Forward over Reverse. On Julia 1.12 its Hessian-vector product through a
+    # dynamic call comes back zero, with registered Enzyme as well (Enzyme todo
+    # `2026-10-31T18-49-30-104-0x51ygt`); the gradient is right.
+    du = zero(u)
+    hv = zero(u)
+    autodiff(Forward, ro_grad!, Const(ro_va_sum), Duplicated(du, hv), Duplicated(copy(u), copy(v)))
+    @test du ≈ 4 .* u
+    if VERSION >= v"1.12"
+        @test_broken hv ≈ 4 .* v
+    else
+        @test hv ≈ 4 .* v
+    end
+    # Forward over Forward: v' H v
+    @test only(autodiff(Forward, ro_dir, Const(ro_va_sum), Duplicated(copy(u), copy(v)), Const(v))) ≈
+        4 * dot(v, v)
+
+    # The same with an operand the readonly check passes on (`ReadonlyArg`)
+    f = RODynSq([1.0, 2.0])
+    @test autodiff(Reverse, ro_dx, Active, Const(f), Active(0.7))[1][2] ≈ 6.0
+    @test only(autodiff(Forward, ro_dx, Const(f), Duplicated(0.7, 1.0))) ≈ 6.0
+    @test f.v == [1.0, 2.0]
+end
