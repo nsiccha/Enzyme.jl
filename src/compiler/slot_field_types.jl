@@ -12,16 +12,17 @@
 # `unalias` copy of it.
 #
 # When every write into a pointer field of a slot stores values that `abs_typeof`
-# gives one Julia type, and no code this pass does not see can write into the
-# slot, each load of the field returns a value of that type. The loads are tagged
+# gives one Julia type, or clears it (a zero `memset`, or a stored null pointer),
+# and no code this pass does not see can write into the slot, each load of the
+# field returns a value of that type or null. The loads are tagged
 # with it (`SLOT_FIELD_TYPE`, read by `abs_typeof`). A call may read the slot
 # through argument positions that are `readonly` and `nocapture`; any other use
 # of the slot leaves its loads untyped.
 
 # Record the loads and writes of the slot memory that `ptr` points `offset` bytes
 # into. `writes` holds (offset, length, stored value), with `nothing` for a write
-# of unknown values and `false` for a zero `memset`. Returns false if code this
-# walk does not see could write into the slot.
+# of unknown values and `false` for a zero `memset` or a stored zero constant.
+# Returns false if code this walk does not see could write into the slot.
 function slot_field_accesses!(
         loads::Vector{Tuple{LLVM.LoadInst, Int}},
         writes::Vector{Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}},
@@ -39,7 +40,10 @@ function slot_field_accesses!(
             push!(loads, (user, offset))
         elseif isa(user, LLVM.StoreInst) && operands(user)[2] == ptr && operands(user)[1] != ptr
             val = operands(user)[1]
-            push!(writes, (offset, Int(LLVM.storage_size(dl, value_type(val))), val))
+            len = Int(LLVM.storage_size(dl, value_type(val)))
+            # A stored null pointer (or any all-zero constant) clears the field,
+            # as a zero `memset` does.
+            push!(writes, (offset, len, isa(val, LLVM.Constant) && LLVM.isnull(val) ? false : val))
         elseif isa(user, LLVM.CallInst)
             slot_field_call!(writes, user, ptr, offset) || return false
         else
@@ -104,7 +108,8 @@ function slot_field_type(
     for (woff, len, val) in writes
         (woff < off + sizeof(Int) && off < woff + len) || continue
         if val === false
-            # A null pointer, from a zero `memset` that covers the field.
+            # A null pointer, from a zero `memset` or a zero store that covers
+            # the field.
             (woff <= off && off + sizeof(Int) <= woff + len) || return nothing
             continue
         end
