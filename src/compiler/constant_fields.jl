@@ -47,7 +47,9 @@ mutable struct ConstantFields
     primalf::LLVM.Function
     const_args::Set{LLVM.Value}
     # Union-find over slot bases: allocas and pointer parameters of internal functions.
-    parent::Dict{LLVM.Value, LLVM.Value}
+    # `base => (p, delta)`: the field `q` bytes into `base` is the one `q + delta`
+    # bytes into `p`, so a parameter can receive a struct nested inside a slot.
+    parent::Dict{LLVM.Value, Tuple{LLVM.Value, Int}}
     escaped::Set{LLVM.Value}
     loads::Dict{LLVM.Value, Vector{Tuple{LLVM.LoadInst, Int}}}
     stores::Dict{LLVM.Value, Vector{Tuple{LLVM.StoreInst, Int}}}
@@ -62,7 +64,7 @@ end
 
 function ConstantFields(primalf::LLVM.Function, const_args::Set{LLVM.Value})
     return ConstantFields(
-        primalf, const_args, Dict{LLVM.Value, LLVM.Value}(), Set{LLVM.Value}(),
+        primalf, const_args, Dict{LLVM.Value, Tuple{LLVM.Value, Int}}(), Set{LLVM.Value}(),
         Dict{LLVM.Value, Vector{Tuple{LLVM.LoadInst, Int}}}(),
         Dict{LLVM.Value, Vector{Tuple{LLVM.StoreInst, Int}}}(),
         Dict{LLVM.Value, Vector{Tuple{Int, Int}}}(), reachable_functions(primalf),
@@ -179,18 +181,27 @@ function constant_field_callee(cf::ConstantFields, f::LLVM.Function)::Bool
     return ok
 end
 
-function constant_field_root(cf::ConstantFields, @nospecialize(base::LLVM.Value))::LLVM.Value
+# The root of `base`'s set and the byte offset of `base` within the root.
+function constant_field_root(cf::ConstantFields, @nospecialize(base::LLVM.Value))::Tuple{LLVM.Value, Int}
+    delta = 0
     while true
-        p = get(cf.parent, base, base)
-        p == base && return base
+        p, d = get(cf.parent, base, (base, 0))
+        p == base && return base, delta
+        delta += d
         base = p
     end
     return
 end
 
+# The field `offset` bytes into `base`, as (root base, byte offset in the root).
+function constant_field_key(cf::ConstantFields, @nospecialize(base::LLVM.Value), offset::Int)::Tuple{LLVM.Value, Int}
+    root, delta = constant_field_root(cf, base)
+    return root, offset + delta
+end
+
 function add_constant_field_base!(cf::ConstantFields, @nospecialize(base::LLVM.Value))
     haskey(cf.parent, base) && return false
-    cf.parent[base] = base
+    cf.parent[base] = (base, 0)
     cf.loads[base] = Tuple{LLVM.LoadInst, Int}[]
     cf.stores[base] = Tuple{LLVM.StoreInst, Int}[]
     cf.zeroed[base] = Tuple{Int, Int}[]
@@ -212,10 +223,17 @@ function constant_field_base!(cf::ConstantFields, @nospecialize(base::LLVM.Value
     return
 end
 
-function join_constant_field_bases!(cf::ConstantFields, @nospecialize(a::LLVM.Value), @nospecialize(b::LLVM.Value))
-    ra = constant_field_root(cf, a)
-    rb = constant_field_root(cf, b)
-    ra == rb || (cf.parent[rb] = ra)
+# Record that `b` points `delta` bytes into `a`: a call passes a pointer that far
+# into slot `a` to parameter `b`. Two different offsets of one parameter in the
+# same slot cannot both hold; the slot then escapes.
+function join_constant_field_bases!(cf::ConstantFields, @nospecialize(a::LLVM.Value), @nospecialize(b::LLVM.Value), delta::Int)
+    ra, da = constant_field_root(cf, a)
+    rb, db = constant_field_root(cf, b)
+    if ra == rb
+        da + delta == db || push!(cf.escaped, ra)
+    else
+        cf.parent[rb] = (ra, da + delta - db)
+    end
     return
 end
 
@@ -300,16 +318,17 @@ function walk_constant_field_call!(cf::ConstantFields, @nospecialize(base::LLVM.
             end
         end
     end
-    if !isa(callee, LLVM.Function) || callee == ptr || offset != 0 ||
-            !constant_field_callee(cf, callee)
+    if !isa(callee, LLVM.Function) || callee == ptr || !constant_field_callee(cf, callee)
         push!(cf.escaped, base)
         return
     end
+    # `offset` is nonzero when the slot holds the struct the callee takes inline,
+    # as a tuple of `Const` arguments holds a view.
     params = parameters(callee)
     for (i, arg) in enumerate(arguments(call))
         arg == ptr || continue
         constant_field_base!(cf, params[i])
-        join_constant_field_bases!(cf, base, params[i])
+        join_constant_field_bases!(cf, base, params[i], offset)
     end
     return
 end
@@ -362,8 +381,8 @@ function constant_field_data(cf::ConstantFields, @nospecialize(val::LLVM.Value),
         return true
     end
     if haskey(cf.parent, base)
-        root = constant_field_root(cf, base)
-        root in cf.escaped || return get(cf.constant, (root, offset), false)
+        key = constant_field_key(cf, base, offset)
+        key[1] in cf.escaped || return get(cf.constant, key, false)
     end
     # Memory reached from constant data (a field of a `Const` struct argument).
     return constant_field_data(cf, base, seen)
@@ -515,7 +534,7 @@ function constant_field_uses_safe(cf::ConstantFields, @nospecialize(val::LLVM.Va
             else
                 base, offset = constant_field_pointer(operands(user)[2])
                 haskey(cf.parent, base) &&
-                    get(cf.constant, (constant_field_root(cf, base), offset), false)
+                    get(cf.constant, constant_field_key(cf, base, offset), false)
             end
         elseif isa(user, LLVM.PHIInst) || isa(user, LLVM.SelectInst)
             kind = constant_field_merge(cf, user)
@@ -765,22 +784,22 @@ function settle_constant_fields!(cf::ConstantFields)
     while changed
         changed = false
         for (base, ss) in cf.stores
-            root = constant_field_root(cf, base)
             for (st, off) in ss
-                get(cf.constant, (root, off), false) || continue
+                key = constant_field_key(cf, base, off)
+                get(cf.constant, key, false) || continue
                 if !constant_field_data(cf, operands(st)[1], Set{LLVM.Value}())
-                    cf.constant[(root, off)] = false
+                    cf.constant[key] = false
                     changed = true
                 end
             end
         end
         changed && continue
         for (base, ls) in cf.loads
-            root = constant_field_root(cf, base)
             for (ld, off) in ls
-                get(cf.constant, (root, off), false) || continue
+                key = constant_field_key(cf, base, off)
+                get(cf.constant, key, false) || continue
                 if !constant_field_uses_safe(cf, ld, Set{LLVM.Value}())
-                    cf.constant[(root, off)] = false
+                    cf.constant[key] = false
                     changed = true
                 end
             end
@@ -805,14 +824,14 @@ function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospec
             for (i, p) in enumerate(parameters(f))
                 isa(value_type(p), LLVM.PointerType) || continue
                 constant_field_base!(cf, p)
-                # Every call site must pass the start of a slot this pass follows.
+                # Every call site must pass a pointer into a slot this pass follows.
                 for u in LLVM.uses(f)
                     call = LLVM.user(u)::LLVM.CallInst
                     in_unreachable(cf, call) && continue
                     actual, off = constant_field_pointer(arguments(call)[i])
-                    if off == 0 && (isa(actual, LLVM.AllocaInst) || isa(actual, LLVM.Argument))
+                    if isa(actual, LLVM.AllocaInst) || isa(actual, LLVM.Argument)
                         constant_field_base!(cf, actual)
-                        join_constant_field_bases!(cf, p, actual)
+                        join_constant_field_bases!(cf, actual, p, off)
                     else
                         push!(cf.escaped, p)
                     end
@@ -824,20 +843,27 @@ function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospec
         end
     end
     for base in collect(cf.escaped)
-        push!(cf.escaped, constant_field_root(cf, base))
+        push!(cf.escaped, constant_field_root(cf, base)[1])
     end
 
     # Candidate fields: pointer-sized tracked-pointer accesses at one offset, with
-    # no other access overlapping it.
+    # no other access overlapping it. Offsets are bytes into the root.
     accesses = Dict{LLVM.Value, Vector{Tuple{LLVM.Instruction, Int}}}()
     zeroed = Dict{LLVM.Value, Vector{Tuple{Int, Int}}}()
     for (base, ls) in cf.loads
-        root = constant_field_root(cf, base)
+        root, delta = constant_field_root(cf, base)
         root in cf.escaped && continue
         acc = get!(accesses, root, Tuple{LLVM.Instruction, Int}[])
-        append!(acc, ls)
-        append!(acc, cf.stores[base])
-        append!(get!(zeroed, root, Tuple{Int, Int}[]), cf.zeroed[base])
+        for (inst, off) in ls
+            push!(acc, (inst, off + delta))
+        end
+        for (inst, off) in cf.stores[base]
+            push!(acc, (inst, off + delta))
+        end
+        z = get!(zeroed, root, Tuple{Int, Int}[])
+        for (off, len) in cf.zeroed[base]
+            push!(z, (off + delta, len))
+        end
     end
     dl = datalayout(mod)
     for (root, acc) in accesses
@@ -879,9 +905,8 @@ function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospec
 
     marked = 0
     for (base, ls) in cf.loads
-        root = constant_field_root(cf, base)
         for (ld, off) in ls
-            get(cf.constant, (root, off), false) || continue
+            get(cf.constant, constant_field_key(cf, base, off), false) || continue
             md = metadata(ld)
             haskey(md, "enzyme_inactive") && continue
             md["enzyme_inactive"] = inactive_md(INACTIVE_CONSTANT_FIELD)
@@ -889,9 +914,8 @@ function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospec
         end
     end
     for (base, ss) in cf.stores
-        root = constant_field_root(cf, base)
         for (st, off) in ss
-            get(cf.constant, (root, off), false) || continue
+            get(cf.constant, constant_field_key(cf, base, off), false) || continue
             metadata(st)[CONSTANT_FIELD_STORE] = MDNode(LLVM.Metadata[])
         end
     end

@@ -3449,6 +3449,7 @@ const DumpPostWrap = Ref(false)
 
 include("compiler/narrow_tuple_fields.jl")
 include("compiler/constant_fields.jl")
+include("compiler/slot_field_types.jl")
 
 function enzyme!(
     job::CompilerJob,
@@ -3593,6 +3594,7 @@ function enzyme!(
     @assert length(args_typeInfo) == length(collect(parameters(primalf)))
 
     if !runtimeActivity
+        type_slot_field_loads!(mod, enzyme_ctx)
         mark_constant_fields!(mod, primalf, args_activity)
     end
 

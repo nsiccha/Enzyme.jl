@@ -866,3 +866,139 @@ overlay_runtime_fwd_rev_broken(f, mode) =
         @test overlay_fwd_rev(Reverse, Forward, f, active, u, v, base, slots, rows) ≈ fd rtol = 1.0e-6
     end
 end
+
+# A vararg method stores its arguments into one stack slot, a tuple, and reads them
+# back after its safepoint. With the method inlined into the wrapper of a `Const`
+# struct passed by value, each field the body uses is a load from that slot. The
+# body takes a view of the active vector at the struct's rows, passes the view to
+# a function that is not inlined, and passes a view the struct holds inline to
+# another one, which receives a pointer into the middle of the slot.
+const SlotIndexView = SubArray{Int, 1, Vector{Int}, Tuple{Vector{Int}}, false}
+struct SlotPlan
+    shape::Tuple{Base.OneTo{Int}}
+    op::SlotIndexView
+    rows::Vector{Int}
+    op2::SlotIndexView
+    base::Vector{Float64}
+    slots::Vector{Int32}
+    idx::Vector{Int}
+end
+@noinline function slot_total(v)
+    s = 0.0
+    for x in v
+        s += x * x
+    end
+    return s
+end
+@noinline slot_reads_rows(I, rows) = I == rows
+@noinline slot_forwards(I, rows) = slot_reads_rows(I, rows)
+@noinline slot_empty(I) = length(I) == 0
+struct SlotCall{K} end
+@noinline function (::SlotCall{:unsafe_view})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    slot_reads_rows(plan.op, plan.rows) && return 0.0
+    return slot_total(Base.unsafe_view(u, plan.rows))
+end
+# Base's `view` merges the rows with the copy `Base.unalias` makes of them.
+@noinline function (::SlotCall{:view})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    slot_reads_rows(plan.op, plan.rows) && return 0.0
+    return slot_total(view(u, plan.rows))
+end
+@noinline function (::SlotCall{:forwarded})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    slot_forwards(plan.op, plan.rows) && return 0.0
+    return slot_total(Base.unsafe_view(u, plan.rows))
+end
+# One method receives two different places in the slot.
+@noinline function (::SlotCall{:two_fields})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    (slot_empty(plan.op) || slot_empty(plan.op2)) && return 0.0
+    return slot_total(Base.unsafe_view(u, plan.rows))
+end
+# A constant array that can hold derivatives, read beside active data.
+@noinline function (::SlotCall{:overlay})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    slot_empty(plan.op) && return 0.0
+    return overlay_squares(ConstFieldOverlay(plan.base, u, plan.slots), plan.idx)
+end
+# Not built: a method that receives two places of the slot makes the constant-field
+# proof give the slot up, so on Julia 1.10 a `Const` array that can hold
+# derivatives, read beside active data, has no shadow there.
+@noinline function (::SlotCall{:overlay_two_fields})(u, contexts::Vararg{Any, N}) where {N}
+    plan = getfield(contexts, 2)
+    (slot_empty(plan.op) || slot_empty(plan.op2)) && return 0.0
+    return overlay_squares(ConstFieldOverlay(plan.base, u, plan.slots), plan.idx)
+end
+slot_unsafe_view(u, i, plan) = SlotCall{:unsafe_view}()(u, i, plan)
+slot_view(u, i, plan) = SlotCall{:view}()(u, i, plan)
+slot_forwarded(u, i, plan) = SlotCall{:forwarded}()(u, i, plan)
+slot_two_fields(u, i, plan) = SlotCall{:two_fields}()(u, i, plan)
+slot_overlay(u, i, plan) = SlotCall{:overlay}()(u, i, plan)
+slot_overlay_two_fields(u, i, plan) = SlotCall{:overlay_two_fields}()(u, i, plan)
+
+@testset "Const struct fields reloaded from a vararg tuple" begin
+    T = 10_000
+    base = collect(0.001 .* (1:T))
+    slots = zeros(Int32, T)
+    idx = [1, 5, 9, 4000, 4001, 7777, 8000]
+    slots[5], slots[4000], slots[8000] = 1, 4, 9
+    plan = SlotPlan(
+        (Base.OneTo(10),), view([7, 8, 9], [1, 3]), [2, 3, 5], view([4, 5], [2]),
+        base, slots, idx,
+    )
+    plan0 = deepcopy(plan)
+    unchanged(p) = p.rows == plan0.rows && p.base == plan0.base && p.slots == plan0.slots &&
+        p.op == plan0.op && p.op2 == plan0.op2
+    u = collect(0.5:0.5:5.0)
+    @testset "$(nameof(f))" for f in (slot_unsafe_view, slot_view, slot_forwarded, slot_two_fields, slot_overlay)
+        want = zero(u)
+        autodiff(set_runtime_activity(Reverse), f, Active, Duplicated(u, want), Const(1), Const(plan))
+        @test any(!iszero, want)
+        du = zero(u)
+        g() = (fill!(du, 0); autodiff(Reverse, f, Active, Duplicated(u, du), Const(1), Const(plan)))
+        g()
+        @test du == want
+        @test unchanged(plan)
+        if f === slot_overlay
+            @test (@allocated g()) < sizeof(base) ÷ 10
+        end
+        v = collect(range(0.5, 1.5; length = length(u)))
+        @test autodiff(Forward, f, Duplicated(u, v), Const(1), Const(plan))[1] ≈ sum(want .* v)
+        d1, d2 = zero(u), zero(u)
+        autodiff(Reverse, f, Active, BatchDuplicated(u, (d1, d2)), Const(1), Const(plan))
+        @test d1 == want && d2 == want
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal, Const{typeof(f)}, Active, Duplicated{typeof(u)},
+            Const{Int}, Const{typeof(plan)},
+        )
+        ds = zero(u)
+        tape, prim, _ = fwd(Const(f), Duplicated(u, ds), Const(1), Const(plan))
+        rev(Const(f), Duplicated(u, ds), Const(1), Const(plan), 1.0, tape)
+        @test ds == want
+        @test prim == f(u, 1, plan)
+        @test unchanged(plan)
+    end
+    @testset "slot_overlay_two_fields" begin
+        want = zero(u)
+        autodiff(
+            set_runtime_activity(Reverse), slot_overlay_two_fields, Active, Duplicated(u, want),
+            Const(1), Const(plan),
+        )
+        @test any(!iszero, want)
+        du = zero(u)
+        static_matches() = try
+            autodiff(Reverse, slot_overlay_two_fields, Active, Duplicated(u, du), Const(1), Const(plan))
+            du == want
+        catch err
+            err isa Enzyme.Compiler.EnzymeRuntimeActivityError || rethrow()
+            false
+        end
+        if VERSION < v"1.12"
+            @test_broken static_matches()
+        else
+            @test static_matches()
+        end
+        @test unchanged(plan)
+    end
+end
