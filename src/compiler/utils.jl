@@ -364,6 +364,48 @@ function is_pointerfree_copy(call::LLVM.CallInst, enzyme_ctx::EnzymeContext)::Bo
     return false
 end
 
+"""
+    is_pointerfree_runtime_copy(call::LLVM.CallInst, val, enzyme_ctx)::Bool
+
+Whether `call` is a Julia runtime copy of elements that hold no references
+(`isbitstype`, or a union of such types), which reads `val` and fills fresh memory
+with bytes: `jl_array_copy` (`copy` of an `Array` before Julia 1.11), or
+`jl_genericmemory_copyto` (`unsafe_copyto!` of `Memory` on Julia 1.11+, for an
+element type Julia does not copy with a `memmove`, such as
+`Union{Missing, Float64}`) with `val` among its source operands only. The element
+type comes from the Julia type of the array or memory. Such bytes cannot refer to
+memory, so nothing that writes the copy, or passes it on, reaches memory of the
+argument; `is_pointerfree_copy` says the same of a `memcpy` / `memmove`.
+"""
+function is_pointerfree_runtime_copy(call::LLVM.CallInst, @nospecialize(val::LLVM.Value), enzyme_ctx::EnzymeContext)::Bool
+    fn = LLVM.called_operand(call)
+    isa(fn, LLVM.Function) || return false
+    nm = LLVM.name(fn)
+    if startswith(nm, "ijl_")
+        nm = nm[2:end]
+    end
+    if nm == "jl_array_copy"
+        legal, jTy, _ = abs_typeof(call, enzyme_ctx)
+        (legal && isa(jTy, DataType) && jTy <: Array) || return false
+    elseif nm == "jl_genericmemory_copyto"
+        # (dest memory, dest data, src memory, src data, length)
+        ops = arg_operands_view(call)
+        length(ops) == 5 || return false
+        (val == ops[1] || val == ops[2]) && return false
+        (val == ops[3] || val == ops[4]) || return false
+        legal, jTy, _ = abs_typeof(ops[3], enzyme_ctx)
+        @static if VERSION >= v"1.11-"
+            (legal && isa(jTy, DataType) && jTy <: GenericMemory) || return false
+        else
+            return false
+        end
+    else
+        return false
+    end
+    T = eltype(jTy)
+    return isbitstype(T) || Base.isbitsunion(T)
+end
+
 const READONLY_OPERANDS_MD = "enzymejl_readonly_operands"
 
 """

@@ -7217,6 +7217,14 @@ end
                         continue
                     end
 
+                    # A runtime copy of elements without references only reads
+                    # the argument, and fills fresh memory with bytes: nothing
+                    # done to the copy reaches memory of the argument.
+                    if isa(user, LLVM.CallInst) &&
+                            is_pointerfree_runtime_copy(user, cur, enzyme_ctx)
+                        continue
+                    end
+
                     if !mayWriteToMemory(user)
                         slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
                         if slegal
