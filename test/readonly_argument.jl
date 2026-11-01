@@ -378,6 +378,104 @@ end
     @test f.v == [1.0, 2.0]
 end
 
+# A copy of held data whose elements hold no references is fresh memory: writing
+# it, or passing it to a function that writes it, does not write the data the
+# callable holds. Before Julia 1.11 `copy` of an `Array` is `jl_array_copy`, whose
+# result the check used to follow as data of the argument, so each store into
+# the copy was reported (an ODL likelihood that adds terms to a copy of held log
+# weights). Julia 1.11+ copies such an array with a `memmove`, or, for a union
+# such as `Union{Missing, Float64}`, with `jl_genericmemory_copyto`, which the
+# check used to report as a write. (On Julia 1.12 the derivative of
+# `ROCopyUnion` is wrong with `Const(f)` as well, Enzyme todo
+# `2026-11-01T05-40-00-100-0pg3umn`; the check is tested against `Const(f)`.)
+struct ROCopyTerms{V}
+    log_weights::V
+end
+function (c::ROCopyTerms)(means)
+    terms = copy(c.log_weights)
+    for k in eachindex(c.log_weights), r in axes(means, 1)
+        terms[k] += -(means[r, k]^2) / 2
+    end
+    return sum(terms)
+end
+
+struct ROCopyStore{V}
+    v::V
+end
+(c::ROCopyStore)(x) = (t = copy(c.v); t[1] = x * x; sum(t))
+
+struct ROCopyMatrix{M}
+    m::M
+end
+(c::ROCopyMatrix)(x) = (t = copy(c.m); t .*= x; sum(abs2, t))
+
+struct ROCopyPush{V}
+    v::V
+end
+(c::ROCopyPush)(x) = (t = copy(c.v); push!(t, x); sum(abs2, t))
+
+struct ROCopyUnion{V}
+    u::V
+end
+function (c::ROCopyUnion)(x)
+    t = copy(c.u)
+    t[1] = x
+    s = 0.0
+    for v in t
+        v === missing || (s += v * v)
+    end
+    return s
+end
+
+# Controls: each writes the data the callable holds after copying it.
+struct ROCopyThenWrite{V}
+    v::V
+end
+(c::ROCopyThenWrite)(x) = (t = copy(c.v); c.v[1] = t[2] * x; sum(c.v))
+
+@noinline ro_pick(a, b, x) = x > 0 ? a : b
+struct ROCopyOrHeld{V}
+    v::V
+end
+(c::ROCopyOrHeld)(x) = (t = ro_pick(copy(c.v), c.v, -x); t[1] = x; sum(t))
+
+@testset "Readonly check: writes into a copy of held data" begin
+    log_weights = [log(0.3), log(0.7)]
+    f = ROCopyTerms(copy(log_weights))
+    means = [0.0 3.0; 0.1 2.7]
+    dmeans = zero(means)
+    autodiff(Reverse, f, Active, Duplicated(copy(means), dmeans))
+    @test dmeans == -means
+    dconst = zero(means)
+    autodiff(Reverse, Const(f), Active, Duplicated(copy(means), dconst))
+    @test dmeans == dconst
+    @test f.log_weights == log_weights
+    @test autodiff(ForwardWithPrimal, f, Duplicated(copy(means), ones(2, 2))) ==
+        autodiff(ForwardWithPrimal, Const(f), Duplicated(copy(means), ones(2, 2)))
+
+    for f in (
+            ROCopyStore([0.5, 1.5, 2.5]), ROCopyMatrix([1.0 2.0; 3.0 4.0]),
+            ROCopyPush([0.5, 1.5]), ROCopyUnion(Union{Missing, Float64}[1.0, missing, 2.0]),
+        )
+        data = deepcopy(getfield(f, 1))
+        expected = autodiff(ReverseWithPrimal, Const(f), Active, Active(0.7))
+        @test autodiff(ReverseWithPrimal, f, Active, Active(0.7)) == expected
+        rmode = set_runtime_activity(ReverseWithPrimal)
+        @test autodiff(rmode, f, Active, Active(0.7)) == autodiff(rmode, Const(f), Active, Active(0.7))
+        dexpected = autodiff(ForwardWithPrimal, Const(f), Duplicated(0.7, 1.0))
+        @test autodiff(ForwardWithPrimal, f, Duplicated(0.7, 1.0)) == dexpected
+        bexpected = autodiff(Forward, Const(f), BatchDuplicated(0.7, (1.0, 2.0)))
+        @test autodiff(Forward, f, BatchDuplicated(0.7, (1.0, 2.0))) == bexpected
+        @test isequal(getfield(f, 1), data)
+    end
+    @test autodiff(Reverse, ROCopyStore([0.5, 1.5, 2.5]), Active, Active(0.7))[1][1] ≈ 1.4
+
+    for f in (ROCopyThenWrite([1.0, 2.0]), ROCopyOrHeld([1.0, 2.0]))
+        @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
+        @test f.v == [1.0, 2.0]
+    end
+end
+
 # Nested differentiation through a dynamic call. The inner call's rules pass
 # `readonly_args` to `thunk`, and the outer differentiation of a rule's body can
 # use the inner thunk's code only where the thunk it calls is a constant: it must
