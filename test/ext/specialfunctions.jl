@@ -134,6 +134,61 @@ end
     end
 end
 
+@testset "erfcx derivatives times seeds outside Float64's range" begin
+    # erfcx^(n)(u) is about u^-(n+1), below the smallest subnormal from u = 1e162 for n = 1,
+    # while the seeds a chain rule multiplies it by can be as large as u each. With seeds
+    # of size u every derivative below is about 1/u.
+    scaled(v, u) = u * SpecialFunctions.erfcx(v)
+    e1(v, u) = autodiff(Reverse, scaled, Active, Active(v), Const(u))[1][1]
+    e1f(v, u) = autodiff(Forward, SpecialFunctions.erfcx, Duplicated(v, u))[1]
+    e2(v, u) = autodiff(Forward, e1, Duplicated(v, u), Const(u))[1]
+    e2f(v, u) = autodiff(Forward, e1f, Duplicated(v, u), Const(u))[1]
+    scaled_e1f(v, u) = u * e1f(v, u)
+    e2r(v, u) = autodiff(Reverse, scaled_e1f, Active, Active(v), Const(u))[1][1]
+    e3(v, u) = autodiff(Forward, e2, Duplicated(v, u), Const(u))[1]
+    for u in (1.0e20, 1.0e100, 1.0e200, 1.0e300)
+        for (n, ad) in ((1, e1), (1, e1f), (2, e2), (2, e2f), (2, e2r), (3, e3))
+            @test isapprox(ad(u, u), Float64(BigFloat(u)^n * erfcx_derivative_reference(n, u)); rtol = 1.0e-13)
+        end
+    end
+
+    # In log(erfcx(exp(x))) the cotangent 1/erfcx(exp(x)) is as large as erfcx'(exp(x)) is
+    # small. The Reverse gradient holds until that cotangent itself overflows (x = 709.2),
+    # the Forward one up to exp's own overflow.
+    tail(x) = log(SpecialFunctions.erfcx(exp(x)))
+    g(x) = autodiff(Reverse, tail, Active, Active(x))[1][1]
+    gf(x) = autodiff(Forward, tail, Duplicated(x, 1.0))[1]
+    h(x) = autodiff(Forward, g, Duplicated(x, 1.0))[1]
+    t(x) = autodiff(Forward, h, Duplicated(x, 1.0))[1]
+    for x in (100.0, 237.0, 356.48441025996357, 432.12332349251784, 600.0, 709.0)
+        (rg, rh, rt) = erfcx_tail_reference(x)
+        @test isapprox(g(x), rg; rtol = 1.0e-13)
+        @test isapprox(gf(x), rg; rtol = 1.0e-13)
+        x <= 350 && @test isapprox(h(x), rh; atol = 1.0e-13)
+        x <= 170 && @test isapprox(t(x), rt; atol = 1.0e-13)
+    end
+    @test isapprox(h(350.0), erfcx_tail_reference(350.0)[2]; atol = 1.0e-13)
+    @test isapprox(t(170.0), erfcx_tail_reference(170.0)[3]; atol = 1.0e-13)
+    # Further out, libEnzyme's Forward rule for a division, (dx y - dy x) / (y y), squares
+    # the tiny erfcx(exp(x)) that `log` divides by: the Hessian is -Inf from x = 354 and
+    # the third derivative loses its digits from about x = 180. log(exp(-x) / sqrt(pi)),
+    # without any erfcx, fails the same way.
+    @test_broken isfinite(h(432.12332349251784))
+    @test_broken isfinite(t(300.0))
+    # The same function with no tiny value in it, erfcx(u) u -> 1/sqrt(pi), still multiplies
+    # every order of erfcx by cotangents of size u: all three hold up to x = 709.
+    rescaled(x) = (u = exp(x); log(SpecialFunctions.erfcx(u) * u) - x)
+    rg(x) = autodiff(Reverse, rescaled, Active, Active(x))[1][1]
+    rh(x) = autodiff(Forward, rg, Duplicated(x, 1.0))[1]
+    rt(x) = autodiff(Forward, rh, Duplicated(x, 1.0))[1]
+    for x in (300.0, 432.12332349251784, 709.0)
+        (eg, eh, et) = erfcx_tail_reference(x)
+        @test isapprox(rg(x), eg; rtol = 1.0e-13)
+        @test isapprox(rh(x), eh; atol = 1.0e-13)
+        @test isapprox(rt(x), et; atol = 1.0e-13)
+    end
+end
+
 # SpecialFunctions 0.7->0.8 changes:
 @testset "log gamma and co" begin
     #It is important that we have negative numbers with both odd and even integer parts
