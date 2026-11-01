@@ -706,6 +706,33 @@ function (c::ROCatchIgnore)(x)
     return sum(c.v) * x + s
 end
 
+# Nor does one that only inspects the exception, and handles or rethrows it.
+struct ROCatchInspect{V}
+    v::V
+    k::Int
+end
+function (c::ROCatchInspect)(x)
+    s = try
+        c.v[c.k] * x
+    catch e
+        e isa BoundsError ? 2.0 * x : rethrow()
+    end
+    return sum(c.v) * x + s
+end
+
+struct ROCatchRethrow{V}
+    v::V
+    k::Int
+end
+function (c::ROCatchRethrow)(x)
+    s = try
+        c.v[c.k] * x
+    catch e
+        e isa DomainError ? 2.0 * x : rethrow(e)
+    end
+    return sum(c.v) * x + s
+end
+
 @testset "Readonly check: data thrown and caught" begin
     for f in (
             ROCatchWrite([1.0, 2.0]), ROCatchBounds([1.0, 2.0], 5), ROCatchShared([1.0, 2.0], 5),
@@ -714,11 +741,14 @@ end
         @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
         @test f.v == [1.0, 2.0]
     end
-    for k in (1, 5)
-        f = ROCatchIgnore([1.0, 2.0], k)
+    for k in (1, 5), f in (ROCatchIgnore([1.0, 2.0], k), ROCatchInspect([1.0, 2.0], k))
         @test autodiff(Reverse, f, Active, Active(0.7)) == autodiff(Reverse, Const(f), Active, Active(0.7))
         @test f.v == [1.0, 2.0]
     end
+    # Rethrown as it is: the primal's error, not a refusal.
+    f = ROCatchRethrow([1.0, 2.0], 5)
+    @test_throws BoundsError autodiff(Reverse, f, Active, Active(0.7))
+    @test f.v == [1.0, 2.0]
 end
 
 # Nested differentiation through a dynamic call. The inner call's rules pass
