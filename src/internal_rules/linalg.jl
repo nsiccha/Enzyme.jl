@@ -665,7 +665,11 @@ for (name, flag_args) in _HOUSEHOLDER_MULTIPLIES
     @eval begin
         function EnzymeRules.forward(
                 config::EnzymeRules.FwdConfig, $func_sig,
-                RT::Type{<:Union{Const, Duplicated, BatchDuplicated}},
+                RT::Type{
+                    <:Union{
+                        Const, Duplicated, DuplicatedNoNeed, BatchDuplicated, BatchDuplicatedNoNeed,
+                    },
+                },
                 $(flag_sig...), $(array_sig...),
             ) where {T <: LinearAlgebra.BlasFloat}
             return _householder_forward(config, func.val, $flag_vals, A, τ, C)
