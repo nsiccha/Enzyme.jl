@@ -6556,6 +6556,306 @@ function memtransfer_truetype(world::UInt, @nospecialize(ptr::LLVM.Value), @nosp
     return nothing
 end
 
+"""
+    readonly_walk!(todo, rootfn, world, enzyme_ctx, state, emit::Bool)::Tuple{Bool, Bool}
+
+The walk of the readonly check (`err_if_func_written`). Follow the values in `todo`,
+which hold data of a checked argument, through their uses, and find each instruction
+that may write that data. With `emit`, insert an `EnzymeMutabilityException` throw
+before each one and walk on. Without, change nothing and stop at the first. Returns
+whether one was found, and whether the data reached a `ret` of `rootfn`.
+
+A callee with a body is walked from the parameters that receive the data. With a
+single call site, its body is part of this walk. A callee called from several sites
+is walked separately without `emit`, since a throw in its body would also fire for
+callers that pass other data. `state` caches that walk per callee and parameter
+positions. If it finds a possible write, the throw goes before the call. Otherwise
+the call only reads the data, and its result holds the data if the data reaches the
+callee's `ret`.
+
+Data that may have been thrown can come back through a `catch`: once the walk has met
+that, the walk with `emit` follows what the module's `catch` blocks read as well.
+"""
+function readonly_walk!(
+        todo::Vector{LLVM.Value}, @nospecialize(rootfn::Union{Nothing, LLVM.Function}), world::UInt,
+        enzyme_ctx::EnzymeContext, state::ReadonlyWalkState, emit::Bool,
+    )::Tuple{Bool, Bool}
+    wrote = false
+    returned = false
+    done = Set{LLVM.Value}()
+    doneInst = Set{LLVM.Instruction}()
+    # The single call of each callee whose body is walked below.
+    callsites = Dict{LLVM.Function, LLVM.CallInst}()
+    while true
+        if isempty(todo)
+            (emit && state.thrown[] && !isempty(state.caught)) || break
+            append!(todo, state.caught)
+            empty!(state.caught)
+        end
+        cur = pop!(todo)
+        if cur in done
+            continue
+        end
+        push!(done, cur)
+        # Floating-point data cannot refer to memory. Storing it into
+        # memory of the argument is found from the pointer side.
+        if is_float_data(value_type(cur))
+            continue
+        end
+        for u in LLVM.uses(cur)
+            user = LLVM.user(u)
+            if user in doneInst
+                continue
+            end
+            if LLVM.API.LLVMIsAReturnInst(user) != C_NULL
+                # Data of the argument is returned from a walked callee,
+                # so the result of its call holds it too.
+                fn = LLVM.parent(LLVM.parent(user))
+                call = get(callsites, fn, nothing)
+                if call !== nothing
+                    slegal, foundv, byref = abs_typeof(call, enzyme_ctx)
+                    if slegal
+                        reg2 = active_reg(foundv, world)
+                        if reg2 == ActiveState || reg2 == AnyState
+                            continue
+                        end
+                    end
+                    push!(todo, call)
+                elseif fn == rootfn
+                    returned = true
+                end
+                continue
+            end
+
+            # A runtime copy of elements without references only reads
+            # the argument, and fills fresh memory with bytes: nothing
+            # done to the copy reaches memory of the argument.
+            if isa(user, LLVM.CallInst)
+                if is_pointerfree_runtime_copy(user, cur, enzyme_ctx)
+                    continue
+                end
+                # Throwing writes nothing, and nothing follows it here.
+                if is_throw_runtime_call(user)
+                    state.thrown[] = true
+                    continue
+                end
+            end
+
+            if !mayWriteToMemory(user)
+                slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
+                if slegal
+                    reg2 = active_reg(foundv, world)
+                    if reg2 == ActiveState || reg2 == AnyState
+                        continue
+                    end
+                end
+                push!(todo, user)
+                continue
+            end
+
+            if isa(user, LLVM.StoreInst)
+                base = local_memory_base(operands(user)[2])
+                # we are capturing the variable
+                if operands(user)[1] == cur
+                    # Into a stack slot, or into an object allocated here
+                    # (the box Julia makes of a value passed to a dynamic
+                    # call): follow where that memory goes.
+                    if base !== nothing
+                        push!(doneInst, user)
+                        push!(todo, base)
+                        continue
+                    end
+                end
+                # we are storing into the variable
+                if operands(user)[2] == cur
+                    # A stack slot of this function, such as the copy of a
+                    # by-value argument that `lower_convention` stores into
+                    # (`.innerparm`), or an object it allocates, is reached
+                    # here only because it holds data of the argument.
+                    # Storing into it writes local memory, not memory the
+                    # argument refers to.
+                    if base !== nothing
+                        continue
+                    end
+                    slegal, foundv, byref = abs_typeof(operands(user)[1], enzyme_ctx)
+                    if slegal
+                        reg2 = active_reg(foundv, world)
+                        if reg2 == AnyState
+                            continue
+                        end
+                    end
+                end
+            end
+
+            if isa(user, LLVM.CallInst)
+                # The method a dynamic call reaches is known only at run
+                # time. Its rules compile that method's derivative with
+                # this check on the operands holding data of the argument.
+                # What it returns may hold that data too, as may what a
+                # runtime call that writes nothing returns. In a body called
+                # from several sites the mark on the call holds for every
+                # caller: the method reached is then checked on what any of
+                # them passes there. That method may throw the data.
+                deferred = defer_readonly_operand!(user, cur)
+                if deferred
+                    state.thrown[] = true
+                end
+                if deferred || is_nonwriting_runtime_call(user)
+                    slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
+                    if slegal
+                        reg2 = active_reg(foundv, world)
+                        if reg2 == ActiveState || reg2 == AnyState
+                            continue
+                        end
+                    end
+                    push!(todo, user)
+                    continue
+                end
+                called = LLVM.called_operand(user)
+                if isa(called, LLVM.Function)
+                    intr = LLVM.API.LLVMGetIntrinsicID(called)
+                    if intr == LLVM.Intrinsic("llvm.memset").id
+                        if cur != operands(user)[1]
+                            continue
+                        end
+                    end
+                    # A copy into local memory, as for a store: of data of
+                    # the argument (follow the copy), or into memory reached
+                    # because it holds such data (Julia 1.12 unboxes a
+                    # tuple a dynamic call returns this way).
+                    if intr == LLVM.Intrinsic("llvm.memcpy").id ||
+                            intr == LLVM.Intrinsic("llvm.memmove").id
+                        pointerfree = is_pointerfree_copy(user, enzyme_ctx)
+                        base = local_memory_base(operands(user)[1])
+                        if base !== nothing
+                            if operands(user)[2] == cur && !pointerfree
+                                push!(doneInst, user)
+                                push!(todo, base)
+                            end
+                            continue
+                        end
+                        # Copying bytes without references out of data of
+                        # the argument only reads it.
+                        if pointerfree && operands(user)[1] != cur
+                            continue
+                        end
+                    end
+
+                    nm = LLVM.name(called)
+                    if nm == "ijl_alloc_array_1d" ||
+                            nm == "jl_alloc_array_1d" ||
+                            nm == "ijl_alloc_array_2d" ||
+                            nm == "jl_alloc_array_2d" ||
+                            nm == "ijl_alloc_array_3d" ||
+                            nm == "jl_alloc_array_3d" ||
+                            nm == "ijl_new_array" ||
+                            nm == "jl_new_array" ||
+                            nm == "jl_alloc_genericmemory" ||
+                            nm == "ijl_alloc_genericmemory" ||
+                            nm == "jl_alloc_genericmemory_unchecked" ||
+                            nm == "ijl_alloc_genericmemory_unchecked"
+                        continue
+                    end
+                    # The callee's parameter type says what it receives
+                    # through `cur`. A type that cannot hold derivative
+                    # data is not followed, as for the values above,
+                    # whether or not the body is walked below (a function
+                    # with a custom rule called from several sites).
+                    if is_inactive_operand(user, called, cur, world)
+                        continue
+                    end
+                    if is_readonly(called)
+                        slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
+                        if slegal
+                            reg2 = active_reg(foundv, world)
+                            if reg2 == ActiveState || reg2 == AnyState
+                                continue
+                            end
+                        end
+                        push!(todo, user)
+                        continue
+                    end
+                    if !isempty(blocks(called)) &&
+                            length(collect(LLVM.uses(called))) == 1
+                        for (parm, op) in
+                            zip(LLVM.parameters(called), arg_operands_view(user))
+                            if op == cur
+                                push!(todo, parm)
+                            end
+                        end
+                        # The result holds data of the argument only if the
+                        # walk of the body reaches a `ret` (handled above),
+                        # not whenever the callee reads the argument: a call
+                        # such as `Matrix + UniformScaling` returns a fresh
+                        # array.
+                        callsites[called] = user
+                        continue
+                    end
+                    if !isempty(blocks(called))
+                        # Called from several sites: walk the body on its own.
+                        parms = collect(LLVM.parameters(called))
+                        positions = Int[]
+                        for (i, op) in enumerate(arg_operands_view(user))
+                            if op == cur
+                                push!(positions, i)
+                            end
+                        end
+                        if !isempty(positions) && last(positions) <= length(parms)
+                            key = (called, positions)
+                            res = get(state.shared, key, nothing)
+                            if res === nothing
+                                # Reached again while its own walk runs (recursion):
+                                # assume a write.
+                                state.shared[key] = (true, true)
+                                roots = LLVM.Value[]
+                                for i in positions
+                                    push!(roots, parms[i])
+                                end
+                                res = readonly_walk!(roots, called, world, enzyme_ctx, state, false)
+                                state.shared[key] = res
+                            end
+                            callee_wrote, callee_returned = res
+                            if !callee_wrote
+                                if callee_returned
+                                    slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
+                                    reg2 = slegal ? active_reg(foundv, world) : nothing
+                                    if reg2 != ActiveState && reg2 != AnyState
+                                        push!(todo, user)
+                                    end
+                                end
+                                continue
+                            end
+                        end
+                    end
+                end
+            end
+
+            wrote = true
+            if !emit
+                return (wrote, returned)
+            end
+            builder = LLVM.IRBuilder()
+            position!(builder, user)
+            resstr =
+                "Function argument passed to autodiff cannot be proven readonly.\nIf the the function argument cannot contain derivative data, instead call autodiff(Mode, Const(f), ...)\nSee https://enzyme.mit.edu/index.fcgi/julia/stable/faq/#Activity-of-temporary-storage for more information.\nThe potentially writing call is " *
+                string(user) *
+                ", using " *
+                string(cur)
+            slegal, foundv = absint(cur, enzyme_ctx)
+            if slegal
+                foundv = unbind(foundv)
+                resstr *= "of type " * string(foundv)
+            end
+            emit_error(builder, user, resstr, EnzymeMutabilityException)
+            # Optimization may have proven the function `nounwind`
+            # before the throw existed. Left in place, that would
+            # let LLVM delete the throw and the write it guards.
+            clear_nounwind!(LLVM.parent(LLVM.parent(user)))
+        end
+    end
+    return (wrote, returned)
+end
+
 function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     @assert output == :llvm
     
@@ -7179,218 +7479,7 @@ end
     if params.err_if_func_written !== false
         checked = readonly_checked_params(primalf, TT, params.err_if_func_written, job.world)
         if !isempty(checked)
-            todo = checked
-            done = Set{LLVM.Value}()
-            doneInst = Set{LLVM.Instruction}()
-            # The single call of each callee whose body is walked below.
-            callsites = Dict{LLVM.Function, LLVM.CallInst}()
-            while length(todo) != 0
-                cur = pop!(todo)
-                if cur in done
-                    continue
-                end
-                push!(done, cur)
-                # Floating-point data cannot refer to memory. Storing it into
-                # memory of the argument is found from the pointer side.
-                if is_float_data(value_type(cur))
-                    continue
-                end
-                for u in LLVM.uses(cur)
-                    user = LLVM.user(u)
-                    if user in doneInst
-                        continue
-                    end
-                    if LLVM.API.LLVMIsAReturnInst(user) != C_NULL
-                        # Data of the argument is returned from a walked callee,
-                        # so the result of its call holds it too.
-                        call = get(callsites, LLVM.parent(LLVM.parent(user)), nothing)
-                        if call !== nothing
-                            slegal, foundv, byref = abs_typeof(call, enzyme_ctx)
-                            if slegal
-                                reg2 = active_reg(foundv, job.world)
-                                if reg2 == ActiveState || reg2 == AnyState
-                                    continue
-                                end
-                            end
-                            push!(todo, call)
-                        end
-                        continue
-                    end
-
-                    # A runtime copy of elements without references only reads
-                    # the argument, and fills fresh memory with bytes: nothing
-                    # done to the copy reaches memory of the argument.
-                    if isa(user, LLVM.CallInst) &&
-                            is_pointerfree_runtime_copy(user, cur, enzyme_ctx)
-                        continue
-                    end
-
-                    if !mayWriteToMemory(user)
-                        slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
-                        if slegal
-                            reg2 = active_reg(foundv, job.world)
-                            if reg2 == ActiveState || reg2 == AnyState
-                                continue
-                            end
-                        end
-                        push!(todo, user)
-                        continue
-                    end
-
-                    if isa(user, LLVM.StoreInst)
-                        base = local_memory_base(operands(user)[2])
-                        # we are capturing the variable
-                        if operands(user)[1] == cur
-                            # Into a stack slot, or into an object allocated here
-                            # (the box Julia makes of a value passed to a dynamic
-                            # call): follow where that memory goes.
-                            if base !== nothing
-                                push!(doneInst, user)
-                                push!(todo, base)
-                                continue
-                            end
-                        end
-                        # we are storing into the variable
-                        if operands(user)[2] == cur
-                            # A stack slot of this function, such as the copy of a
-                            # by-value argument that `lower_convention` stores into
-                            # (`.innerparm`), or an object it allocates, is reached
-                            # here only because it holds data of the argument.
-                            # Storing into it writes local memory, not memory the
-                            # argument refers to.
-                            if base !== nothing
-                                continue
-                            end
-                            slegal, foundv, byref = abs_typeof(operands(user)[1], enzyme_ctx)
-                            if slegal
-                                reg2 = active_reg(foundv, job.world)
-                                if reg2 == AnyState
-                                    continue
-                                end
-                            end
-                        end
-                    end
-
-                    if isa(user, LLVM.CallInst)
-                        # The method a dynamic call reaches is known only at run
-                        # time. Its rules compile that method's derivative with
-                        # this check on the operands holding data of the argument.
-                        # What it returns may hold that data too, as may what a
-                        # runtime call that writes nothing returns.
-                        if defer_readonly_operand!(user, cur) ||
-                                is_nonwriting_runtime_call(user)
-                            slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
-                            if slegal
-                                reg2 = active_reg(foundv, job.world)
-                                if reg2 == ActiveState || reg2 == AnyState
-                                    continue
-                                end
-                            end
-                            push!(todo, user)
-                            continue
-                        end
-                        called = LLVM.called_operand(user)
-                        if isa(called, LLVM.Function)
-                            intr = LLVM.API.LLVMGetIntrinsicID(called)
-                            if intr == LLVM.Intrinsic("llvm.memset").id
-                                if cur != operands(user)[1]
-                                    continue
-                                end
-                            end
-                            # A copy into local memory, as for a store: of data of
-                            # the argument (follow the copy), or into memory reached
-                            # because it holds such data (Julia 1.12 unboxes a
-                            # tuple a dynamic call returns this way).
-                            if intr == LLVM.Intrinsic("llvm.memcpy").id ||
-                                    intr == LLVM.Intrinsic("llvm.memmove").id
-                                pointerfree = is_pointerfree_copy(user, enzyme_ctx)
-                                base = local_memory_base(operands(user)[1])
-                                if base !== nothing
-                                    if operands(user)[2] == cur && !pointerfree
-                                        push!(doneInst, user)
-                                        push!(todo, base)
-                                    end
-                                    continue
-                                end
-                                # Copying bytes without references out of data of
-                                # the argument only reads it.
-                                if pointerfree && operands(user)[1] != cur
-                                    continue
-                                end
-                            end
-
-                            nm = LLVM.name(called)
-                            if nm == "ijl_alloc_array_1d" ||
-                               nm == "jl_alloc_array_1d" ||
-                               nm == "ijl_alloc_array_2d" ||
-                               nm == "jl_alloc_array_2d" ||
-                               nm == "ijl_alloc_array_3d" ||
-                               nm == "jl_alloc_array_3d" ||
-                               nm == "ijl_new_array" ||
-                               nm == "jl_new_array" ||
-                               nm == "jl_alloc_genericmemory" ||
-                               nm == "ijl_alloc_genericmemory" ||
-			       nm == "jl_alloc_genericmemory_unchecked" ||
-			       nm == "ijl_alloc_genericmemory_unchecked"
-                                continue
-                            end
-                            # The callee's parameter type says what it receives
-                            # through `cur`. A type that cannot hold derivative
-                            # data is not followed, as for the values above,
-                            # whether or not the body is walked below (a function
-                            # with a custom rule called from several sites).
-                            if is_inactive_operand(user, called, cur, job.world)
-                                continue
-                            end
-                            if is_readonly(called)
-                                slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
-                                if slegal
-                                    reg2 = active_reg(foundv, job.world)
-                                    if reg2 == ActiveState || reg2 == AnyState
-                                        continue
-                                    end
-                                end
-                                push!(todo, user)
-                                continue
-                            end
-                            if !isempty(blocks(called)) &&
-                               length(collect(LLVM.uses(called))) == 1
-                                for (parm, op) in
-                                    zip(LLVM.parameters(called), arg_operands_view(user))
-                                    if op == cur
-                                        push!(todo, parm)
-                                    end
-                                end
-                                # The result holds data of the argument only if the
-                                # walk of the body reaches a `ret` (handled above),
-                                # not whenever the callee reads the argument: a call
-                                # such as `Matrix + UniformScaling` returns a fresh
-                                # array.
-                                callsites[called] = user
-                                continue
-                            end
-                        end
-                    end
-
-                    builder = LLVM.IRBuilder()
-                    position!(builder, user)
-                    resstr =
-                        "Function argument passed to autodiff cannot be proven readonly.\nIf the the function argument cannot contain derivative data, instead call autodiff(Mode, Const(f), ...)\nSee https://enzyme.mit.edu/index.fcgi/julia/stable/faq/#Activity-of-temporary-storage for more information.\nThe potentially writing call is " *
-                        string(user) *
-                        ", using " *
-                        string(cur)
-                    slegal, foundv = absint(cur, enzyme_ctx)
-                    if slegal
-		    	foundv = unbind(foundv)
-                        resstr *= "of type " * string(foundv)
-                    end
-                    emit_error(builder, user, resstr, EnzymeMutabilityException)
-                    # Optimization may have proven the function `nounwind`
-                    # before the throw existed. Left in place, that would
-                    # let LLVM delete the throw and the write it guards.
-                    clear_nounwind!(LLVM.parent(LLVM.parent(user)))
-                end
-            end
+            readonly_walk!(checked, primalf, job.world, enzyme_ctx, ReadonlyWalkState(mod), true)
         end
     end
 

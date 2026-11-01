@@ -406,6 +406,74 @@ function is_pointerfree_runtime_copy(call::LLVM.CallInst, @nospecialize(val::LLV
     return isbitstype(T) || Base.isbitsunion(T)
 end
 
+"""
+    is_throw_runtime_call(call::LLVM.CallInst)::Bool
+
+Whether `call` is a Julia runtime function that throws what it receives (`jl_throw`,
+`jl_rethrow_other`) or a `BoundsError` holding it (`jl_bounds_error_int`, …). It
+writes nothing it receives, but a `catch` can read what it throws.
+"""
+function is_throw_runtime_call(call::LLVM.CallInst)::Bool
+    fn = LLVM.called_operand(call)
+    isa(fn, LLVM.Function) || return false
+    nm = LLVM.name(fn)
+    if startswith(nm, "ijl_")
+        nm = nm[2:end]
+    end
+    return nm in (
+        "jl_throw",
+        "jl_rethrow_other",
+        "jl_bounds_error",
+        "jl_bounds_error_v",
+        "jl_bounds_error_int",
+        "jl_bounds_error_ints",
+        "jl_bounds_error_tuple_int",
+        "jl_bounds_error_unboxed_int",
+    )
+end
+
+"""
+    caught_exception_reads(mod::LLVM.Module)::Vector{LLVM.Value}
+
+The calls in `mod` that read a caught exception: `jl_current_exception` (`catch e`)
+and `jl_get_excstack` (`current_exceptions()`).
+"""
+function caught_exception_reads(mod::LLVM.Module)::Vector{LLVM.Value}
+    reads = LLVM.Value[]
+    fns = functions(mod)
+    for nm in ("jl_current_exception", "ijl_current_exception", "jl_get_excstack", "ijl_get_excstack")
+        haskey(fns, nm) || continue
+        for u in LLVM.uses(fns[nm])
+            call = LLVM.user(u)
+            if isa(call, LLVM.CallInst)
+                push!(reads, call)
+            end
+        end
+    end
+    return reads
+end
+
+"""
+    ReadonlyWalkState
+
+What the walks of one readonly check share (`readonly_walk!`).
+
+- `shared`: per callee called from several sites and parameter positions that
+  receive the data, whether a walk of its body found a possible write and whether
+  the data reached its `ret`.
+- `caught`: the calls that read a caught exception, not yet followed.
+- `thrown`: whether data may have been thrown, by a runtime call or by the method a
+  dynamic call reaches. A `catch` can then read it, so `caught` is followed too.
+"""
+struct ReadonlyWalkState
+    shared::Dict{Tuple{LLVM.Function, Vector{Int}}, Tuple{Bool, Bool}}
+    caught::Vector{LLVM.Value}
+    thrown::Base.RefValue{Bool}
+end
+ReadonlyWalkState(mod::LLVM.Module) = ReadonlyWalkState(
+    Dict{Tuple{LLVM.Function, Vector{Int}}, Tuple{Bool, Bool}}(), caught_exception_reads(mod), Ref(false),
+)
+
 const READONLY_OPERANDS_MD = "enzymejl_readonly_operands"
 
 """

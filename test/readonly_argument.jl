@@ -176,10 +176,11 @@ struct ROBox{M}
     v::M
 end
 
-# Not yet accepted: a parameter that holds derivative data, passed to a callee
-# that only reads it but is neither walked (it has a second call site) nor
-# read-only (it allocates; a custom rule alone does not stop LLVM from
-# inferring that on Julia 1.12 without forced bounds checks).
+# A parameter that holds derivative data, passed to a callee that only reads it,
+# that has a second call site and that is not read-only (it allocates; a custom
+# rule alone does not stop LLVM from inferring that on Julia 1.12 without forced
+# bounds checks). The body of such a callee is walked on its own, and a write
+# found there is reported at the call.
 @noinline ro_box_scaled(b::ROBox, x) = sum(b.v .* x)
 struct ROAllocBox{M}
     box::ROBox{M}
@@ -221,6 +222,54 @@ struct ROWriteFloatRef{M}
 end
 (c::ROWriteFloatRef)(x) = (ro_ref_set!(c.r, x); ro_ref_set!(Ref(0.0), x); c.r[] * sum(c.data))
 
+# The shape of an ODL likelihood: `logsumexp(terms) - logsumexp(log_weights)`,
+# with `terms` a copy of the held weights. The `logsumexp` is not inlined and is
+# called with the copy and with the held weights.
+@noinline function ro_lse(v)
+    m = maximum(v)
+    return m + log(sum(exp.(v .- m)))
+end
+struct ROTwoSiteLSE{V}
+    log_weights::V
+end
+function (c::ROTwoSiteLSE)(x)
+    terms = copy(c.log_weights)
+    for k in eachindex(terms)
+        terms[k] -= (x * k)^2 / 2
+    end
+    return ro_lse(terms) - ro_lse(c.log_weights)
+end
+
+# A callee with two call sites that writes only the fresh array it receives.
+@noinline ro_scaled_into!(out, src, x) = (out .= x .* src; sum(out))
+struct ROSharedInto{V}
+    v::V
+end
+(c::ROSharedInto)(x) = ro_scaled_into!(similar(c.v), c.v, x) + ro_scaled_into!(zeros(2), [x, x], x)
+
+# Controls: a callee with two call sites that writes data the callable holds,
+# reached from two walked calls (each must raise), and one whose result holds
+# the held data, written by the caller.
+@noinline ro_box_bump!(b::ROBox, x) = (b.v[1] += x; sum(b.v))
+struct ROWriteTwoSites{M}
+    a::ROBox{M}
+    b::ROBox{M}
+end
+(c::ROWriteTwoSites)(x) = x > 0 ? ro_box_bump!(c.a, x) : ro_box_bump!(c.b, -x)
+
+# The array a callable above holds, for comparing it before and after.
+ro_held(f) = (d = getfield(f, 1); d isa ROBox ? d.v : d)
+
+@noinline ro_pass_scaled(v, x) = sum(v .* x) > 0 ? v : v
+struct ROWriteSharedReturned{V}
+    v::V
+end
+function (c::ROWriteSharedReturned)(x)
+    w = ro_pass_scaled(c.v, x)
+    w[1] = x
+    return sum(w) + sum(ro_pass_scaled([1.0, 2.0], x))
+end
+
 @testset "Readonly check: calls whose parameter cannot hold derivative data" begin
     for f in (
             RORuleHolder([1.0, 2.0], RORule(true, (true, false, true))),
@@ -231,9 +280,18 @@ end
     end
     @test autodiff(Reverse, RORuleHolder([1.0, 2.0], RORule(true, (true, false, true))), Active, Active(1.5))[1][1] == 3.0
 
-    for f in (ROAllocBox(ROBox([1.0, 2.0])), ROCustomBox(ROBox([1.0, 2.0])))
+    for f in (
+            ROAllocBox(ROBox([1.0, 2.0])), ROCustomBox(ROBox([1.0, 2.0])),
+            ROTwoSiteLSE([log(0.3), log(0.7)]), ROSharedInto([1.0, 2.0]),
+        )
+        data = deepcopy(ro_held(f))
         expected = autodiff(ReverseWithPrimal, Const(f), Active, Active(1.5))
-        @test_broken autodiff(ReverseWithPrimal, f, Active, Active(1.5)) == expected
+        @test autodiff(ReverseWithPrimal, f, Active, Active(1.5)) == expected
+        rmode = set_runtime_activity(ReverseWithPrimal)
+        @test autodiff(rmode, f, Active, Active(1.5)) == autodiff(rmode, Const(f), Active, Active(1.5))
+        dexpected = autodiff(ForwardWithPrimal, Const(f), Duplicated(1.5, 1.0))
+        @test autodiff(ForwardWithPrimal, f, Duplicated(1.5, 1.0)) == dexpected
+        @test ro_held(f) == data
     end
 
     f = ROWriteBox(ROBox([1.0, 2.0]))
@@ -242,6 +300,106 @@ end
     f = ROWriteFloatRef([1.0, 2.0], Ref(0.0))
     @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(1.5))
     @test f.r[] == 0.0
+    for x in (1.5, -1.5)
+        f = ROWriteTwoSites(ROBox([1.0, 2.0]), ROBox([3.0, 4.0]))
+        @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(x))
+        @test f.a.v == [1.0, 2.0] && f.b.v == [3.0, 4.0]
+    end
+    f = ROWriteSharedReturned([1.0, 2.0])
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(1.5))
+    @test f.v == [1.0, 2.0]
+end
+
+# A callee called from several sites is judged per call and per argument position.
+# `ro_first_from!` only reads its second argument, and writes its first.
+@noinline ro_first_from!(a, b) = (a[1] = b[1]; sum(a))
+struct ROPositions{V}
+    v::V
+end
+(c::ROPositions)(x) = x > 0 ? ro_first_from!([x, x], c.v) * x : ro_first_from!(c.v, [x])
+
+# A write two levels down.
+@noinline ro_bump!(v, x) = (v[1] += x; sum(v))
+@noinline ro_bump_outer(v, x) = ro_bump!(v, x) + 1.0
+struct RODeepWrite{V}
+    v::V
+end
+(c::RODeepWrite)(x) = ro_bump_outer(c.v, x) + ro_bump_outer([0.0, 1.0], x) + ro_bump!([0.0], x)
+
+# A dynamic call in such a callee: the method it reaches is checked at run time.
+ro_dyn_read(v, x) = sum(v) * x
+@noinline ro_dyn_reader(v, x) = Base.inferencebarrier(ro_dyn_read)(v, x)
+struct ROSharedDynRead{V}
+    v::V
+end
+(c::ROSharedDynRead)(x) = ro_dyn_reader(c.v, x) + ro_dyn_reader([1.0], x)
+
+ro_dyn_write(v, x) = (v[1] = x; x)
+@noinline ro_dyn_writer(v, x) = Base.inferencebarrier(ro_dyn_write)(v, x)
+struct ROSharedDynWrite{V}
+    v::V
+end
+(c::ROSharedDynWrite)(x) = ro_dyn_writer(c.v, x) + ro_dyn_writer(zeros(2), x)
+
+# The check of a dynamic call is marked on the call, in the callee, so it also holds
+# for what another caller passes. `x > 0` writes only a fresh array, but this callable
+# does write its data on the other path, so it is not read-only as a whole.
+struct ROSharedDynPaths{V}
+    v::V
+end
+(c::ROSharedDynPaths)(x) = x > 0 ? ro_dyn_writer(zeros(2), x) + sum(c.v) : ro_dyn_writer(c.v, x)
+
+# Conservative: recursion counts as a possible write, as does data stored into memory
+# the callee does not own.
+@noinline ro_rec_write!(v, n, x) = n == 0 ? (v[1] = x; x) : ro_rec_write!(v, n - 1, x)
+struct RORecWrite{V}
+    v::V
+end
+(c::RORecWrite)(x) = ro_rec_write!(c.v, 2, x) + sum(c.v)
+
+# Data boxed and returned from such a callee, written by the caller.
+@noinline ro_ref(v, x) = (x > 1.0e300 && error("big"); Ref(v))
+struct ROBoxReturned{V}
+    v::V
+end
+(c::ROBoxReturned)(x) = (r = ro_ref(c.v, x); s = ro_ref([1.0], x); r[][1] = x; sum(r[]) + sum(s[]))
+
+# Data returned in a tuple from such a callee, written by the caller.
+@noinline ro_pair(v, x) = (x > 1.0e300 && error("big"); (v, x))
+struct ROPairWrite{V}
+    v::V
+end
+(c::ROPairWrite)(x) = (p = ro_pair(c.v, x); q = ro_pair([1.0], x); p[1][1] = x; sum(p[1]) * p[2] + sum(q[1]))
+
+# Data the callee stores into a global.
+const RO_SINK = Ref{Any}(nothing)
+@noinline ro_sink(v) = (RO_SINK[] = v; sum(v))
+struct ROSink{V}
+    v::V
+end
+(c::ROSink)(x) = (ro_sink(c.v) + ro_sink([1.0])) * x
+
+@testset "Readonly check: callees called from several sites" begin
+    f = ROPositions([1.0, 2.0])
+    @test autodiff(Reverse, f, Active, Active(0.7)) == autodiff(Reverse, Const(f), Active, Active(0.7))
+    @test f.v == [1.0, 2.0]
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(-0.7))
+    @test f.v == [1.0, 2.0]
+
+    f = ROSharedDynRead([1.0, 2.0])
+    @test autodiff(Reverse, f, Active, Active(0.7)) == autodiff(Reverse, Const(f), Active, Active(0.7))
+    @test f.v == [1.0, 2.0]
+
+    for f in (
+            RODeepWrite([1.0, 2.0]), ROSharedDynWrite([1.0, 2.0]), ROSharedDynPaths([1.0, 2.0]),
+            RORecWrite([1.0, 2.0]), ROBoxReturned([1.0, 2.0]), ROPairWrite([1.0, 2.0]), ROSink([1.0, 2.0]),
+        )
+        @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
+        @test f.v == [1.0, 2.0]
+    end
+    f = ROSharedDynPaths([1.0, 2.0])
+    @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(-0.7))
+    @test f.v == [1.0, 2.0]
 end
 
 # Dynamic calls (`Base.inferencebarrier`, or any call whose result Julia cannot
@@ -474,6 +632,123 @@ end
         @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
         @test f.v == [1.0, 2.0]
     end
+end
+
+# Throwing data the callable holds writes nothing, but a `catch` can read it: the
+# check follows what a `catch` reads once data may have been thrown, by a runtime
+# call or by the method a dynamic call reaches.
+struct ROCatchWrite{V}
+    v::V
+end
+function (c::ROCatchWrite)(x)
+    try
+        throw(c.v)
+    catch e
+        e[1] = x
+    end
+    return sum(c.v) * x
+end
+
+struct ROCatchBounds{V}
+    v::V
+    k::Int
+end
+function (c::ROCatchBounds)(x)
+    s = 0.0
+    try
+        s = c.v[c.k] * x
+    catch e
+        e.a[1] = x
+    end
+    return sum(c.v) * x + s
+end
+
+@noinline ro_read_twice(v, k) = v[k] * 2.0
+struct ROCatchShared{V}
+    v::V
+    k::Int
+end
+function (c::ROCatchShared)(x)
+    s = 0.0
+    try
+        s = ro_read_twice(c.v, c.k) * x + ro_read_twice([1.0, 2.0], 1) * x
+    catch e
+        e.a[1] = x
+    end
+    return sum(c.v) * x + s
+end
+
+@noinline ro_throw_arg(v) = throw(v)
+struct ROCatchDynamic{V}
+    v::V
+end
+function (c::ROCatchDynamic)(x)
+    try
+        Base.inferencebarrier(ro_throw_arg)(c.v)
+    catch e
+        e[1] = x
+    end
+    return sum(c.v) * x
+end
+
+# A `catch` that does not read the exception only reads the data.
+struct ROCatchIgnore{V}
+    v::V
+    k::Int
+end
+function (c::ROCatchIgnore)(x)
+    s = 0.0
+    try
+        s = c.v[c.k] * x
+    catch
+        s = 2.0 * x
+    end
+    return sum(c.v) * x + s
+end
+
+# Nor does one that only inspects the exception, and handles or rethrows it.
+struct ROCatchInspect{V}
+    v::V
+    k::Int
+end
+function (c::ROCatchInspect)(x)
+    s = try
+        c.v[c.k] * x
+    catch e
+        e isa BoundsError ? 2.0 * x : rethrow()
+    end
+    return sum(c.v) * x + s
+end
+
+struct ROCatchRethrow{V}
+    v::V
+    k::Int
+end
+function (c::ROCatchRethrow)(x)
+    s = try
+        c.v[c.k] * x
+    catch e
+        e isa DomainError ? 2.0 * x : rethrow(e)
+    end
+    return sum(c.v) * x + s
+end
+
+@testset "Readonly check: data thrown and caught" begin
+    for f in (
+            ROCatchWrite([1.0, 2.0]), ROCatchBounds([1.0, 2.0], 5), ROCatchShared([1.0, 2.0], 5),
+            ROCatchDynamic([1.0, 2.0]),
+        )
+        @test_throws Enzyme.Compiler.EnzymeMutabilityException autodiff(Reverse, f, Active, Active(0.7))
+        @test f.v == [1.0, 2.0]
+    end
+    for k in (1, 5), f in (ROCatchIgnore([1.0, 2.0], k), ROCatchInspect([1.0, 2.0], k))
+        @test autodiff(Reverse, f, Active, Active(0.7)) == autodiff(Reverse, Const(f), Active, Active(0.7))
+        @test f.v == [1.0, 2.0]
+    end
+    # Rethrown as it is: the primal's error, not a refusal.
+    f = ROCatchRethrow([1.0, 2.0], 5)
+    @test_throws BoundsError autodiff(Reverse, f, Active, Active(0.7))
+    @test f.v == [1.0, 2.0]
 end
 
 # Nested differentiation through a dynamic call. The inner call's rules pass
