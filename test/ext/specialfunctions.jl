@@ -170,9 +170,9 @@ end
     @test isapprox(h(350.0), erfcx_tail_reference(350.0)[2]; atol = 1.0e-13)
     @test isapprox(t(170.0), erfcx_tail_reference(170.0)[3]; atol = 1.0e-13)
     # Further out, libEnzyme's Forward rule for a division, (dx y - dy x) / (y y), squares
-    # the tiny erfcx(exp(x)) that `log` divides by: the Hessian is -Inf from x = 354 and
-    # the third derivative loses its digits from about x = 180. log(exp(-x) / sqrt(pi)),
-    # without any erfcx, fails the same way.
+    # the tiny erfcx(exp(x)) that `log` divides by: the Hessian loses its digits from
+    # x = 354 (-Inf at 400) and the third derivative from about x = 180 (NaN at 237).
+    # log(exp(-x) / sqrt(pi)), without any erfcx, fails the same way.
     @test_broken isfinite(h(432.12332349251784))
     @test_broken isfinite(t(300.0))
     # The same function with no tiny value in it, erfcx(u) u -> 1/sqrt(pi), still multiplies

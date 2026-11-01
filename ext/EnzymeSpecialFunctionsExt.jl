@@ -85,6 +85,8 @@ EnzymeRules.@easy_rule(
     return frexp(y0)
 end
 
+@inline _isnormal(v::AbstractFloat) = isfinite(v) && abs(v) >= floatmin(v)
+
 # (m, e) times a / b, with a / b formed from b's significand.
 @inline function _frexp_times_ratio(m::T, e::Int, a::T, b::T) where {T <: AbstractFloat}
     (mb, eb) = frexp(b)
@@ -137,6 +139,17 @@ function _erfcx_derivative_frexp(n::Int, x::T) where {T <: AbstractFloat}
         end
     end
     # y_n = y_0 (-n / f) (-(n - 1) / (x + p_n)) ... (-1 / (x + p_2)), as -2 p_k = -k / (x + p_{k+1}).
+    # The factors shrink with k, so the partial products rise and then fall: where y_0 and
+    # y_n are normal numbers, so is every partial product, and the plain product has the
+    # same bits as the scaled one below.
+    y = y0 * (-T(n) / f)
+    p = T(n) / 2 / f
+    for k in (n - 1):-1:1
+        den = x + p
+        p = T(k) / 2 / den
+        y *= -T(k) / den
+    end
+    _isnormal(y0) && _isnormal(y) && return frexp(y)
     (m, e) = _erfcx_frexp(x, y0)
     (m, e) = _frexp_times_ratio(m, e, -T(n), f)
     p = T(n) / 2 / f
@@ -190,9 +203,14 @@ struct _Scale2Times
     k::Int
 end
 
-# Each partial times a seed d. The significands of s and d multiply to a number in
-# [1, 4), and their exponents go to e.
+# A seed whose product with another such seed is a normal number (or zero).
+@inline _moderate(v::AbstractFloat) = iszero(v) || (sqrt(floatmin(v)) <= abs(v) <= sqrt(floatmax(v)))
+@inline _moderate(v::Real) = _moderate(float(v))
+
+# Each partial times a seed d. Seeds of moderate size multiply as they are; otherwise the
+# significands of s and d multiply to a number in [1, 4), and their exponents go to e.
 @inline function _times_seed(p::_ErfcxTimes, d::Real)
+    _moderate(p.s) && _moderate(d) && return _erfcx_seeded(p.x, p.n + 1, p.s * d, p.e)
     ks = _exponent2(p.s)
     kd = _exponent2(d)
     s = _scale2(p.s, -ks) * _scale2(d, -kd)
