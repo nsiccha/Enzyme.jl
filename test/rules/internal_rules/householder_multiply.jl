@@ -139,7 +139,7 @@ function q_grad(f, x, Q)
     return dx
 end
 
-q_directional(f, x, v, Q) = autodiff_deferred(Forward, Const(f), Duplicated(x, v), Const(Q))[1]
+q_directional(f, x, v, Q) = autodiff_deferred(Forward, Const(f), Duplicated, Duplicated(x, v), Const(Q))[1]
 
 function q_types(rng)
     tall = randn(rng, 6, 3)
