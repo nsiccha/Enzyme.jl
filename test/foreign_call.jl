@@ -45,6 +45,13 @@ foreign_inactive_lookup(handle, x, y) = x^2 + foreign_lookup(handle, y)
 
 foreign_inactive(pointer, x, y) = x^2 + foreign_scalar(pointer, y)
 foreign_inactive_buffer(f, x, y) = x^2 + foreign_buffer(f, y)
+function foreign_reused_buffer(f::ForeignCall, x, y, z)
+    out = Ref(0.0)
+    err = Ref{Ptr{Cchar}}(C_NULL)
+    ccall(f.pointer, Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ref{Cdouble}, Ref{Ptr{Cchar}}), f.context, y, out, err)
+    ccall(f.pointer, Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ref{Cdouble}, Ref{Ptr{Cchar}}), f.context, z, out, err)
+    return x^2 + out[]
+end
 const foreign_libm = Base.Math.libm
 foreign_supported(x) = ccall((:sin, foreign_libm), Cdouble, (Cdouble,), x)
 
@@ -80,8 +87,24 @@ foreign_value_gradient(x) = (x[1]^2, [2x[1]])
     # An inactive call still executes normally; known foreign-call rules still apply.
     @test autodiff(Reverse, foreign_inactive, Active, Const(scalar), Active(0.3), Const(0.4))[1][2] ≈ 0.6
     @test autodiff(Forward, foreign_inactive, Const(scalar), Duplicated(0.3, 1.0), Const(0.4))[1] ≈ 0.6
-    @test autodiff(Reverse, foreign_inactive_buffer, Active, Const(buffer), Active(0.3), Const([0.4]))[1][2] ≈ 0.6
+    if v"1.10" <= VERSION < v"1.11" || v"1.13" <= VERSION < v"1.14"
+        # The unchanged baseline cannot prove this unknown call does not free
+        # memory needed by Reverse ("No create nofree of unknown value").
+        inactive_result = try
+            autodiff(Reverse, foreign_inactive_buffer, Active, Const(buffer), Active(0.3), Const([0.4]))
+        catch err
+            err
+        end
+        @test inactive_result isa Enzyme.Compiler.EnzymeNoDerivativeError
+        @test occursin("No create nofree of unknown value", sprint(showerror, inactive_result))
+        @test_broken inactive_result isa Tuple && inactive_result[1][2] ≈ 0.6
+    else
+        @test autodiff(Reverse, foreign_inactive_buffer, Active, Const(buffer), Active(0.3), Const([0.4]))[1][2] ≈ 0.6
+    end
     @test autodiff(Forward, foreign_inactive_buffer, Const(buffer), Duplicated(0.3, 1.0), Const([0.4]))[1] ≈ 0.6
+    @test autodiff(Forward, foreign_reused_buffer, Const(buffer), Duplicated(0.3, 1.0), Const([0.4]), Const([0.5]))[1] ≈ 0.6
+    @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(Forward, foreign_reused_buffer, Const(buffer), Const(0.3), Const([0.4]), Duplicated([0.5], [1.0]))
+    @test_throws Enzyme.Compiler.EnzymeNoDerivativeError gradient(Reverse, foreign_reused_buffer, Const(buffer), Const(0.3), Const([0.4]), [0.5])
     @test autodiff(Reverse, foreign_supported, Active, Active(0.3))[1][1] ≈ cos(0.3)
     @test autodiff(Forward, foreign_supported, Duplicated(0.3, 1.0))[1] ≈ cos(0.3)
 
