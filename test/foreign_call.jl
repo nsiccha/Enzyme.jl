@@ -24,6 +24,7 @@ function foreign_buffer(f::ForeignCall, x)
 end
 
 foreign_inactive(pointer, x, y) = x^2 + foreign_scalar(pointer, y)
+foreign_inactive_buffer(f, x, y) = x^2 + foreign_buffer(f, y)
 const foreign_libm = Base.Math.libm
 foreign_supported(x) = ccall((:sin, foreign_libm), Cdouble, (Cdouble,), x)
 
@@ -49,6 +50,8 @@ foreign_value_gradient(x) = (x[1]^2, [2x[1]])
     # An inactive call still executes normally; known foreign-call rules still apply.
     @test autodiff(Reverse, foreign_inactive, Active, Const(scalar), Active(0.3), Const(0.4))[1][2] ≈ 0.6
     @test autodiff(Forward, foreign_inactive, Const(scalar), Duplicated(0.3, 1.0), Const(0.4))[1] ≈ 0.6
+    @test autodiff(Reverse, foreign_inactive_buffer, Active, Const(buffer), Active(0.3), Const([0.4]))[1][2] ≈ 0.6
+    @test autodiff(Forward, foreign_inactive_buffer, Const(buffer), Duplicated(0.3, 1.0), Const([0.4]))[1] ≈ 0.6
     @test autodiff(Reverse, foreign_supported, Active, Active(0.3))[1][1] ≈ cos(0.3)
     @test autodiff(Forward, foreign_supported, Duplicated(0.3, 1.0))[1] ≈ cos(0.3)
 
