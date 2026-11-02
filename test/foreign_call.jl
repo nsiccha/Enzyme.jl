@@ -1,4 +1,5 @@
 using Enzyme
+using Libdl
 using Test
 
 # The callbacks are native code behind a runtime pointer. Passing the pointer
@@ -31,6 +32,17 @@ function foreign_caught(f, x)
     end
 end
 
+foreign_local_input(f, x) = foreign_buffer(f, Ref(x))
+function foreign_lookup(handle, x)
+    try
+        pointer = Libdl.dlsym(handle, :sin)
+        return foreign_scalar(pointer, x)
+    catch
+        return NaN
+    end
+end
+foreign_inactive_lookup(handle, x, y) = x^2 + foreign_lookup(handle, y)
+
 foreign_inactive(pointer, x, y) = x^2 + foreign_scalar(pointer, y)
 foreign_inactive_buffer(f, x, y) = x^2 + foreign_buffer(f, y)
 const foreign_libm = Base.Math.libm
@@ -55,6 +67,8 @@ foreign_value_gradient(x) = (x[1]^2, [2x[1]])
     @test_throws Enzyme.Compiler.EnzymeNoDerivativeError gradient(Reverse, foreign_buffer, Const(buffer), [0.3])
     @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(Forward, foreign_buffer, Const(buffer), Duplicated([0.3], [1.0]))
     @test_throws Enzyme.Compiler.EnzymeNoDerivativeError gradient(Reverse, foreign_caught, Const(buffer), [0.3])
+    @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(Reverse, foreign_local_input, Active, Const(buffer), Active(0.3))
+    @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(Forward, foreign_local_input, Const(buffer), Duplicated(0.3, 1.0))
 
     # Missing reverse derivatives must not change the augmented primal's path.
     arg = Duplicated([0.3], [0.0])
@@ -70,6 +84,16 @@ foreign_value_gradient(x) = (x[1]^2, [2x[1]])
     @test autodiff(Forward, foreign_inactive_buffer, Const(buffer), Duplicated(0.3, 1.0), Const([0.4]))[1] ≈ 0.6
     @test autodiff(Reverse, foreign_supported, Active, Active(0.3))[1][1] ≈ cos(0.3)
     @test autodiff(Forward, foreign_supported, Duplicated(0.3, 1.0))[1] ≈ cos(0.3)
+
+    handle = Libdl.dlopen(foreign_libm)
+    try
+        @test foreign_lookup(handle, 0.3) ≈ sin(0.3)
+        @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(Reverse, foreign_lookup, Active, Const(handle), Active(0.3))
+        @test autodiff(Reverse, foreign_inactive_lookup, Active, Const(handle), Active(0.3), Const(0.4))[1][2] ≈ 0.6
+        @test autodiff(Forward, foreign_inactive_lookup, Const(handle), Duplicated(0.3, 1.0), Const(0.4))[1] ≈ 0.6
+    finally
+        Libdl.dlclose(handle)
+    end
 
     supplied = WithGradient(ForeignPrimal(buffer), foreign_value_gradient)
     @test gradient(Reverse, Const(supplied), [0.3])[1] ≈ [0.6]

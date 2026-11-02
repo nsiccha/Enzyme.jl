@@ -8,3 +8,5 @@
 - Repair constant native function-pointer activity analysis and diagnose
   missing derivatives before handling indirect-call shadows. Avoid an
   out-of-bounds parameter-attribute query when optimizing an indirect call.
+  Preserve inactive local buffers and symbol lookup, and report missing reverse
+  derivatives outside the augmented primal's exception handlers.
