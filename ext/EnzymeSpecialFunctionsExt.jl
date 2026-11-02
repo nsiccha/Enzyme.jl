@@ -18,11 +18,16 @@ EnzymeRules.@easy_rule(
     (Ω * SpecialFunctions.digamma(x),),
 )
 
-# Differentiating digamma's reflection term -π/tanpi(x) gives NaN at negative
-# half-integers, where tanpi is infinite. This also affects nested gamma derivatives.
+# The reflection formulas for digamma and polygamma contain inv(tanpi(x)).
+# At half-integers tanpi(x) is infinite, so differentiating that intermediate
+# gives NaN although these functions and all their derivatives are finite.
+# Keep nested differentiation on the analytic polygamma identities as well.
+EnzymeRules.@easy_rule(SpecialFunctions.digamma(x::Real), (SpecialFunctions.trigamma(x),))
+EnzymeRules.@easy_rule(SpecialFunctions.trigamma(x::Real), (SpecialFunctions.polygamma(2, x),))
 EnzymeRules.@easy_rule(
-    SpecialFunctions.digamma(x::Real),
-    (SpecialFunctions.trigamma(x),),
+    SpecialFunctions.polygamma(n::Integer, x::Real),
+    @setup(n < 0 && SpecialFunctions.polygamma(n, x)),
+    (@Constant, SpecialFunctions.polygamma(n + 1, x)),
 )
 
 # Exponentially scaled Bessel functions (x/ref: https://github.com/EnzymeAD/Enzyme.jl/issues/2880)

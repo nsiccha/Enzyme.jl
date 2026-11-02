@@ -113,6 +113,17 @@ end
         @test autodiff(Forward, Const(dgamma_forward), Duplicated(x, one(x)))[1] ≈ second
     end
 
+    # Higher gamma derivatives must also follow the analytic polygamma chain.
+    ddgamma_forward(x) = autodiff(Forward, Const(dgamma_forward), Duplicated(x, one(x)))[1]
+    dddgamma_forward(x) = autodiff(Forward, Const(ddgamma_forward), Duplicated(x, one(x)))[1]
+    for x in (-2.5, -0.5, 2.5)
+        ψ, ψ1, ψ2, ψ3 = digamma(x), trigamma(x), polygamma(2, x), polygamma(3, x)
+        third = gamma(x) * (ψ^3 + 3 * ψ * ψ1 + ψ2)
+        fourth = gamma(x) * (ψ^4 + 6 * ψ^2 * ψ1 + 3 * ψ1^2 + 4 * ψ * ψ2 + ψ3)
+        @test dddgamma_forward(x) ≈ third
+        @test autodiff(Forward, Const(dddgamma_forward), Duplicated(x, one(x)))[1] ≈ fourth
+    end
+
     # Split reverse must retain the argument's contribution until the pullback,
     # and add it to an existing shadow with the caller's output seed.
     gamma_vector(x) = [gamma(x[1])]
