@@ -23,6 +23,14 @@ function foreign_buffer(f::ForeignCall, x)
     return out[]
 end
 
+function foreign_caught(f, x)
+    try
+        return foreign_buffer(f, x)
+    catch
+        return NaN
+    end
+end
+
 foreign_inactive(pointer, x, y) = x^2 + foreign_scalar(pointer, y)
 foreign_inactive_buffer(f, x, y) = x^2 + foreign_buffer(f, y)
 const foreign_libm = Base.Math.libm
@@ -46,6 +54,14 @@ foreign_value_gradient(x) = (x[1]^2, [2x[1]])
     @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(Forward, foreign_scalar, Const(scalar), Duplicated(0.3, 1.0))
     @test_throws Enzyme.Compiler.EnzymeNoDerivativeError gradient(Reverse, foreign_buffer, Const(buffer), [0.3])
     @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(Forward, foreign_buffer, Const(buffer), Duplicated([0.3], [1.0]))
+    @test_throws Enzyme.Compiler.EnzymeNoDerivativeError gradient(Reverse, foreign_caught, Const(buffer), [0.3])
+
+    # Missing reverse derivatives must not change the augmented primal's path.
+    arg = Duplicated([0.3], [0.0])
+    fw, rv = autodiff_thunk(ReverseSplitWithPrimal, Const{typeof(foreign_buffer)}, Active, Const{typeof(buffer)}, typeof(arg))
+    tape, value, shadow = fw(Const(foreign_buffer), Const(buffer), arg)
+    @test value ≈ 0.09
+    @test_throws Enzyme.Compiler.EnzymeNoDerivativeError rv(Const(foreign_buffer), Const(buffer), arg, 1.0, tape)
 
     # An inactive call still executes normally; known foreign-call rules still apply.
     @test autodiff(Reverse, foreign_inactive, Active, Const(scalar), Active(0.3), Const(0.4))[1][2] ≈ 0.6
