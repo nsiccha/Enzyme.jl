@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Default dogfood derivative arithmetic to strict floating-point semantics.
+  This prevents reassociation from underflowing representable gradients such
+  as `exp(log(t * 1e-190))`. Explicit `Enzyme.API.fast_math!(true)` remains
+  available before derivative compilation.
+
 ## 0.13.217
 
 - Add `WithGradient(primal, value_and_gradient)` for explicitly supplied
