@@ -1009,6 +1009,7 @@ end
 const DENSE_VCAT_METHOD = which(Base.vcat, Tuple{Vararg{Vector{T}}} where {T})
 
 include("concatenation.jl")
+include("foreach.jl")
 
 concat_rewrite(interp::EnzymeInterpreter, f, argtypes, sv::AbsIntState) = nothing
 
@@ -1022,6 +1023,10 @@ function concat_rewrite(interp::EnzymeInterpreter, f::DenseConcatFunction, argty
     Base.isdispatchtuple(sig) || return nothing
     replacement = concat_replacement(f, sig)
     replacement === nothing && return nothing
+    return checked_method_rewrite(interp, f, sig, sv, replacement)
+end
+
+function checked_method_rewrite(interp::EnzymeInterpreter, f, sig, sv::AbsIntState, replacement)
     # Keep user rules and more-specific methods authoritative, and invalidate
     # rewritten callers when method selection changes.
     enzyme_call_kind(interp, simplify_kw(sig)) === nothing || return nothing
@@ -1569,6 +1574,9 @@ function abstract_call_known(
 
     if interp.broadcast_rewrite
         replacement = concat_rewrite(interp, f, argtypes, sv)
+        if replacement === nothing
+            replacement = foreach_rewrite(interp, f, argtypes, sv)
+        end
         if replacement !== nothing
             arginfo2 = ArgInfo(
                 fargs isa Nothing ? nothing :
