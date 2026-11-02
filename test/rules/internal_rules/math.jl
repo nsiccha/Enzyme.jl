@@ -23,7 +23,7 @@ using Test
         end
     end
     @testset "reverse" begin
-        @testset for RT in (Active,),
+        @testset for RT in (Const, Active),
                 Tx in (Const, Active),
                 Ty in (Const, Active),
                 Tz in (Const, Active),
@@ -49,6 +49,28 @@ end
 hypot_dx(x, y) = autodiff(Reverse, hypot, Active(x), Active(y))[1][1]
 hypot_dy(x, y) = autodiff(Reverse, hypot, Active(x), Active(y))[1][2]
 hypot_forward_y(x, y) = autodiff(Forward, hypot, Const(x), Duplicated(y, one(y)))[1]
+
+hypot_guard(x) = 0.1 <= 0.35hypot(x + 2, 3) ? x^2 : x
+hypot_guard_reverse(x) = autodiff(Reverse, hypot_guard, Active(x))[1][1]
+hypot_branch(x, xs...) = hypot(x, xs...) > 1 ? x^2 : x
+function hypot_branch_store!(out, x, xs...)
+    out[] = hypot_branch(x, xs...)
+    return nothing
+end
+
+@testset "hypot in inactive branch predicates" begin
+    @test autodiff(ReverseWithPrimal, hypot_guard, Active(2.0)) == ((4.0,), 4.0)
+    @test autodiff(Forward, hypot_guard_reverse, Duplicated(2.0, 1.0))[1] == 2.0
+    for T in (Float32, Float64), n in 1:2, x in (zero(T), T(0.25), T(2))
+        args = ntuple(Returns(T(0.25)), n)
+        expected = x > 1 ? 2x : one(x)
+        @test autodiff(Reverse, hypot_branch, Active(x), map(Const, args)...)[1] == (expected, ntuple(Returns(nothing), n)...)
+        out = BatchDuplicated(Ref(zero(T)), (Ref(one(T)), Ref(T(-2))))
+        derivatives = autodiff(Reverse, hypot_branch_store!, out, Active(x), map(Const, args)...)[1]
+        @test out.val[] == hypot_branch(x, args...)
+        @test derivatives == (nothing, (expected, -2expected), ntuple(Returns(nothing), n)...)
+    end
+end
 
 @testset "hypot analytic derivatives" begin
     @testset "scales and signs" begin

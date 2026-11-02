@@ -58,9 +58,9 @@ function EnzymeRules.forward(
     end
 end
 
-_hypotreverse(x::Const, ::Val{W}, dret::Const, h) where {W} = nothing
+_hypotreverse(x::Const, ::Val{W}, ::Type{<:Const}, h) where {W} = nothing
 _hypotreverse(x::Const, ::Val{W}, dret, h) where {W} = nothing
-function _hypotreverse(x, w::Val{W}, dret::Const, h) where {W}
+function _hypotreverse(x, w::Val{W}, ::Type{<:Const}, h) where {W}
     if W == 1
         return zero(x.val)
     else
