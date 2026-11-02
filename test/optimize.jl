@@ -314,6 +314,9 @@ function quadratic_form(x, A)
     return s
 end
 
+# Keep the opt-in derivative separate from the default-arithmetic cache entry.
+quadratic_form_fast(x, A) = @inline quadratic_form(x, A)
+
 @testset "Runtime checks of a reverse loop nest stay in the inner loop" begin
     hoist = Enzyme.Compiler.hoist_runtime_checks_ptr()
     hoist_default = hoist == C_NULL ? nothing : unsafe_load(hoist)
@@ -325,20 +328,32 @@ end
     autodiff(Reverse, quadratic_form, Active, Duplicated(x, dx), Const(A))
     @test dx ≈ (A + A') * x
 
-    # The reverse pass walks the outer loop backwards. Hoisting the alias checks
-    # of the vectorized inner loop into it (LLVM 18 and later) adds a stride
-    # check that always fails, so the vectorized loop would never run.
-    ir = sprint() do io
-        Enzyme.Compiler.enzyme_code_llvm(io, quadratic_form, Active, Tuple{Duplicated{Vector{Float64}}, Const{Matrix{Float64}}})
+    fast_math_default = Enzyme.API.EnzymeGetCLBool(cglobal((:EnzymeFastMath, Enzyme.API.libEnzyme))) != 0
+    try
+        # Vectorizing this reduction requires reassociation. Exercise that
+        # optimization with explicit fast math, retaining the default check above.
+        Enzyme.API.fast_math!(true)
+        fill!(dx, 0)
+        autodiff(Reverse, quadratic_form_fast, Active, Duplicated(x, dx), Const(A))
+        @test dx ≈ (A + A') * x
+
+        # The reverse pass walks the outer loop backwards. Hoisting the alias checks
+        # of the vectorized inner loop into it (LLVM 18 and later) adds a stride
+        # check that always fails, so the vectorized loop would never run.
+        ir = sprint() do io
+            Enzyme.Compiler.enzyme_code_llvm(io, quadratic_form_fast, Active, Tuple{Duplicated{Vector{Float64}}, Const{Matrix{Float64}}})
+        end
+        # Value names are kept (the reverse blocks are named `invert...`), so the
+        # absence of LLVM's `stride.check` below is meaningful.
+        @test occursin("invert", ir)
+        # The inner loop is vectorized at all. Without this the test would also
+        # pass if the reverse loop were never vectorized, as it was before the
+        # post-AD pipeline unrolled after vectorizing.
+        @test occursin("vector.body", ir)
+        @test !occursin("stride.check", ir)
+    finally
+        Enzyme.API.fast_math!(fast_math_default)
     end
-    # Value names are kept (the reverse blocks are named `invert...`), so the
-    # absence of LLVM's `stride.check` below is meaningful.
-    @test occursin("invert", ir)
-    # The inner loop is vectorized at all. Without this the test would also
-    # pass if the reverse loop were never vectorized, as it was before the
-    # post-AD pipeline unrolled after vectorizing.
-    @test occursin("vector.body", ir)
-    @test !occursin("stride.check", ir)
 
     # Julia's own code keeps LLVM's setting.
     if hoist != C_NULL
