@@ -20,7 +20,7 @@ function checked_tuple_field_typeof(@nospecialize(cond::LLVM.Value), enzyme_ctx:
     sf isa LLVM.Function || return nothing
     name(sf) in ("jl_get_nth_field_checked", "ijl_get_nth_field_checked") || return nothing
     legal, tuplety, _ = abs_typeof(first(arg_operands_view(source)), enzyme_ctx)
-    legal && tuplety <: Tuple && isconcretetype(tuplety) || return nothing
+    legal && tuplety <: Union{Tuple, NamedTuple} && isconcretetype(tuplety) || return nothing
     return source
 end
 
