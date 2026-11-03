@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reload the data pointer of an array when a reverse pass cannot keep it,
+  keeping the array itself (dogfood libEnzyme build `8fab1a01`). On Julia 1.10
+  the choice of what to keep could land on that pointer and fail to compile
+  with `Illegal cached pointer`, once the value read through it no longer had
+  to be kept. Build `1c92729e` made this reachable in compiled model kernels.
 - Compute Forward-mode derivatives of a division as `(dx - (dy / y) * x) / y`
   (dogfood libEnzyme build `2b1f1cfe`). The previous rule divided by `y * y`,
   which underflows for divisors below about 1e-154 and overflows above about
