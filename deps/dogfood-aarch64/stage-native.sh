@@ -30,7 +30,14 @@ printf 'source_commit=%s\nrecipe_commit=%s\nresolver_commit=%s\n' \
 (cd "$stage" && shasum -a 256 source.tar resolver.jl > SHA256SUMS)
 
 # The payload contains only named repository sources and the emitted program.
-# The Mac returns build/provenance/canary logs, never application data.
+# The Mac returns build/provenance/canary logs, never application data. Each
+# attempt gets its own run directory, and the remote exit is printed explicitly.
 tar -cf - -C "$stage" source.tar resolver.jl PROVENANCE SHA256SUMS recipe |
     ssh -o BatchMode=yes -o ConnectTimeout=15 mac \
-        'set -eu; export PATH="$HOME/homebrew/bin:$HOME/.juliaup/bin:$PATH"; run="$HOME/.local/state/kb-agents/libenzyme-dogfood-runs/'"$recipe_sha"'"; mkdir -p "$(dirname "$run")"; mkdir "$run"; tar -xf - -C "$run"; bash "$run/recipe/deps/dogfood-aarch64/run-native.sh" "$run"'
+        'set -eu; export PATH="$HOME/homebrew/bin:$HOME/.juliaup/bin:$PATH"; run="$HOME/.local/state/kb-agents/libenzyme-dogfood-runs/'"$recipe_sha"'-$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$(dirname "$run")"; mkdir "$run"; tar -xf - -C "$run"; echo "NATIVE_RUN_DIR $run"; rc=0; bash "$run/recipe/deps/dogfood-aarch64/run-native.sh" "$run" || rc=$?; echo "NATIVE_REMOTE_EXIT $rc"; exit "$rc"' 2>&1 |
+    tee "$stage/native.log"
+# Confirm from the log itself, not from a pipeline status: a run that stopped
+# early once came back as exit 0 (decision 0o7aqwh).
+grep -qx 'NATIVE_REMOTE_EXIT 0' "$stage/native.log" || { echo NATIVE_NOT_CONFIRMED; exit 1; }
+grep -q '^NATIVE_COMPLETE ' "$stage/native.log" || { echo NATIVE_NOT_CONFIRMED; exit 1; }
+echo NATIVE_CONFIRMED
