@@ -237,3 +237,60 @@ end
         end
     end
 end
+
+# Calls after the differentiated call that a model kernel makes for its other
+# fields and readouts: they write only arrays they allocate, but through calls
+# that write the arrays they are given (a matrix product filling the result
+# through gemm_wrapper! and BLAS), or by filling an array with arrays they
+# compute (collect).
+@noinline fresh_buffer_mix(x) = vec(fill(0.5, length(x), length(x)) * reshape(x, :, 1))
+
+@noinline fresh_buffer_groups(y, groups) = [y[g] for g in groups]
+
+# A second field evaluated after the first, as a kernel evaluates several.
+function second_field_loss(x, m)
+    distance = fresh_buffer_distance(x, m)
+    return distance + sum(fresh_buffer_mix(x))
+end
+
+# The same with x carried by a structured Const operand, as a kernel receives
+# its data arrays.
+function structured_field_loss(data, m)
+    distance = fresh_buffer_distance(data.x, m)
+    return distance + sum(fresh_buffer_mix(data.x))
+end
+
+# A readout that groups an earlier result before summing each group.
+function grouped_buffer_loss(x, m, groups)
+    distance = fresh_buffer_distance(x, m)
+    return distance + sum(sum, fresh_buffer_groups(exp.(x .+ m), groups); init = 0.0)
+end
+
+@testset "Calls that fill only new arrays through other calls preserve earlier reads" begin
+    for x in (Float64[], [0.4], [0.4, -0.7, 1.3], [0.4, -0.7, 1.3, 0.2, -1.1])
+        m = 0.2
+        d = 2sum(m .- x)
+        @test autodiff(Reverse, second_field_loss, Active, Const(x), Active(m))[1][2] ≈ d
+        @test autodiff(Reverse, structured_field_loss, Active, Const((; x)), Active(m))[1][2] ≈ d
+        groups = [collect(i:2:length(x)) for i in 1:min(2, length(x))]
+        grouped = sum(exp(x[i] + m) for g in groups for i in g; init = 0.0)
+        @test autodiff(Reverse, grouped_buffer_loss, Active, Const(x), Active(m), Const(groups))[1][2] ≈
+            d + grouped
+    end
+
+    argtypes = Tuple{Const{Vector{Float64}}, Active{Float64}}
+    structured = Tuple{Const{@NamedTuple{x::Vector{Float64}}}, Active{Float64}}
+    grouped = Tuple{Const{Vector{Float64}}, Active{Float64}, Const{Vector{Vector{Int}}}}
+    for ir in (
+            fresh_buffer_ir(second_field_loss, argtypes),
+            fresh_buffer_ir(structured_field_loss, structured),
+            fresh_buffer_ir(grouped_buffer_loss, grouped),
+        )
+        if VERSION < v"1.11-"
+            @test occursin(tape_free_distance, ir)
+        else
+            # Fresh Memory merged with the shared empty singleton (above).
+            @test_broken occursin(tape_free_distance, ir)
+        end
+    end
+end
