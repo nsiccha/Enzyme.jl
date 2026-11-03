@@ -20,6 +20,15 @@
   ReactiveKernels/BRM model kernel this cuts the reverse storage of a
   multi-channel field consumed that way from 113-1,003 to 7-29 bytes per
   row-feature on Julia 1.10.
+- Keep it across a whole model kernel: a call's inputs no longer count as
+  overwritten by later stores into the kernel's own stack slots, by later
+  calls that fill only arrays they allocate through calls that write the
+  arrays they are given (a matrix product through `gemm_wrapper!` and BLAS,
+  `collect` of arrays it computes, `push!` onto a vector it allocates), by
+  mutually recursive calls that write nothing existing, or by
+  `julia.write_barrier`. A kernel evaluating two or three such fields, or
+  grouping one field's result with `collect`, keeps about 5-8 instead of
+  48-88 bytes per row-feature on Julia 1.10.
 - Default dogfood derivative arithmetic to strict floating-point semantics.
   This prevents reassociation from underflowing representable gradients such
   as `exp(log(t * 1e-190))`. Explicit `Enzyme.API.fast_math!(true)` remains
