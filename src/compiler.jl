@@ -42,6 +42,7 @@ import Enzyme:
 
 using Enzyme
 using ScopedValues: @with
+import ScopedValues
 
 import EnzymeCore
 import EnzymeCore: EnzymeRules, ABI, FFIABI, DefaultABI
@@ -6493,7 +6494,50 @@ function link_split_existing!(mod::LLVM.Module, newmod::LLVM.Module)
     return nothing
 end
 
+"""
+    logger_in_world()
+
+Whether the task's logger has methods in the world the calling code runs in.
+
+On Julia 1.10, ScopedValues.jl keeps scoped values in the task's logger, so binding
+[`ENZYME_CONTEXT`](@ref) asks that logger for its level. A compilation inside a generated
+function runs in the world the generated method was defined in: `thunk` compiles there when
+Enzyme differentiates code that itself calls `autodiff`. A logger type whose methods were
+defined later, such as Test's `TestLogger` when Test is loaded after Enzyme, has no methods
+in that world. The `MethodError` failed the generator, Julia inferred the call to `thunk` as
+`Any`, and the inner derivative was compiled at run time, as a call the outer derivative
+cannot differentiate (`No derivative available for indirect call through an inactive
+function pointer`).
+"""
+function logger_in_world()
+    logger = ScopedValues.current_logger()
+    return hasmethod(
+        Base.CoreLogging.min_enabled_level, Tuple{typeof(logger)};
+        world = GPUCompiler.tls_world_age(),
+    )
+end
+
+"""
+    CompileUnhooked(output, job)
+
+`GPUCompiler.compile_unhooked(output, job)` as a function of no arguments, to run under
+another logger with `ScopedValues.with_logger`.
+"""
+struct CompileUnhooked <: Function
+    output::Symbol
+    job::CompilerJob
+end
+
+(c::CompileUnhooked)() = GPUCompiler.compile_unhooked(c.output, c.job)
+
 function GPUCompiler.compile_unhooked(output::Symbol, job::CompilerJob{<:EnzymeTarget})
+    if !logger_in_world()
+        # Compile under a logger of Base, at the task logger's level and with the scoped
+        # values bound around this call, as `@safe_warn` and friends log from generators.
+        level = Base.CoreLogging.current_logstate().min_enabled_level
+        logger = Base.CoreLogging.SimpleLogger(Core.stderr, level)
+        return ScopedValues.with_logger(CompileUnhooked(output, job), logger)
+    end
     # Every compilation runs under its own context; a nested compilation gets
     # its own and hands the outer one back when it returns.
     mod, meta = @with ENZYME_CONTEXT => EnzymeContext(job.world) begin
