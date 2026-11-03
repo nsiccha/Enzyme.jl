@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-backend_sha=1c92729e08a0a8ba05a6f6e0843440467c24981a
+# The libEnzyme commit to build: the `commit` of the dogfood declaration (deps/dogfood_libenzyme.toml).
+backend_sha=${KB_DOGFOOD_BACKEND:?set KB_DOGFOOD_BACKEND to the declared libEnzyme commit}
+[[ "$backend_sha" =~ ^[0-9a-f]{40}$ ]]
 build_state=${KB_JOB_STATE:-$HOME/.local/state/kb-agents/libenzyme-dogfood-build}/enzyme-aarch64
 install_root=${KB_LIBENZYME_BUILD_DEST:-$build_state/install}
 evidence_dir=${KB_JOB_WORKSPACE:-$PWD}/verification/enzyme-aarch64

@@ -4,8 +4,11 @@ set -euo pipefail
 test "$#" -eq 1
 run=$1
 recipe="$run/recipe/deps/dogfood-aarch64"
-source_sha=a5b5ce88390b7d978508439f2074f50818a99a59
-backend_sha=1c92729e08a0a8ba05a6f6e0843440467c24981a
+# The dogfood source and its declared backend come from the staged provenance, checked below.
+source_sha=$(sed -n 's/^source_commit=//p' "$run/PROVENANCE")
+backend_sha=$(sed -n 's/^backend_commit=//p' "$run/PROVENANCE")
+[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$backend_sha" =~ ^[0-9a-f]{40}$ ]]
 # Kitware's official CMake 3.28.3 macOS build (the Mac VM's version), pinned by its published SHA-256.
 cmake_url=https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-macos-universal.tar.gz
 cmake_sha256=d9e2c22fec920a4d1f6b0d0683c035d799475c179c91e41e1a7fbfab610a0305
@@ -92,6 +95,8 @@ cat "$run/PROVENANCE"
 test "$(git get-tar-commit-id <"$run/source.tar")" = "$source_sha"
 mkdir "$run/source"
 tar -xf "$run/source.tar" -C "$run/source"
+grep -qx "commit = \"$backend_sha\"" "$run/source/deps/dogfood_libenzyme.toml"
+export KB_DOGFOOD_BACKEND="$backend_sha" ENZYME_EXPECT_BACKEND="$backend_sha"
 export KB_JOB_STATE="$run/build-state" KB_JOB_WORKSPACE="$run"
 export KB_JOB_CPU_SHARE=4
 export KB_LIBENZYME_BUILD_DEST="$HOME/.local/state/kb-agents/libenzyme-dogfood"

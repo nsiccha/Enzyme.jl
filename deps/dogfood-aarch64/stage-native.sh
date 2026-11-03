@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Run on the desktop via a reviewed command-on-GO. No build runs here.
 set -euo pipefail
-test "$#" -eq 2
+test "$#" -eq 3
 repo=$1
 recipe_sha=$2
-source_sha=a5b5ce88390b7d978508439f2074f50818a99a59
+# The dogfood commit whose declared libEnzyme build is built and checked.
+source_sha=$3
 resolver_repo=/home/niko/github/nsiccha/Claude
 resolver_sha=9154fd455cb7391bdfebb3a8af3f34022774e0b1
 [[ "$recipe_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+backend_sha=$(git -C "$repo" show "$source_sha:deps/dogfood_libenzyme.toml" | sed -n 's/^commit = "\([0-9a-f]\{40\}\)"$/\1/p')
+[[ "$backend_sha" =~ ^[0-9a-f]{40}$ ]]
 
 # Check the control link before staging anything. A refused connection needs
 # the user to restore maclink; never retry it in a loop.
@@ -25,9 +29,9 @@ GITHUB_DIR=/unused LOCAL_PKG_ORDER='' bash -c \
     'set -euo pipefail; source "$1"; dogfood_libenzyme_program' \
     _ "$stage/lib-resolve.sh" > "$stage/resolver.jl"
 test -s "$stage/resolver.jl"
-printf 'source_commit=%s\nrecipe_commit=%s\nresolver_commit=%s\n' \
-    "$source_sha" "$recipe_sha" "$resolver_sha" > "$stage/PROVENANCE"
-(cd "$stage" && shasum -a 256 source.tar resolver.jl > SHA256SUMS)
+printf 'source_commit=%s\nbackend_commit=%s\nrecipe_commit=%s\nresolver_commit=%s\n' \
+    "$source_sha" "$backend_sha" "$recipe_sha" "$resolver_sha" > "$stage/PROVENANCE"
+(cd "$stage" && shasum -a 256 source.tar resolver.jl PROVENANCE > SHA256SUMS)
 
 # The payload contains only named repository sources and the emitted program.
 # The Mac returns build/provenance/canary logs, never application data. Each

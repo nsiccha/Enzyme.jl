@@ -2,7 +2,8 @@
 using Pkg, TOML
 length(ARGS) == 3 || error("Expected ENV_DIR ENZYME_SOURCE RESOLVER_PROGRAM")
 env_dir, enzyme_dir, resolver = abspath.(ARGS)
-expected = "1c92729e08a0a8ba05a6f6e0843440467c24981a"
+expected = ENV["ENZYME_EXPECT_BACKEND"]
+occursin(r"^[0-9a-f]{40}$", expected) || error("ENZYME_EXPECT_BACKEND must be a 40-hex commit")
 TOML.parsefile(joinpath(enzyme_dir, "deps", "dogfood_libenzyme.toml"))["commit"] == expected || error("Unexpected backend declaration")
 isfile(resolver) || error("Missing maintained resolver: $resolver")
 Pkg.activate(env_dir)

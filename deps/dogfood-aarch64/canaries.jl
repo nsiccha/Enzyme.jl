@@ -1,6 +1,6 @@
 using Enzyme, LinearAlgebra, SHA, TOML, Test, Libdl
 
-const EXPECTED_BACKEND = "1c92729e08a0a8ba05a6f6e0843440467c24981a"
+const EXPECTED_BACKEND = ENV["ENZYME_EXPECT_BACKEND"]
 const jll = Enzyme.Compiler.Enzyme_jll
 
 function summed_running_max(x)
