@@ -929,8 +929,8 @@ end
     (slot_empty(plan.op) || slot_empty(plan.op2)) && return 0.0
     return overlay_squares(ConstFieldOverlay(plan.base, u, plan.slots), plan.idx)
 end
-# Each parameter of one comparison receives both views, as RKPPL's partition plan
-# compares two inline views of its `Const` plan with `==` beside its overlay read.
+# Each parameter of one comparison receives both views, as a partition plan does
+# when it compares two inline views of its `Const` plan with `==` beside its overlay read.
 @noinline function (::SlotCall{:overlay_swapped})(u, contexts::Vararg{Any, N}) where {N}
     plan = getfield(contexts, 2)
     (slot_reads_rows(plan.op, plan.op2) || slot_reads_rows(plan.op2, plan.op)) && return 0.0

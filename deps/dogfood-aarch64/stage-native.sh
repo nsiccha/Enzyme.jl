@@ -6,10 +6,12 @@ repo=$1
 recipe_sha=$2
 # The dogfood commit whose declared libEnzyme build is built and checked.
 source_sha=$3
-resolver_repo=/home/niko/github/nsiccha/Claude
-resolver_sha=9154fd455cb7391bdfebb3a8af3f34022774e0b1
+# The KB checkout and exact commit whose lib-resolve.sh emits the resolver program.
+resolver_repo=${KB_RESOLVER_REPO:?set KB_RESOLVER_REPO to the checkout holding lib-resolve.sh}
+resolver_sha=${KB_RESOLVER_SHA:?set KB_RESOLVER_SHA to its exact commit}
 [[ "$recipe_sha" =~ ^[0-9a-f]{40}$ ]]
 [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+[[ "$resolver_sha" =~ ^[0-9a-f]{40}$ ]]
 backend_sha=$(git -C "$repo" show "$source_sha:deps/dogfood_libenzyme.toml" | sed -n 's/^commit = "\([0-9a-f]\{40\}\)"$/\1/p')
 [[ "$backend_sha" =~ ^[0-9a-f]{40}$ ]]
 

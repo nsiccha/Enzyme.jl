@@ -222,7 +222,7 @@ struct ROWriteFloatRef{M}
 end
 (c::ROWriteFloatRef)(x) = (ro_ref_set!(c.r, x); ro_ref_set!(Ref(0.0), x); c.r[] * sum(c.data))
 
-# The shape of an ODL likelihood: `logsumexp(terms) - logsumexp(log_weights)`,
+# The shape of a mixture likelihood: `logsumexp(terms) - logsumexp(log_weights)`,
 # with `terms` a copy of the held weights. The `logsumexp` is not inlined and is
 # called with the copy and with the held weights.
 @noinline function ro_lse(v)
@@ -540,7 +540,7 @@ end
 # it, or passing it to a function that writes it, does not write the data the
 # callable holds. Before Julia 1.11 `copy` of an `Array` is `jl_array_copy`, whose
 # result the check used to follow as data of the argument, so each store into
-# the copy was reported (an ODL likelihood that adds terms to a copy of held log
+# the copy was reported (a likelihood that adds terms to a copy of held log
 # weights). Julia 1.11+ copies such an array with a `memmove`, or, for a union
 # such as `Union{Missing, Float64}`, with `jl_genericmemory_copyto`, which the
 # check used to report as a write. (On Julia 1.12 the derivative of

@@ -43,7 +43,7 @@ if sdk=$(xcrun --show-sdk-path 2>/dev/null); then
     export SDKROOT="$sdk"
 fi
 
-# Bruno's manifests are resolved with Julia 1.10.12, and this recipe builds for its LLVM 15.
+# The aarch64 consumers resolve with Julia 1.10.12, and this recipe builds for its LLVM 15.
 mkdir "$run/bin"
 selected=
 if command -v julia >/dev/null 2>&1; then
