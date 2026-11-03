@@ -144,3 +144,96 @@ end
         @test_broken occursin(tape_free_distance, merged)
     end
 end
+
+# Calls after the differentiated call that Julia does not inline, as a model
+# kernel makes them: they read an earlier result and write only arrays they
+# allocate, or the array an earlier such call returned.
+@noinline fresh_buffer_doses(field, level) = exp.(field .+ permutedims(level))
+
+@noinline function fresh_buffer_readout(field, channel)
+    out = similar(field, size(field, 1))
+    for i in eachindex(out)
+        out[i] = field[i, channel[i]]
+    end
+    return out
+end
+
+@noinline function fresh_buffer_double!(y)
+    for i in eachindex(y)
+        y[i] *= 2
+    end
+    return y
+end
+
+function fresh_buffer_channels(x, m)
+    field = zeros(length(x), 2)
+    for i in eachindex(x)
+        field[i, 1] = x[i] + m
+        field[i, 2] = x[i] - m
+    end
+    return field
+end
+
+# A broadcast that allocates its own output (on Julia 1.10, on either branch).
+function doses_buffer_loss(x, m)
+    distance = fresh_buffer_distance(x, m)
+    return distance + sum(fresh_buffer_doses(fresh_buffer_channels(x, m), [0.1, -0.2]))
+end
+
+# A readout of chosen columns into an array from `similar`.
+function readout_buffer_loss(x, m)
+    distance = fresh_buffer_distance(x, m)
+    channel = [isodd(i) ? 1 : 2 for i in eachindex(x)]
+    return distance + sum(fresh_buffer_readout(fresh_buffer_channels(x, m), channel))
+end
+
+# A reduction over dims: on Julia 1.10 reducedim_initarray splats tuples
+# through Core._apply_iterate, and _mapreducedim! fills the array it returned.
+function rowsum_buffer_loss(x, m)
+    distance = fresh_buffer_distance(x, m)
+    return distance + sum(abs2, vec(sum(fresh_buffer_channels(x, m); dims = 2)))
+end
+
+# A later call that writes the operand itself.
+function doubled_operand_loss(x, m)
+    distance = fresh_buffer_distance(x, m)
+    return distance + sum(fresh_buffer_double!(x))
+end
+
+# A later call that writes an array allocated before the call.
+function doubled_prior_loss(x, m)
+    prior = x .+ m
+    distance = fresh_buffer_distance(x, m)
+    return distance + sum(fresh_buffer_double!(prior))
+end
+
+@testset "Calls that write only new arrays after the call preserve earlier reads" begin
+    for x in (Float64[], [0.4], [0.4, -0.7, 1.3])
+        m = 0.2
+        d = 2sum(m .- x)
+        doses = sum(exp.(x .+ m .+ 0.1) .- exp.(x .- m .- 0.2))
+        readout = sum(isodd(i) ? 1.0 : -1.0 for i in eachindex(x); init = 0.0)
+        @test autodiff(Reverse, doses_buffer_loss, Active, Const(x), Active(m))[1][2] ≈ d + doses
+        @test autodiff(Reverse, readout_buffer_loss, Active, Const(x), Active(m))[1][2] ≈ d + readout
+        # (x + m) + (x - m) does not depend on m.
+        @test autodiff(Reverse, rowsum_buffer_loss, Active, Const(x), Active(m))[1][2] ≈ d
+        @test autodiff(Reverse, doubled_prior_loss, Active, Const(x), Active(m))[1][2] ≈ d + 2length(x)
+        # A genuine overwrite must retain the old values for the reverse pass.
+        overwritten = copy(x)
+        @test autodiff(Reverse, doubled_operand_loss, Active, Const(overwritten), Active(m))[1][2] ≈ d
+        @test overwritten == 2 .* x
+    end
+
+    argtypes = Tuple{Const{Vector{Float64}}, Active{Float64}}
+    @test !occursin(tape_free_distance, fresh_buffer_ir(doubled_operand_loss, argtypes))
+    @test !occursin(tape_free_distance, fresh_buffer_ir(doubled_prior_loss, argtypes))
+    for loss in (doses_buffer_loss, readout_buffer_loss, rowsum_buffer_loss)
+        ir = fresh_buffer_ir(loss, argtypes)
+        if VERSION < v"1.11-"
+            @test occursin(tape_free_distance, ir)
+        else
+            # Fresh Memory merged with the shared empty singleton (above).
+            @test_broken occursin(tape_free_distance, ir)
+        end
+    end
+end
