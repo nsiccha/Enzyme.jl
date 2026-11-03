@@ -58,3 +58,27 @@ late_derivative(x) = autodiff(Reverse, late_h, Active, Active(x))[1][1]
 
     @test isempty(logger.records)
 end
+
+# As the global logger, such a type broke every derivative on Julia 1.10, first-order ones
+# included: compiling or inferring inside a generated function asked it for its level.
+global_f(x) = x^3 + sin(x)
+global_g(x) = sum(abs2, x) * x[1] + exp(x[2])
+function global_gradient(x)
+    dx = zero(x)
+    autodiff(Reverse, global_g, Active, Duplicated(x, dx))
+    return dx
+end
+
+@testset "Derivatives first compiled under a global logger defined after Enzyme" begin
+    logger = LateLogger(Any[])
+    old = global_logger(logger)
+    try
+        @test autodiff(Reverse, global_f, Active, Active(0.7))[1][1] ≈ 3 * 0.7^2 + cos(0.7)
+        @test autodiff(Forward, global_f, Duplicated(0.7, 1.0))[1] ≈ 3 * 0.7^2 + cos(0.7)
+        @test autodiff(Forward, global_gradient, Duplicated([1.0, 2.0, 3.0], [1.0, 0.0, 0.0]))[1] ==
+            [6.0, 4.0, 6.0]
+    finally
+        global_logger(old)
+    end
+    @test isempty(logger.records)
+end
