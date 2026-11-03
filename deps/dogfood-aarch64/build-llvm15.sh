@@ -49,7 +49,6 @@ test "$(git -C "$src" rev-parse HEAD)" = "$backend_sha"
 test -z "$(git -C "$src" status --porcelain --untracked-files=no)"
 build_dir="$build_state/build-$backend_sha-llvm15"
 out="$install_root/$backend_sha/llvm15"
-mkdir -p "$out"
 # Bound compiler fan-out to the job's CPU share and 5 GiB per compiler within 20 GiB.
 jobs=${KB_JOB_CPU_SHARE:-4}
 if test "$jobs" -gt 4; then jobs=4; fi
@@ -70,6 +69,9 @@ if test "$(uname -s)" = Linux; then
         stripped=debug
     fi
 fi
+# Create the install directory only after a successful build: the native runner
+# refuses an existing one, so a failed compile must not leave it behind.
+mkdir -p "$out"
 cp "$built_enzyme" "$built_bcload" "$out/"
 (cd "$out" && sum256 "libEnzyme-15.$ext" "libEnzymeBCLoad-15.$ext" > SHA256SUMS && sum256 -c SHA256SUMS)
 {
