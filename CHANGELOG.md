@@ -38,6 +38,12 @@
   This prevents reassociation from underflowing representable gradients such
   as `exp(log(t * 1e-190))`. Explicit `Enzyme.API.fast_math!(true)` remains
   available before derivative compilation.
+- Compile and log from generated functions without calling a logger that has
+  no methods in the running world, such as Test's `TestLogger` when Test loads
+  after Enzyme. On Julia 1.10 such a task logger made nested derivatives fail
+  for the rest of the process, and on Julia 1.10, 1.12 and 1.13 such a global
+  logger broke derivatives. Messages Enzyme logs while compiling are now written to
+  `Core.stderr` by `SimpleLogger`, without color.
 
 ## 0.13.217
 
