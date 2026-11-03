@@ -226,17 +226,17 @@ end
         (rg, rh, rt) = erfcx_tail_reference(x)
         @test isapprox(g(x), rg; rtol = 1.0e-13)
         @test isapprox(gf(x), rg; rtol = 1.0e-13)
-        x <= 350 && @test isapprox(h(x), rh; atol = 1.0e-13)
-        x <= 170 && @test isapprox(t(x), rt; atol = 1.0e-13)
+        # The Hessian and the third derivative divide by the tiny erfcx(exp(x)) that `log`
+        # divides by. They hold at every point because libEnzyme's Forward rule for a
+        # division is (dx - (dy / y) * x) / y; with (dx y - dy x) / (y y) the Hessian lost
+        # its digits from x = 354 (-Inf at 400) and the third derivative was not finite
+        # from x = 237.
+        @test isapprox(h(x), rh; atol = 1.0e-13)
+        @test isapprox(t(x), rt; atol = 1.0e-13)
     end
     @test isapprox(h(350.0), erfcx_tail_reference(350.0)[2]; atol = 1.0e-13)
     @test isapprox(t(170.0), erfcx_tail_reference(170.0)[3]; atol = 1.0e-13)
-    # Further out, libEnzyme's Forward rule for a division, (dx y - dy x) / (y y), squares
-    # the tiny erfcx(exp(x)) that `log` divides by: the Hessian loses its digits from
-    # x = 354 (-Inf at 400) and the third derivative from about x = 180 (not finite from
-    # 237). log(exp(-x) / sqrt(pi)), without any erfcx, fails the same way.
-    @test_broken isfinite(h(432.12332349251784))
-    @test_broken isfinite(t(300.0))
+    @test isapprox(t(300.0), erfcx_tail_reference(300.0)[3]; atol = 1.0e-13)
     # The same function with no tiny value in it, erfcx(u) u -> 1/sqrt(pi), still multiplies
     # every order of erfcx by cotangents of size u: all three hold up to x = 709.
     rescaled(x) = (u = exp(x); log(SpecialFunctions.erfcx(u) * u) - x)
