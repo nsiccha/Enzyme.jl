@@ -53,7 +53,9 @@ out="$install_root/$backend_sha/llvm15"
 jobs=${KB_JOB_CPU_SHARE:-4}
 if test "$jobs" -gt 4; then jobs=4; fi
 printf 'CONFIGURE jobs=%s source=%s llvm=%s\n' "$jobs" "$src" "$llvm_root"
-cmake -S "$src/enzyme" -B "$build_dir" -DLLVM_DIR="$llvm_root/lib/cmake/llvm" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENZYME_ENABLE_BENCHMARKS=OFF -DENZYME_CLANG=OFF -DENZYME_EXTERNAL_SHARED_LIB=ON
+# EnzymeBCLoad-15 exists only when CMake finds the artifact's Clang (ENZYME_CLANG, the
+# default and gordito's lib15 setting); set it explicitly so a stale cache cannot turn it off.
+cmake -S "$src/enzyme" -B "$build_dir" -DLLVM_DIR="$llvm_root/lib/cmake/llvm" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENZYME_ENABLE_BENCHMARKS=OFF -DENZYME_CLANG=ON -DENZYME_EXTERNAL_SHARED_LIB=ON
 cmake --build "$build_dir" --parallel "$jobs" --target Enzyme-15 EnzymeBCLoad-15
 ext=$(julia --startup-file=no --project=@stdlib -e 'using Libdl; print(Libdl.dlext)')
 built_enzyme="$build_dir/Enzyme/libEnzyme-15.$ext"
