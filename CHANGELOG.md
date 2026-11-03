@@ -10,6 +10,16 @@
   branch. Writes into objects allocated after the call, writes through a
   header merged from such allocations, and calls that write only memory they
   create no longer mark the call's inputs as overwritten.
+- Keep it through later calls that write only arrays created after the call:
+  a function that writes the elements of an array it allocates (a broadcast
+  or a readout into `similar` that Julia does not inline), a function that
+  returns such an array, and a function that writes an argument which is
+  such an array, as `sum(A; dims)` does through `reducedim_initarray` and
+  `_mapreducedim!`. Splats of tuples or arrays into `tuple` through
+  `Core._apply_iterate` count as writing only their result. Through a
+  ReactiveKernels/BRM model kernel this cuts the reverse storage of a
+  multi-channel field consumed that way from 113-1,003 to 7-29 bytes per
+  row-feature on Julia 1.10.
 - Default dogfood derivative arithmetic to strict floating-point semantics.
   This prevents reassociation from underflowing representable gradients such
   as `exp(log(t * 1e-190))`. Explicit `Enzyme.API.fast_math!(true)` remains
