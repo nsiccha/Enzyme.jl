@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix "Illegal cached pointer" on the first Reverse gradient of a function that
+  reads an array element in a loop and later overwrites where it read the array
+  and the index from (dogfood libEnzyme build `fce75191`). The element can be
+  recomputed, and the array and the index are saved instead of its address.
 - Compute Forward-mode derivatives of a division as `(dx - (dy / y) * x) / y`
   (dogfood libEnzyme build `2b1f1cfe`). The previous rule divided by `y * y`,
   which underflows for divisors below about 1e-154 and overflows above about
