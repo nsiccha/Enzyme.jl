@@ -241,9 +241,10 @@ end
 # Calls after the differentiated call that a model kernel makes for its other
 # fields and readouts: they write only arrays they allocate, but through calls
 # that write the arrays they are given (a matrix product filling the result
-# through gemm_wrapper! and BLAS), or by filling an array with arrays they
-# compute (collect).
-@noinline fresh_buffer_mix(x) = vec(fill(0.5, length(x), length(x)) * reshape(x, :, 1))
+# through gemv! and BLAS), or by filling an array with arrays they compute
+# (collect). The product takes x itself: on Julia 1.12 with bounds checks,
+# `reshape` of a Const array needs runtime activity whatever follows it.
+@noinline fresh_buffer_mix(x) = fill(0.5, length(x), length(x)) * x
 
 @noinline fresh_buffer_groups(y, groups) = [y[g] for g in groups]
 
