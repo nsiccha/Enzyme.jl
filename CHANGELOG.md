@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Compute Forward-mode derivatives of a division as `(dx - (dy / y) * x) / y`
+  (dogfood libEnzyme build `2b1f1cfe`). The previous rule divided by `y * y`,
+  which underflows for divisors below about 1e-154 and overflows above about
+  1e154, so nested derivatives through `log` of a tiny value, or through any
+  division by one, came out `Inf` or `NaN` although they are representable.
 - Reduce redundant reverse caches for fresh array buffers on Julia 1.10.
   Merged empty-Memory paths on later Julia versions remain conservative.
 - Keep that reduction through a ReactiveKernels/BRM model kernel, which
