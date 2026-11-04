@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Support literal constant objects captured beside active data, including a
+  dictionary inside a callback that reads active views. Static differentiation
+  now gives these objects a separate zero-filled shadow when one is needed,
+  instead of raising `EnzymeRuntimeActivityError`.
 - Stop copying everything activity analysis knows into every hypothesis
   (dogfood libEnzyme build `c9796794`). Each hypothesis now shares its sets
   with the analyzer that created it, importing one walks only what it added,
