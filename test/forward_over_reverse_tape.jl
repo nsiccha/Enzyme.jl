@@ -46,8 +46,13 @@ end
     g, hv = tape_closed_form(x, v)
     @test tape_objective(x) ≈ sum(sum(abs2, max.(x .- c, 0.0))^2 for c in TAPE_SHIFTS)
     # On Julia 1.12 and later, Reverse through a filter! that drops an element puts
-    # derivatives on the wrong entries (Enzyme todo 063gmv7).
-    if VERSION >= v"1.12-"
+    # derivatives on the wrong entries (Enzyme todo 063gmv7). On Julia 1.13, compiling
+    # this Reverse pass also segfaults in LLVM's ScalarEvolution (Enzyme todo 0e58pgu),
+    # which @test_broken cannot catch.
+    if VERSION >= v"1.13-"
+        @test_skip tape_gradient(x) ≈ g
+        @test_skip only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
+    elseif VERSION >= v"1.12-"
         @test_broken tape_gradient(x) ≈ g
         @test_broken only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
     else
@@ -81,10 +86,18 @@ function stick_gradient(u)
     return du
 end
 
+function stick_difference(u, v, h)
+    return (stick_gradient(u .+ h .* v) .- stick_gradient(u .- h .* v)) ./ (2h)
+end
+
 @testset "Forward over Reverse rebuilds a tape returned through an sret" begin
     u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
     h = 1.0e-6
-    difference = (stick_gradient(u .+ h .* v) .- stick_gradient(u .- h .* v)) ./ (2h)
-    @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ difference rtol = 1.0e-7
+    # On Julia 1.13, compiling this Reverse pass segfaults too (Enzyme todo 0e58pgu).
+    if VERSION >= v"1.13-"
+        @test_skip only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ stick_difference(u, v, h) rtol = 1.0e-7
+    else
+        @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ stick_difference(u, v, h) rtol = 1.0e-7
+    end
 end
