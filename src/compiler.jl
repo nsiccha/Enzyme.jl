@@ -1917,6 +1917,47 @@ end
 is_untyped_alloca_type(T::LLVM.LLVMType) =
     T isa LLVM.IntegerType || (T isa LLVM.ArrayType && eltype(T) isa LLVM.IntegerType)
 
+function floating_point_concrete_type(T::LLVM.LLVMType)
+    kind = LLVM.API.LLVMGetTypeKind(T)
+    return kind == LLVM.API.LLVMHalfTypeKind ? API.DT_Half :
+        kind == LLVM.API.LLVMFloatTypeKind ? API.DT_Float :
+        kind == LLVM.API.LLVMDoubleTypeKind ? API.DT_Double : nothing
+end
+
+"""
+    floating_point_aggregate_type(T::LLVM.LLVMType)
+
+The concrete type of the floating-point values an array or struct `T` holds, if it
+holds nothing else and they are all of one type. Otherwise `nothing`.
+
+Julia gives an LLVM floating-point type only to a value of that Julia type, so such a
+stack slot is an `NTuple{N, Float64}` or a struct of `Float64`s and every byte of it
+is typed, whichever offsets the function happens to read. Its loads have no other
+source of a type. A runtime-indexed read types only the elements its index is known
+to take (a loop variable with an unknown trip count: only its start), and a value the
+slot only ever passes along a cycle of stores, reloads and phis is typed by nothing
+outside that cycle. libEnzyme then cannot deduce the type of a phi merging a float
+with such a reload, although the reload can only hold a float.
+"""
+function floating_point_aggregate_type(T::LLVM.LLVMType)
+    leaves = if T isa LLVM.ArrayType
+        LLVM.LLVMType[eltype(T)]
+    elseif T isa LLVM.StructType
+        LLVM.elements(T)
+    else
+        return nothing
+    end
+    concrete = nothing
+    for leaf in leaves
+        cur = floating_point_concrete_type(leaf)
+        cur === nothing && (cur = floating_point_aggregate_type(leaf))
+        cur === nothing && return nothing
+        (concrete === nothing || concrete == cur) || return nothing
+        concrete = cur
+    end
+    return concrete
+end
+
 """
     byref_alloca_type(inst::LLVM.AllocaInst, DL)
 
@@ -7459,6 +7500,14 @@ end
                 else
                     metadata(inst)["enzyme_type"] =
                         to_md(typetree_in_world(job.world, Ptr{Cvoid}, ctx, dl, seen), ctx)
+                end
+            elseif isa(inst, LLVM.AllocaInst)
+                concrete = floating_point_aggregate_type(LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(inst)))
+                if concrete !== nothing
+                    ec = TypeTree(concrete, -1, ctx)
+                    merge!(ec, TypeTree(API.DT_Pointer, ctx))
+                    only!(ec, -1)
+                    metadata(inst)["enzyme_type"] = to_md(ec, ctx)
                 end
             end
         end
