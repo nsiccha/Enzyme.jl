@@ -11,6 +11,10 @@
   verdicts and the gradients are unchanged. The alias queries that remain still
   grow quadratically with the size of the function, and so does most of the rest
   of the first gradient.
+- Support custom rules that return an input or its shadow as a cached value
+  (dogfood libEnzyme build `ef75bdc7`, upstream EnzymeAD/Enzyme#3206).
+  Reverse differentiation through a dynamic `setproperty!` whose return is used
+  now computes the gradient instead of aborting in the compiler.
 - Type a stack slot that holds only floats, such as an `NTuple{N, Float64}`
   a loop reads at a runtime index. Reverse raised `EnzymeNoTypeError`
   ("Cannot deduce type of phi") where a function merged a float with a reload
