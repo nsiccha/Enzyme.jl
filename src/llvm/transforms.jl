@@ -2894,7 +2894,21 @@ function remove_readonly_unused_calls!(fn::LLVM.Function, next::Set{String})
     return true
 end
 
-function propagate_returned!(mod::LLVM.Module)
+"""
+    needs_return_roots(fn, i)
+
+Whether parameter `i` of `fn` is the `returnRoots` array of an `sret` in the
+first parameter.
+"""
+function needs_return_roots(fn::LLVM.Function, i::Integer)
+    i == 2 || return false
+    roots = kind(StringAttribute("enzymejl_returnRoots"))
+    any(attr -> kind(attr) == roots, collect(parameter_attributes(fn, 2))) || return false
+    sretkind = kind(LLVM.TypeAttribute("sret", LLVM.Int32Type()))
+    return any(attr -> kind(attr) == sretkind, collect(parameter_attributes(fn, 1)))
+end
+
+function propagate_returned!(mod::LLVM.Module; keep_return_roots::Bool = false)
     globs = LLVM.GlobalVariable[]
     for g in globals(mod)
         if linkage(g) == LLVM.API.LLVMInternalLinkage ||
@@ -2947,6 +2961,14 @@ function propagate_returned!(mod::LLVM.Module)
                                 attr in collect(parameter_attributes(fn, i))
                         )
                         argn = i
+                    end
+
+                    # GC lowering takes the argument after an sret for its
+                    # returnRoots, so once the calling convention is fixed up the
+                    # roots stay as long as the sret does, even if nothing reads
+                    # them. Before that the fixup rebuilds any it needs.
+                    if keep_return_roots && needs_return_roots(fn, i) && !(0 in toremove)
+                        continue
                     end
 
                     # remove unused sret-like
@@ -3844,7 +3866,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
             call!(B, funcT, func, LLVM.Value[p for p in parameters(fn)])
         end
     end
-    propagate_returned!(mod)
+    propagate_returned!(mod; keep_return_roots = post_gc_fixup)
     LLVM.@dispose pb = NewPMPassBuilder() begin
         registerEnzymeAndPassPipeline!(pb)
         register!(pb, RestoreAllocaType())
@@ -3860,7 +3882,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
         end
         LLVM.run!(pb, mod)
     end
-    propagate_returned!(mod)
+    propagate_returned!(mod; keep_return_roots = post_gc_fixup)
     pre_attr!(mod, attributor)
     if attributor
         API.EnzymeDetectReadonlyOrThrow(mod)
@@ -3872,7 +3894,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
             LLVM.run!(pb, mod)
         end
     end
-    propagate_returned!(mod)
+    propagate_returned!(mod; keep_return_roots = post_gc_fixup)
     LLVM.@dispose pb = NewPMPassBuilder() begin
         registerEnzymeAndPassPipeline!(pb)
         register!(pb, EnzymeAttributorPass())
@@ -3896,7 +3918,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
     end
     API.EnzymeDetectReadonlyOrThrow(mod)
     post_attr!(mod, attributor)
-    propagate_returned!(mod)
+    propagate_returned!(mod; keep_return_roots = post_gc_fixup)
 
     for u in LLVM.uses(rwfunc)
         u = LLVM.user(u)
