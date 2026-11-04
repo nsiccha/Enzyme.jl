@@ -56,3 +56,35 @@ end
     end
     @test x == [1.61, 3.13, 2.57, 4.09]
 end
+
+# A function returning several arrays through an sret, whose derivative returns a
+# tape through an sret too. Forward over Reverse rebuilds that tape, so its constant
+# integers meet active memory. Julia's GC lowering also needs the returnRoots of such
+# an sret, even though nothing reads them.
+@noinline function stick_breaks(U)
+    z = 1.0 ./ (1.0 .+ exp.(-(U .+ permutedims(log.(4 .- (1:3))))))
+    l = log1p.(-z)
+    lr = cumsum(hcat(0.0 .* U[:, 1:1], l); dims = 2)
+    return z, l, lr
+end
+
+@noinline function stick_constrain(U)
+    z, _, lr = stick_breaks(U)
+    return exp.(lr) .* hcat(z, 1.0 .+ 0.0 .* U[:, 1:1])
+end
+
+stick_objective(u) = sum(abs2, stick_constrain(reshape(u, 2, 3)))
+
+function stick_gradient(u)
+    du = zero(u)
+    autodiff(Reverse, stick_objective, Active, Duplicated(u, du))
+    return du
+end
+
+@testset "Forward over Reverse rebuilds a tape returned through an sret" begin
+    u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
+    v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
+    h = 1.0e-6
+    difference = (stick_gradient(u .+ h .* v) .- stick_gradient(u .- h .* v)) ./ (2h)
+    @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ difference rtol = 1.0e-7
+end
