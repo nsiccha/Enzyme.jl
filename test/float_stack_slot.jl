@@ -6,8 +6,8 @@ using Enzyme, LLVM, Test
 # unknown trip count: only its start), and an element the function updates under a branch
 # is otherwise only ever stored, reloaded and merged with itself. The phi merging the
 # update, a float, with that reload then raised `EnzymeNoTypeError` ("Cannot deduce type
-# of phi"), once LLVM had a reason to keep the reload (BRM's block-level adaptive-centering
-# pass at five or more margins; snag reverse-untyped-a117a92b).
+# of phi"), once LLVM had a reason to keep the reload (BayesianRegressionModels' block-level
+# adaptive-centering pass at five or more margins).
 #
 # LLVM forwards the store to the reload in functions small enough to write down here, so
 # these functions write the IR directly and keep the reload with `volatile`.
