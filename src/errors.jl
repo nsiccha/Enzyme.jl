@@ -1336,6 +1336,136 @@ function emit_zero_shadows!(
     return nothing
 end
 
+# The indices of the `insertvalue` or `extractvalue` `inst`.
+function aggregate_indices(inst::Union{LLVM.InsertValueInst, LLVM.ExtractValueInst})::Vector{Cuint}
+    inds = LLVM.API.LLVMGetIndices(inst.ref)
+    return Cuint[unsafe_load(inds, i) for i in 1:LLVM.API.LLVMGetNumIndices(inst.ref)]
+end
+
+# Whether one of the index paths `a` and `b` starts with the other, so that the
+# members they name overlap.
+function paths_overlap(a::Vector{Cuint}, b::Vector{Cuint})::Bool
+    for i in 1:min(length(a), length(b))
+        a[i] == b[i] || return false
+    end
+    return true
+end
+
+# Where the member that `inst` inserts ends up in the value `fn` returns: its index
+# path, or `nothing` unless the aggregate only passes through `insertvalue`s to a
+# `ret` of `fn`.
+function returned_member_path(inst::LLVM.InsertValueInst)::Union{Nothing, Vector{Cuint}}
+    path = aggregate_indices(inst)
+    cur = inst
+    while true
+        next = nothing
+        for u in LLVM.uses(cur)
+            user = LLVM.user(u)
+            if isa(user, LLVM.RetInst)
+                continue
+            elseif isa(user, LLVM.InsertValueInst)
+                next === nothing || return nothing
+                if operands(user)[1] != cur
+                    path = vcat(aggregate_indices(user), path)
+                end
+                next = user
+            else
+                return nothing
+            end
+        end
+        next === nothing && return path
+        cur = next
+    end
+    return
+end
+
+# Whether `name` is the name of a reverse pass of the function `base`: libEnzyme
+# names it `diffe`, the batch width if it is above one, then the function's name,
+# and LLVM appends `.N` when that name is taken.
+function is_reverse_pass_of(name::String, base::String)::Bool
+    startswith(name, "diffe") || return false
+    rest = lstrip(isdigit, chop(name; head = 5, tail = 0))
+    return rest == base || startswith(rest, base * ".")
+end
+
+# Whether the member that `inst` inserts into the tape of an augmented forward pass
+# is never read. Only the function's reverse pass reads the members of its tape; the
+# functions in between keep the tape, or split it into its members, without looking
+# at them. libEnzyme puts values on a tape that the reverse pass it then generates
+# has no use for: the source of a `memmove` from constant data is one, since the
+# reverse pass of that `memmove` only zeroes the shadow of the destination. When the
+# outer pass of a nested derivative meets such a constant value in the otherwise
+# active tape, its shadow is never read, so any value of the right type serves.
+function tape_member_never_read(inst::LLVM.InsertValueInst)::Bool
+    fn = LLVM.parent(LLVM.parent(inst))
+    name = LLVM.name(fn)
+    if startswith(name, "preprocess_")
+        name = chop(name; head = length("preprocess_"), tail = 0)
+    end
+    startswith(name, "augmented_") || return false
+    base = chop(name; head = length("augmented_"), tail = 0)
+    # `.N` tells apart the variants of one function. Which reverse pass belongs to
+    # which is not recorded, so every variant with this tape type has to agree.
+    dot = findlast('.', base)
+    if dot !== nothing && all(isdigit, SubString(base, dot + 1))
+        base = String(SubString(base, 1, dot - 1))
+    else
+        base = String(base)
+    end
+    path = returned_member_path(inst)
+    path === nothing && return false
+    tapety = LLVM.return_type(LLVM.function_type(fn))
+    found = false
+    for f in LLVM.functions(LLVM.parent(fn))
+        is_reverse_pass_of(LLVM.name(f), base) || continue
+        for param in LLVM.parameters(f)
+            (LLVM.name(param) == "tapeArg" && value_type(param) == tapety) || continue
+            found = true
+            for u in LLVM.uses(param)
+                user = LLVM.user(u)
+                isa(user, LLVM.ExtractValueInst) || return false
+                paths_overlap(aggregate_indices(user), path) && return false
+            end
+        end
+    end
+    return found
+end
+
+# The member of `from` at the indices `path`.
+function extract_path!(
+        B::LLVM.IRBuilder,
+        @nospecialize(from::LLVM.Value),
+        path::Vector{Cuint},
+        created::Vector{LLVM.Instruction},
+    )::LLVM.Value
+    for idx in path
+        from = extract_value!(B, from, idx)
+        isa(from, LLVM.Instruction) && push!(created, from)
+    end
+    return from
+end
+
+# The shadow of the `extractvalue` `cur`: the same member of `shadow`, the shadow of
+# its aggregate, for each of the `width` batch lanes.
+function extract_member_shadow!(
+        B::LLVM.IRBuilder,
+        @nospecialize(shadow::LLVM.Value),
+        cur::LLVM.ExtractValueInst,
+        width::Integer,
+        created::Vector{LLVM.Instruction},
+    )::LLVM.Value
+    path = aggregate_indices(cur)
+    width == 1 && return extract_path!(B, shadow, path, created)
+    res = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(cur))))
+    for lane in 1:width
+        lanev = extract_value!(B, shadow, lane - 1)
+        isa(lanev, LLVM.Instruction) && push!(created, lanev)
+        res = insert_value!(B, res, extract_path!(B, lanev, path, created), lane - 1)
+        isa(res, LLVM.Instruction) && push!(created, res)
+    end
+    return res
+end
+
 # Calls that neither allocate nor run the garbage collector, besides LLVM intrinsics.
 const NONCOLLECTING_JULIA_CALLS = (
     "julia.gc_loaded", "julia.pointer_from_objref", "julia.write_barrier",
@@ -1929,10 +2059,26 @@ function julia_error(
             return make_batched(new_from_original(gutils, data2), b).ref
         end
 
+        if isa(val, LLVM.InsertValueInst) && tape_member_never_read(val)
+            return make_batched(new_from_original(gutils, data2), b).ref
+        end
+
         function make_replacement(@nospecialize(cur::LLVM.Value), prevbb::LLVM.IRBuilder)::LLVM.Value
             ncur = new_from_original(gutils, cur)
             if cur in keys(seen)
                 return seen[cur]
+            end
+
+            # A member of an active call result, such as an entry of the tape an
+            # inner derivative returns, already has the shadow the callee's own
+            # derivative put in that member of the result's shadow.
+            if mode == API.DEM_ForwardMode && isa(cur, LLVM.ExtractValueInst)
+                agg = operands(cur)[1]
+                if isa(agg, LLVM.CallInst) && !is_constant_value(gutils, agg)
+                    shadowres = extract_member_shadow!(prevbb, invert_pointer(gutils, agg, prevbb), cur, width, created)
+                    seen[cur] = shadowres
+                    return shadowres
+                end
             end
 
 		if isa(cur, LLVM.LoadInst)

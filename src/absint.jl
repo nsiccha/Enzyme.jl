@@ -567,6 +567,35 @@ const TypesNotToDisect = Set{Type}([BigFloat])
 # The Julia type of the values a load returns, set by `type_slot_field_loads!`.
 const SLOT_FIELD_TYPE = "enzymejl_slot_field_type"
 
+# The type of the Julia values that the global slots merged by the phi `phi`, or by
+# phis feeding it, hold, if every incoming value is such a slot and they agree, as for
+# a phi of `@jl_true` and `@jl_false`; otherwise `nothing`.
+function merged_global_slots_type(phi::LLVM.PHIInst, enzyme_ctx::Union{EnzymeContext, Nothing})::Union{Type, Nothing}
+    typ = nothing
+    todo = LLVM.PHIInst[phi]
+    seen = Set{LLVM.PHIInst}()
+    while !isempty(todo)
+        cur = pop!(todo)
+        cur in seen && continue
+        push!(seen, cur)
+        for (v, _) in LLVM.incoming(cur)
+            gv, _ = get_base_and_offset(v; offsetAllowed = false, inttoptr = true)
+            if isa(gv, LLVM.PHIInst)
+                push!(todo, gv)
+                continue
+            end
+            isa(gv, GlobalVariable) || return nothing
+            found = julia_value_of_slot(gv, enzyme_ctx)
+            found === nothing && (found = julia_global(LLVM.name(gv)))
+            found === nothing && return nothing
+            vtyp = Core.Typeof(something(found))
+            typ === nothing || typ == vtyp || return nothing
+            typ = vtyp
+        end
+    end
+    return typ
+end
+
 function abs_typeof(
         @nospecialize(arg::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing},
         partial::Bool = false, seenphis = Set{LLVM.PHIInst}()
@@ -601,6 +630,19 @@ function abs_typeof(
     if isa(arg, ConstantExpr)
         if opcode(arg) == LLVM.API.LLVMAddrSpaceCast || opcode(arg) == LLVM.API.LLVMBitCast
             return abs_typeof(operands(arg)[1], enzyme_ctx, partial, seenphis)
+        end
+        # A Julia object's address written into the code as a plain `{}*`, as the
+        # incoming values of a phi of `true` and `false` are before their merge is
+        # cast to a tracked pointer. An opaque `ptr` can be any address, not only an
+        # object's, and Julia 1.12 names these objects with globals anyway.
+        ty = value_type(arg)
+        if opcode(arg) == LLVM.API.LLVMIntToPtr && isa(ty, LLVM.PointerType) && !LLVM.is_opaque(ty) &&
+                ty == LLVM.PointerType(LLVM.StructType(LLVMType[]))
+            addr = operands(arg)[1]
+            if isa(addr, LLVM.ConstantInt)
+                val = Base.unsafe_pointer_to_objref(reinterpret(Ptr{Cvoid}, convert(UInt, addr)))
+                return (true, Core.Typeof(val), GPUCompiler.BITS_REF)
+            end
         end
     end
     if isa(arg, LLVM.BitCastInst) || isa(arg, LLVM.AddrSpaceCastInst) || isa(arg, LLVM.IntToPtrInst)
@@ -841,6 +883,10 @@ function abs_typeof(
             found === nothing || return (true, Core.Typeof(something(found)), GPUCompiler.BITS_REF)
             found = julia_global(LLVM.name(ce))
             found === nothing || return (true, Core.Typeof(something(found)), GPUCompiler.BITS_REF)
+        end
+        if isa(ce, LLVM.PHIInst)
+            typ = merged_global_slots_type(ce, enzyme_ctx)
+            typ === nothing || return (true, typ, GPUCompiler.BITS_REF)
         end
         larg, offset = get_base_and_offset(operands(arg)[1])
         legal, typ, byref = abs_typeof(larg, enzyme_ctx, false, seenphis)

@@ -44,6 +44,12 @@
   for the rest of the process, and on Julia 1.10, 1.12 and 1.13 such a global
   logger broke derivatives. Messages Enzyme logs while compiling are now written to
   `Core.stderr` by `SimpleLogger`, without color.
+- Differentiate statically through the tape of an inner derivative that holds
+  constant data. Forward over Reverse and Reverse over Forward of a function
+  that runs `sort`, `unique` or `unique!` on `Const` data raised
+  `EnzymeRuntimeActivityError`. A member of an active call's result now takes
+  the shadow the callee's derivative gave it, a tape member no reverse pass
+  reads needs none, and a merge of `true` and `false` is known to be a `Bool`.
 
 ## 0.13.217
 
