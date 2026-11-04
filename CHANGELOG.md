@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Type a stack slot that holds only floats, such as an `NTuple{N, Float64}`
+  a loop reads at a runtime index. Reverse raised `EnzymeNoTypeError`
+  ("Cannot deduce type of phi") where a function merged a float with a reload
+  of an element of such a slot that nothing else typed.
 - Fix `Illegal cached pointer` on the first Reverse gradient, on Julia 1.10, of a
   function that reads an array element in a loop when both the array and the
   index have to be kept for the reverse pass (dogfood libEnzyme build `fce75191`).
