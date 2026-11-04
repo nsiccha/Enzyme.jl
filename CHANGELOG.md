@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve input shadows when a function returns newly initialized storage
+  (dogfood libEnzyme build `ef0cd634`). Reverse differentiation through a
+  non-inlined array gather could segfault because the compiler treated those
+  writes as invisible outside the call and discarded the input's shadow.
+  Returning a pointer loaded from a new object also retains the writes.
 - Stop copying everything activity analysis knows into every hypothesis
   (dogfood libEnzyme build `c9796794`). Each hypothesis now shares its sets
   with the analyzer that created it, importing one walks only what it added,
