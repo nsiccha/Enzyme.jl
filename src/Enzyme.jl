@@ -293,47 +293,58 @@ end
     )...}
 end
 
+# The batch width fixed by an argument of type `T` (an annotation, or an annotation type
+# passed as a value, whose `Core.Typeof` is `Type{A}`), or -1 if it fixes none.
+@inline same_or_one_width(::Type) = -1
+@inline same_or_one_width(::Type{<:BatchMixedDuplicated{<:Any, N}}) where {N} = N
+@inline same_or_one_width(::Type{<:BatchDuplicatedFunc{<:Any, N}}) where {N} = N
+@inline same_or_one_width(::Type{<:BatchDuplicated{<:Any, N}}) where {N} = N
+@inline same_or_one_width(::Type{<:BatchDuplicatedNoNeed{<:Any, N}}) where {N} = N
+@inline same_or_one_width(::Type{Type{A}}) where {A} = A isa DataType ? same_or_one_width(A) : -1
+
+# Whether `same_or_one_width` can read the width from the type `T` alone: not for a type
+# passed as a value of unknown identity (`DataType`, `UnionAll`, ...).
+same_or_one_known(::Type) = true
+same_or_one_known(::Type{<:Type}) = false
+same_or_one_known(::Type{Type{A}}) where {A} = true
+
+# Combines the width found so far with the next argument's (-1: none yet, -2: conflict).
 @inline function same_or_one_helper(current, next)
-    if current == -1
-        return next
-    elseif current == next
+    if next == -1 || current == next || current == -2
+        return current
+    elseif current == -1
         return next
     else
+        return -2
+    end
+end
+
+@inline function same_or_one_result(defaultVal, width)
+    if width == -2
         error("Multiple distinct batch sizes")
+    elseif width == -1
+        return defaultVal
+    else
+        return width
     end
 end
 
 @inline same_or_one_rec(current) = current
-@inline same_or_one_rec(current, arg::BatchMixedDuplicated{T,N}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(
-    current,
-    arg::Type{BatchMixedDuplicated{T,N}},
-    args...,
-) where {T,N} = same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::BatchDuplicatedFunc{T,N}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::Type{BatchDuplicatedFunc{T,N}}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::BatchDuplicated{T,N}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::Type{BatchDuplicated{T,N}}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg::BatchDuplicatedNoNeed{T,N}, args...) where {T,N} =
-    same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(
-    current,
-    arg::Type{BatchDuplicatedNoNeed{T,N}},
-    args...,
-) where {T,N} = same_or_one_rec(same_or_one_helper(current, N), args...)
-@inline same_or_one_rec(current, arg, args...) = same_or_one_rec(current, args...)
+@inline same_or_one_rec(current, arg, args...) =
+    same_or_one_rec(same_or_one_helper(current, same_or_one_width(Core.Typeof(arg))), args...)
 
-@inline function same_or_one(defaultVal, args...)
-    local_soo_res = same_or_one_rec(-1, args...)
-    if local_soo_res == -1
-        defaultVal
+# The batch width shared by the arguments, or `defaultVal` if none is batched. It is read
+# from the argument types when the method is generated: a recursion over the arguments
+# stops inferring to a constant beyond about 33 of them on Julia 1.12, which would leave
+# the width, and with it every thunk type, to run time.
+@inline function same_or_one(defaultVal, args::Vararg{Any, N}) where {N}
+    if @generated
+        all(same_or_one_known, args) ||
+            return :(same_or_one_result(defaultVal, same_or_one_rec(-1, args...)))
+        width = foldl(same_or_one_helper, map(same_or_one_width, args); init = -1)
+        return :(same_or_one_result(defaultVal, $width))
     else
-        local_soo_res
+        return same_or_one_result(defaultVal, same_or_one_rec(-1, args...))
     end
 end
 
@@ -510,12 +521,12 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
                 width == 1 ? Duplicated{rt} : BatchDuplicated{rt, width},
                 (tt′).parameters...
             )
-            res = forward(f, args...)
+            res = splatcall(forward, (f,), args)
             tape = res[1]
             if ReturnPrimal
-                return (adjoint(f, args..., tape)[1], res[2])
+                return (splatcall(adjoint, (f,), args, (tape,))[1], res[2])
             else
-                return adjoint(f, args..., tape)
+                return splatcall(adjoint, (f,), args, (tape,))
             end
         end
     elseif A0 <: Duplicated ||
@@ -557,7 +568,7 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
             end
 
             width = same_or_one(3, args...)
-            args = seed_complex_args(seen, seen2, args...)
+            args = splatcall(seed_complex_args, (seen, seen2), args)
             tt′ = vaTypeof(args...)
 
             thunk = Enzyme.Compiler.thunk(
@@ -576,7 +587,7 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
                 Val(StrongZero)
             ) #=ShadowInit=#
 
-            results = thunk(f, args..., (rt(0), rt(1), rt(im)))
+            results = splatcall(thunk, (f,), args, ((rt(0), rt(1), rt(im)),))
 
             # compute the correct complex derivative in reverse mode by propagating the conjugate return values
             # then subtracting twice the imaginary component to get the correct result
@@ -588,7 +599,7 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
                 Compiler.recursive_accumulate(k, v, Val(false), imfn_seed)
             end
 
-            fused = fuse_complex_results(results, args...)
+            fused = splatcall(fuse_complex_results, (results,), args)
 
             return (fused, results[2:end]...)
         end
@@ -617,9 +628,9 @@ Enzyme.autodiff(ReverseWithPrimal, x->x*x, Active(3.0))
     ) #=ShadowInit=#
 
     if A0 <: Active
-        args = (args..., Compiler.default_adjoint(rt, Val(width)))
+        return splatcall(thunk, (f,), args, (Compiler.default_adjoint(rt, Val(width)),))
     end
-    thunk(f, args...)
+    return splatcall(thunk, (f,), args)
 end
 
 """
@@ -632,7 +643,7 @@ Like [`autodiff`](@ref) but will try to extend f to an annotation, if needed.
     f::F,
     args::Vararg{Annotation,Nargs},
 ) where {F,CMode<:Mode,Nargs}
-    autodiff(EnzymeCore.set_err_if_func_written(mode), Const(f), args...)
+    return splatcall(autodiff, (EnzymeCore.set_err_if_func_written(mode), Const(f)), args)
 end
 @inline function autodiff(
     mode::CMode,
@@ -640,7 +651,7 @@ end
     ::Type{RT},
     args::Vararg{Annotation,Nargs},
 ) where {F,RT<:Annotation,CMode<:Mode,Nargs}
-    autodiff(EnzymeCore.set_err_if_func_written(mode), Const(f), RT, args...)
+    return splatcall(autodiff, (EnzymeCore.set_err_if_func_written(mode), Const(f), RT), args)
 end
 
 """
@@ -660,7 +671,7 @@ Like [`autodiff`](@ref) but will try to guess the activity of the return value.
         tt,
     )
     A = guess_activity(rt, mode)
-    autodiff(mode, f, A, args...)
+    return splatcall(autodiff, (mode, f, A), args)
 end
 
 """
@@ -712,7 +723,7 @@ f(x) = x*x
     FA<:Annotation,
     A<:Annotation,
 } where {ReturnPrimal,RABI<:ABI,Nargs,ErrIfFuncWritten,RuntimeActivity,StrongZero}
-    if any_active(args...)
+    if splatcall(any_active, args)
         throw(ErrorException("Active arguments not allowed in forward mode"))
     end
     tt′ = vaTypeof(args...)
@@ -771,7 +782,7 @@ f(x) = x*x
         Val(RuntimeActivity),
         Val(StrongZero)
     ) #=ShadowInit=#
-    thunk(f, args...)
+    return splatcall(thunk, (f,), args)
 end
 
 """
@@ -850,12 +861,12 @@ code, as well as high-order differentiation.
                 rt_annotation,
                 (tt′).parameters...
             )
-            res = forward(f, args...)
+            res = splatcall(forward, (f,), args)
             tape = res[1]
             if ReturnPrimal
-                return (adjoint(f, args..., tape)[1], res[2])
+                return (splatcall(adjoint, (f,), args, (tape,))[1], res[2])
             else
-                return adjoint(f, args..., tape)
+                return splatcall(adjoint, (f,), args, (tape,))
             end
         end
     elseif A <: Duplicated ||
@@ -900,14 +911,14 @@ code, as well as high-order differentiation.
     thunk =
         Compiler.CombinedAdjointThunk{Ptr{Cvoid},FA,A2,tt′,width,ReturnPrimal}(adjoint_ptr)
     if A <: Active
-        args = (args..., Compiler.default_adjoint(rt, Val(width)))
+        return splatcall(thunk, (f,), args, (Compiler.default_adjoint(rt, Val(width)),))
     elseif A <: Duplicated ||
            A <: DuplicatedNoNeed ||
            A <: BatchDuplicated ||
            A <: BatchDuplicatedNoNeed
         throw(ErrorException("Duplicated Returns not yet handled"))
     end
-    thunk(f, args...)
+    return splatcall(thunk, (f,), args)
 end
 
 """
@@ -931,7 +942,7 @@ code, as well as high-order differentiation.
     RuntimeActivity,
     StrongZero
 }
-    if any_active(args...)
+    if splatcall(any_active, args)
         throw(ErrorException("Active arguments not allowed in forward mode"))
     end
     tt′ = vaTypeof(args...)
@@ -1001,7 +1012,7 @@ code, as well as high-order differentiation.
         Val(StrongZero)
     ) #=ShadowInit=#
     thunk = Compiler.ForwardModeThunk{Ptr{Cvoid},FA,rt,tt′,width,ReturnPrimal}(adjoint_ptr)
-    thunk(f, args...)
+    return splatcall(thunk, (f,), args)
 end
 
 """
@@ -1148,14 +1159,14 @@ end
     ::Type{A},
     args::Vararg{Annotation,Nargs},
 ) where {A<:Annotation,Nargs,MMode<:Mode}
-    autodiff(m, f, A, args...)
+    return splatcall(autodiff, (m, f, A), args)
 end
 @inline function autodiff(
     f::Function,
     m::MMode,
     args::Vararg{Annotation,Nargs},
 ) where {Nargs,MMode<:Mode}
-    autodiff(m, f, args...)
+    return splatcall(autodiff, (m, f), args)
 end
 
 """
