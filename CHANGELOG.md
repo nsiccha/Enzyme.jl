@@ -8,6 +8,15 @@
   The choice of what to keep could land on the array's data pointer, which cannot
   be kept. It now keeps the array and reloads the pointer. Build `1c92729e` made
   this reachable in compiled model kernels.
+- Do not run LLVM's Attributor on code that has already been differentiated
+  (Julia 1.10 and 1.11; later versions never run it). Seeding it walks the code
+  that must execute around every pointer and every value passed to a call, so
+  its time grows with the square of a straight-line region, and a batch of `W`
+  tangents makes the differentiated region `W` times longer. The first call of
+  a batched Forward over Reverse derivative therefore compiled in time quadratic
+  in `W`. Differentiation has used what the Attributor inferred by then, and a
+  nested differentiation runs it again on the code it imports.
+  `Enzyme.Compiler.RunAttributorAfterAD[] = true` restores the previous behavior.
 - Compute Forward-mode derivatives of a division as `(dx - (dy / y) * x) / y`
   (dogfood libEnzyme build `2b1f1cfe`). The previous rule divided by `y * y`,
   which underflows for divisors below about 1e-154 and overflows above about

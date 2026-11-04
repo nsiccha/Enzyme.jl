@@ -13,6 +13,16 @@ LLVM.@module_pass "enzyme-fixup-batched-julia" FixupBatchedJuliaCallingConventio
 
 const RunAttributor = Ref(VERSION < v"1.12")
 
+# Whether the Attributor also runs on code that has already been differentiated.
+# Seeding it walks the code that must execute around every pointer and every value
+# passed to a call (`followUsesInMBEC`, LLVM's `AttributorAttributes.cpp`), so its
+# time grows with the square of a straight-line region, and a batch of width `W`
+# makes that region `W` times longer. By then differentiation has already used what
+# the Attributor inferred, and a nested differentiation runs it again on the code it
+# imports (`optimize!`), so only later machine-code optimization could gain from it.
+const RunAttributorAfterAD = Ref(false)
+attributor_after_ad() = RunAttributor[] && RunAttributorAfterAD[]
+
 function enzyme_attributor_pass!(mod::LLVM.Module)
     ccall(
         (:RunAttributorOnModule, API.libEnzyme),
@@ -461,7 +471,7 @@ const DumpPostCallConv = Ref(false)
 function fixup_callconv!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, tti = nothing)
     addr13NoAlias(mod)
 
-    removeDeadArgs!(mod, tm, #=post_gc_fixup=# false)
+    removeDeadArgs!(mod, tm, #=post_gc_fixup=# false; attributor = attributor_after_ad())
 
     memcpy_sret_split!(mod)
     # if we did the move_sret_tofrom_roots, we will have loaded out of the sret, then stored into the rooted.
@@ -623,7 +633,7 @@ function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}
         end
     end
 
-    removeDeadArgs!(mod, tm, #=post_gc_fixup=# true)
+    removeDeadArgs!(mod, tm, #=post_gc_fixup=# true; attributor = attributor_after_ad())
 
     @dispose pb = NewPMPassBuilder() begin
         if tti !== nothing
@@ -863,10 +873,10 @@ may.
 
 It runs as [`RestoreSafepointEffectsPass`](@ref) at the end of the optimization
 passes of `post_optimize!`, right before GC lowering: after `removeDeadArgs!`,
-whose attributor and `EnzymeDetectReadonlyOrThrow` take `julia.safepoint` as
-read-only and mark such functions `readonly` again, and after the optimizations
-that the original effects allow, such as merging the forward and reverse calls
-of `tanh(x)`. Returns whether it changed anything.
+whose `EnzymeDetectReadonlyOrThrow` (and the attributor, where it runs) takes
+`julia.safepoint` as read-only and marks such functions `readonly` again, and
+after the optimizations that the original effects allow, such as merging the
+forward and reverse calls of `tanh(x)`. Returns whether it changed anything.
 """
 function restore_safepoint_effects!(mod::LLVM.Module)::Bool
     reaching = Set{LLVM.Function}()
