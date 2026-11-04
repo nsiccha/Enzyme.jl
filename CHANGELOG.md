@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Stop copying everything activity analysis knows into every hypothesis
+  (dogfood libEnzyme build `c9796794`). Each hypothesis now shares its sets
+  with the analyzer that created it, importing one walks only what it added,
+  and a search of memory asks alias analysis only about the memory accesses
+  whose answer can matter. On a 97,303-instruction function this cuts the time
+  in activity analysis 5- to 9-fold and the first gradient by roughly 6%. Its
+  verdicts and the gradients are unchanged. The alias queries that remain still
+  grow quadratically with the size of the function, and so does most of the rest
+  of the first gradient.
 - Type a stack slot that holds only floats, such as an `NTuple{N, Float64}`
   a loop reads at a runtime index. Reverse raised `EnzymeNoTypeError`
   ("Cannot deduce type of phi") where a function merged a float with a reload
