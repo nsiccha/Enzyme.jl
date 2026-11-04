@@ -86,8 +86,8 @@ function stick_gradient(u)
     return du
 end
 
-function stick_difference(u, v, h)
-    return (stick_gradient(u .+ h .* v) .- stick_gradient(u .- h .* v)) ./ (2h)
+function central_difference(gradient, u, v, h)
+    return (gradient(u .+ h .* v) .- gradient(u .- h .* v)) ./ (2h)
 end
 
 @testset "Forward over Reverse rebuilds a tape returned through an sret" begin
@@ -96,8 +96,45 @@ end
     h = 1.0e-6
     # On Julia 1.13, compiling this Reverse pass segfaults too (Enzyme todo 0e58pgu).
     if VERSION >= v"1.13-"
-        @test_skip only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ stick_difference(u, v, h) rtol = 1.0e-7
+        @test_skip only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
     else
-        @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ stick_difference(u, v, h) rtol = 1.0e-7
+        @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
+    end
+end
+
+# The same computation with the offsets taken from the size and an early return. The
+# reverse pass caches the indices of its loops, and their loads reach the mixed-activity
+# handler. A load of an integer or of a pointer to integers is its own shadow there,
+# whatever the memory it was read from looks like.
+function simplex_breaks(U)
+    K = size(U, 2) + 1
+    z = 1.0 ./ (1.0 .+ exp.(-(U .+ permutedims(log.(K .- (1:(K - 1)))))))
+    l = log1p.(-z)
+    lr = cumsum(hcat(0.0 .* U[:, 1:1], l); dims = 2)
+    return z, l, lr
+end
+
+function simplex_constrain(U)
+    size(U, 2) == 0 && return ones(size(U, 1), 1)
+    z, _, lr = simplex_breaks(U)
+    return exp.(lr) .* hcat(z, 1.0 .+ 0.0 .* U[:, 1:1])
+end
+
+simplex_objective(u) = sum(abs2, simplex_constrain(reshape(u, 2, 3)))
+
+function simplex_gradient(u)
+    du = zero(u)
+    autodiff(Reverse, simplex_objective, Active, Duplicated(u, du))
+    return du
+end
+
+@testset "Forward over Reverse keeps the indices cached in a tape constant" begin
+    u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
+    v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
+    h = 1.0e-6
+    if VERSION >= v"1.13-"
+        @test_skip only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
+    else
+        @test only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
     end
 end
