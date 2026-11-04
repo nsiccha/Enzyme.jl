@@ -78,24 +78,14 @@ const NTA_HELPERS = (
     nta_sort_of_unique, nta_grouped, nta_push_unique_sort,
 )
 
-# Julia 1.12 only, before and after this repair, with runtime activity too: Forward
-# over Reverse through `push!` in `unique` raises `EnzymeNoDerivativeError` ("cannot
-# handle unknown binary operator") for the byte offset of the memory `_growend!` moves.
-nta_forward_over_reverse_broken(lens) =
-    v"1.12-" <= VERSION < v"1.13-" && lens in (nta_unique_of_sort, nta_sort_of_unique)
-
 @testset "Const data on the tape of a nested derivative" begin
     dt0 = copy(NTA_DT)
     @testset "$(nameof(lens))" for lens in NTA_HELPERS
         want = nta_analytic_hvp(NTA_X, NTA_V, lens(NTA_DT))
-        if nta_forward_over_reverse_broken(lens)
-            @test_broken nta_forward_over_reverse(lens, NTA_X, NTA_V, NTA_DT) ≈ want rtol = 1.0e-10
-        else
-            @test nta_forward_over_reverse(lens, NTA_X, NTA_V, NTA_DT) ≈ want rtol = 1.0e-10
-            batch = nta_batch_forward_over_reverse(lens, NTA_X, NTA_V, NTA_DT)
-            @test batch[1] ≈ want rtol = 1.0e-10
-            @test batch[2] ≈ 2 .* want rtol = 1.0e-10
-        end
+        @test nta_forward_over_reverse(lens, NTA_X, NTA_V, NTA_DT) ≈ want rtol = 1.0e-10
+        batch = nta_batch_forward_over_reverse(lens, NTA_X, NTA_V, NTA_DT)
+        @test batch[1] ≈ want rtol = 1.0e-10
+        @test batch[2] ≈ 2 .* want rtol = 1.0e-10
         @test nta_reverse_over_forward(lens, NTA_X, NTA_V, NTA_DT) ≈ want rtol = 1.0e-10
         @test NTA_DT == dt0
     end

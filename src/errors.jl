@@ -1550,6 +1550,11 @@ function mixed_activity_value_description(
     return sv
 end
 
+# The type tree of a Julia < 1.11 array of integers: a data pointer to integers, then
+# the integer fields of the array header.
+const INTEGER_ARRAY_TYPE_TREE = "{[-1]:Pointer, [-1,0]:Pointer, [-1,0,-1]:Integer, " *
+    join(("[-1,$(i)]:Integer" for i in 8:39), ", ") * "}"
+
 # The message of the runtime activity error for the mixed activity at `val`, where
 # `badval` describes the constant value `illegalVal`.
 function mixed_activity_message(
@@ -2416,6 +2421,18 @@ end
                 end
             end
            
+            # An integer, or a pointer to memory holding only integers such as a
+            # reverse pass's cache of a loop's indices, carries no derivative. A load
+            # of one is settled here: the walk below would judge the memory it reads.
+            tt = TypeTree(API.EnzymeGradientUtilsAllocAndGetTypeTree(gutils, cur))
+            st = API.EnzymeTypeTreeToString(tt)
+            st2 = Base.unsafe_string(st)
+            API.EnzymeStringFree(st)
+            if st2 == "{[-1]:Integer}" || st2 == "{[-1]:Pointer, [-1,-1]:Integer}" ||
+                    st2 == INTEGER_ARRAY_TYPE_TREE
+                return make_batched(ncur, prevbb)
+            end
+
 	    if isa(cur, LLVM.LoadInst) || isa(cur, LLVM.BitCastInst) || isa(cur, LLVM.AddrSpaceCastInst) || (isa(cur, LLVM.GetElementPtrInst) && all(Base.Fix2(isa, LLVM.ConstantInt), operands(cur)[2:end])) || (isa(cur,LLVM.ConstantExpr) &&  opcode(cur) in (LLVM.API.LLVMBitCast, LLVM.API.LLVMAddrSpaceCast, LLVM.API.LLVMGetElementPtr))
                 lhs = make_replacement(operands(cur)[1], prevbb)
                 if illegal
@@ -2469,14 +2486,6 @@ end
                 end
                 push!(created, phi2)
                 return phi2
-            end
-            
-            tt = TypeTree(API.EnzymeGradientUtilsAllocAndGetTypeTree(gutils, cur))
-            st = API.EnzymeTypeTreeToString(tt)
-            st2 = Base.unsafe_string(st)
-            API.EnzymeStringFree(st)
-            if st2 == "{[-1]:Integer}"
-                return make_batched(ncur, prevbb)
             end
 
             if !illegal
