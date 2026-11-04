@@ -2487,7 +2487,7 @@ end
                 push!(created, phi2)
                 return phi2
             end
-            
+
             if !illegal
                 illegal = true
                 illegalVal = cur
