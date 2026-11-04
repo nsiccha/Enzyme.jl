@@ -15,7 +15,9 @@
   a tracked `sret` field is cast to its root slot's type, `returnRoots` stay
   beside their `sret` after the calling convention fixup, and integers and arrays
   of integers copied into a tape are their own shadows. An active `xor` of unknown
-  type now raises `EnzymeNoDerivativeError` instead of crashing.
+  type now raises `EnzymeNoDerivativeError` instead of crashing. This also fixes
+  `EnzymeNoDerivativeError` for Forward over Reverse through `push!` in `unique` on
+  Julia 1.12.
 - Fix `Illegal cached pointer` on the first Reverse gradient, on Julia 1.10, of a
   function that reads an array element in a loop when both the array and the
   index have to be kept for the reverse pass (dogfood libEnzyme build `fce75191`).
