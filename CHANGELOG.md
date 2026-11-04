@@ -2,10 +2,12 @@
 
 ## Unreleased
 
-- Fix "Illegal cached pointer" on the first Reverse gradient of a function that
-  reads an array element in a loop and later overwrites where it read the array
-  and the index from (dogfood libEnzyme build `fce75191`). The element can be
-  recomputed, and the array and the index are saved instead of its address.
+- Fix `Illegal cached pointer` on the first Reverse gradient, on Julia 1.10, of a
+  function that reads an array element in a loop when both the array and the
+  index have to be kept for the reverse pass (dogfood libEnzyme build `fce75191`).
+  The choice of what to keep could land on the array's data pointer, which cannot
+  be kept. It now keeps the array and reloads the pointer. Build `1c92729e` made
+  this reachable in compiled model kernels.
 - Compute Forward-mode derivatives of a division as `(dx - (dy / y) * x) / y`
   (dogfood libEnzyme build `2b1f1cfe`). The previous rule divided by `y * y`,
   which underflows for divisors below about 1e-154 and overflows above about
