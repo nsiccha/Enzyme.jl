@@ -120,8 +120,8 @@ elements_global(r) = sum(concat_elements(alias_elements(CONST_ELEMENT_GROUPS)) .
     @test dc == want
     @test g == groups0
 
-    # Not built yet: elements of a global array are constant memory too, but only
-    # memory reached from a constant argument is recognized.
+    # Copying elements from a global array still hits mixed activity, unlike
+    # capturing the global object itself (test/literal_constant_capture.jl).
     @test_broken begin
         dg = zero(rates0)
         autodiff(Reverse, Const(elements_global), Active, Duplicated(copy(rates0), dg))

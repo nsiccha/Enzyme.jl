@@ -1202,14 +1202,38 @@ function is_object_cast(v::Union{LLVM.BitCastInst, LLVM.AddrSpaceCastInst})::Boo
     return isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked
 end
 
-# Whether `cur`, an inactive tracked pointer, is constant argument data of the
-# function being differentiated: a constant argument itself (looking through casts
-# and field extractions), a value loaded from memory reached from one, through
-# casts, GEPs, field extractions, `julia.gc_loaded` and further loads (a closure's
-# captured data is such memory), or a phi or select of such values only (on Julia
+# Whether `cur` names a Julia object embedded in the compiled function. Later
+# Julia versions load these objects from symbolic global slots instead of using
+# literal addresses. Only accept globals that abstract interpretation resolves;
+# a runtime read of a mutable global binding is not a literal object.
+function literal_constant_data(
+        gutils::GradientUtils,
+        @nospecialize(cur::LLVM.Value),
+        enzyme_ctx::Union{EnzymeContext, Nothing},
+    )::Bool
+    ty = value_type(cur)
+    (isa(ty, LLVM.PointerType) && LLVM.addrspace(ty) == Tracked) || return false
+    object = cur
+    while isa(cur, LLVM.BitCastInst) || isa(cur, LLVM.AddrSpaceCastInst)
+        cur = operands(cur)[1]
+    end
+    if isa(cur, LLVM.ConstantExpr) || isa(cur, LLVM.GlobalVariable) ||
+            (isa(cur, LLVM.LoadInst) && isa(operands(cur)[1], LLVM.GlobalVariable))
+        legal, _ = absint(object, enzyme_ctx)
+        return legal && is_constant_value(gutils, object)
+    end
+    return false
+end
+
+# Whether `cur`, an inactive tracked pointer, is constant input data of the
+# function being differentiated: a literal Julia object, a constant argument
+# itself (looking through casts and field extractions), a value loaded from memory
+# reached from one through casts, GEPs, field extractions, `julia.gc_loaded` and
+# further loads (a closure's captured data is such memory), or a phi or select of
+# such values only (on Julia
 # 1.13, GVN's load PRE turns the `src` that Base's `unalias(dest, src)` returns
 # into a phi of two loads of the same argument field). Such data has no shadow:
-# activity analysis treats the argument and every value loaded from it as
+# activity analysis treats the root and every value loaded from it as
 # constant, and a derivative that flows into it is discarded. When `cur` is stored
 # into active memory, inserted into an active aggregate, returned as an active
 # value, or merged with active values by a phi or select (`cond ? factors :
@@ -1222,6 +1246,7 @@ end
 function constant_argument_data(
         gutils::GradientUtils,
         @nospecialize(cur::LLVM.Value),
+        enzyme_ctx::Union{EnzymeContext, Nothing},
         seen::Set{LLVM.Value} = Set{LLVM.Value}(),
     )::Bool
     ty = value_type(cur)
@@ -1230,24 +1255,26 @@ function constant_argument_data(
         cur = operands(cur)[1]
     end
     is_constant_field_load(cur) && return true
+    literal_constant_data(gutils, cur, enzyme_ctx) && return true
     if isa(cur, LLVM.PHIInst)
         cur in seen && return true
         push!(seen, cur)
         for (v, _) in LLVM.incoming(cur)
-            constant_argument_data(gutils, v, seen) || return false
+            constant_argument_data(gutils, v, enzyme_ctx, seen) || return false
         end
         return true
     end
     if isa(cur, LLVM.SelectInst)
         cur in seen && return true
         push!(seen, cur)
-        return constant_argument_data(gutils, operands(cur)[2], seen) &&
-            constant_argument_data(gutils, operands(cur)[3], seen)
+        return constant_argument_data(gutils, operands(cur)[2], enzyme_ctx, seen) &&
+            constant_argument_data(gutils, operands(cur)[3], enzyme_ctx, seen)
     end
     isa(cur, LLVM.Argument) && return is_constant_value(gutils, cur)
     isa(cur, LLVM.LoadInst) || return false
     ptr = operands(cur)[1]
     while !isa(ptr, LLVM.Argument)
+        literal_constant_data(gutils, ptr, enzyme_ctx) && return true
         if isa(ptr, LLVM.LoadInst) || isa(ptr, LLVM.GetElementPtrInst) ||
                 isa(ptr, LLVM.BitCastInst) || isa(ptr, LLVM.AddrSpaceCastInst) ||
                 isa(ptr, LLVM.ExtractValueInst)
@@ -2150,7 +2177,7 @@ end
 
             # The run-time `make_zero` needs no static type, which the walk's loads
             # (for instance a field of a struct stored inline in an array) may lack.
-            constant_element = constant_argument_data(gutils, cur)
+            constant_element = constant_argument_data(gutils, cur, enzyme_ctx)
 
             legal, TT, byref = abs_typeof(cur, enzyme_ctx, true)
 

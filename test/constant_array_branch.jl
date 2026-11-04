@@ -176,10 +176,14 @@ branch_global(x, e) = sum(e ? BRANCH_GLOBAL : x .* 2.0)
         @test autodiff(Forward, branch_const_arg, Duplicated(copy(x0), [1.0, 0.0]), Const(c), Const(e))[1] ≈
             (e ? 0.0 : 2.0)
     end
-    # Not built: a global merged with an active array keeps the runtime activity
-    # error, because `constant_argument_data` recognizes only memory reached from an
-    # argument.
-    @test_broken differentiates(() -> autodiff(Reverse, branch_global, Active, Duplicated(copy(x0), zero(x0)), Const(true)))
+    for e in (true, false)
+        dx = zero(x0)
+        autodiff(Reverse, branch_global, Active, Duplicated(copy(x0), dx), Const(e))
+        @test dx ≈ (e ? [0.0, 0.0] : [2.0, 2.0])
+        @test autodiff(Forward, branch_global, Duplicated(copy(x0), [1.0, 0.0]), Const(e))[1] ≈
+            (e ? 0.0 : 2.0)
+        @test BRANCH_GLOBAL == [1.0, 2.0]
+    end
 end
 
 # The fresh constant array holds references (arrays, or immutable structs with
@@ -325,8 +329,8 @@ end
     @test dx ≈ [0.0, 0.0]
 end
 
-# The constant branch is a global, which keeps the runtime activity error, or a
-# `Const` argument holding arrays, whose shadow is a zero-filled copy. Taking another
+# The constant branch is a global or a `Const` argument holding arrays, whose
+# shadow is a zero-filled copy when its Julia object can be identified. Taking another
 # branch must still return its derivative. The error, or the copy, used to be made
 # in the block that branches to the merge, so it also fired for the other branches
 # (Julia 1.10), or the error let post-optimization prove that the loop runs once and
@@ -364,17 +368,23 @@ end
         (nested_const_arg_switch, (c,), 1, 2, false),
     )
     for (f, pre, constsel, activesel, isglobal) in cases
-        if isglobal || VERSION >= v"1.11-"
-            # Not built: a global keeps the runtime activity error, because
-            # `constant_argument_data` recognizes only memory reached from an argument.
-            # From Julia 1.11 the loop merges the argument's untracked data pointer
-            # (`memoryref_data`), which has no zero-filled copy either.
+        if (VERSION >= v"1.11-" && f !== nested_global_matrix) ||
+                (f === nested_global && Base.JLOptions().check_bounds == 1)
+            # From Julia 1.11 the loop merges the constant's untracked data pointer
+            # (`memoryref_data`), which has no zero-filled copy. Forced bounds on
+            # Julia 1.10 also lose the global vector's tracked root. The literal
+            # matrix case is covered by its object shadow.
             @test_broken differentiates(() -> autodiff(Reverse, f, Active, Duplicated(copy(x0), zero(x0)), pre..., Const(constsel)))
         else
             dx = zero(x0)
             autodiff(Reverse, f, Active, Duplicated(copy(x0), dx), pre..., Const(constsel))
             @test dx ≈ [0.0, 0.0]
-            @test pre[1].val == [[1.0, 1.0]]
+            if isglobal
+                data = f === nested_global ? NESTED_GLOBAL : NESTED_GLOBAL_MATRIX
+                @test only(data) == [1.0, 1.0]
+            else
+                @test pre[1].val == [[1.0, 1.0]]
+            end
         end
         dx = zero(x0)
         autodiff(set_runtime_activity(Reverse), f, Active, Duplicated(copy(x0), dx), pre..., Const(constsel))
