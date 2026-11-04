@@ -113,6 +113,7 @@ export autodiff,
 
 export jacobian, gradient, gradient!, hvp, hvp!, hvp_and_gradient!
 export batch_size, onehot, chunkedonehot
+export WithGradient
 
 using LinearAlgebra
 import SparseArrays
@@ -240,6 +241,7 @@ include("internal_rules/sorting.jl")
 include("internal_rules/bigfloat.jl")
 include("internal_rules/rand.jl")
 include("internal_rules/math.jl")
+include("rules/provided_gradient.jl")
 
 import .Compiler: CompilationException
 
