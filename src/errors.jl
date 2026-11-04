@@ -1550,6 +1550,11 @@ function mixed_activity_value_description(
     return sv
 end
 
+# The type tree of a Julia < 1.11 array of integers: a data pointer to integers, then
+# the integer fields of the array header.
+const INTEGER_ARRAY_TYPE_TREE = "{[-1]:Pointer, [-1,0]:Pointer, [-1,0,-1]:Integer, " *
+    join(("[-1,$(i)]:Integer" for i in 8:39), ", ") * "}"
+
 # The message of the runtime activity error for the mixed activity at `val`, where
 # `badval` describes the constant value `illegalVal`.
 function mixed_activity_message(
@@ -2423,7 +2428,8 @@ end
             st = API.EnzymeTypeTreeToString(tt)
             st2 = Base.unsafe_string(st)
             API.EnzymeStringFree(st)
-            if st2 == "{[-1]:Integer}" || st2 == "{[-1]:Pointer, [-1,-1]:Integer}"
+            if st2 == "{[-1]:Integer}" || st2 == "{[-1]:Pointer, [-1,-1]:Integer}" ||
+                    st2 == INTEGER_ARRAY_TYPE_TREE
                 return make_batched(ncur, prevbb)
             end
 
