@@ -6,6 +6,16 @@
   a loop reads at a runtime index. Reverse raised `EnzymeNoTypeError`
   ("Cannot deduce type of phi") where a function merged a float with a reload
   of an element of such a slot that nothing else typed.
+- Fix Forward over Reverse of a function with a large tape on Julia 1.10
+  (dogfood libEnzyme build `048872e7`), such as a `filter!` or a few array
+  operations under a function that returns several arrays. It segfaulted in
+  libEnzyme on an `xor` of a length read from the tape, raised `broken gc
+  calling conv fix`, segfaulted in Julia's GC lowering, or raised
+  `EnzymeRuntimeActivityError`. Values read from a tape now keep their type,
+  a tracked `sret` field is cast to its root slot's type, `returnRoots` stay
+  beside their `sret` after the calling convention fixup, and integers and arrays
+  of integers copied into a tape are their own shadows. An active `xor` of unknown
+  type now raises `EnzymeNoDerivativeError` instead of crashing.
 - Fix `Illegal cached pointer` on the first Reverse gradient, on Julia 1.10, of a
   function that reads an array element in a loop when both the array and the
   index have to be kept for the reverse pass (dogfood libEnzyme build `fce75191`).
