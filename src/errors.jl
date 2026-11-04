@@ -2475,7 +2475,9 @@ end
             st = API.EnzymeTypeTreeToString(tt)
             st2 = Base.unsafe_string(st)
             API.EnzymeStringFree(st)
-            if st2 == "{[-1]:Integer}"
+            # An integer, or a pointer to memory holding only integers such as a
+            # reverse pass's cache of a loop's indices, carries no derivative.
+            if st2 == "{[-1]:Integer}" || st2 == "{[-1]:Pointer, [-1,-1]:Integer}"
                 return make_batched(ncur, prevbb)
             end
 
