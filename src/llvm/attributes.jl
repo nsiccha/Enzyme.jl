@@ -413,6 +413,8 @@ const inactiveglobs = Set{String}((
     "ijl_boxed_int8_cache",
     "jl_boxed_int8_cache",
     "jl_nothing",
+        "jl_true",
+        "jl_false",
 ))
 
 function annotate!(mod::LLVM.Module)
