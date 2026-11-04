@@ -3408,6 +3408,7 @@ const DumpPreEnzyme = Ref(false)
 const DumpPostEnzyme = Ref(false)
 const DumpPostWrap = Ref(false)
 
+include("compiler/narrow_tuple_fields.jl")
 include("compiler/fold_type_tests.jl")
 function enzyme!(
     job::CompilerJob,
@@ -3429,6 +3430,7 @@ function enzyme!(
         enzyme_ctx::EnzymeContext,
 )
     fold_type_tests!(mod, enzyme_ctx)
+    narrow_tuple_fields!(mod, enzyme_ctx)
     if DumpPreEnzyme[]
         API.EnzymeDumpModuleRef(mod.ref)
     end
