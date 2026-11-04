@@ -19,6 +19,11 @@
   a loop reads at a runtime index. Reverse raised `EnzymeNoTypeError`
   ("Cannot deduce type of phi") where a function merged a float with a reload
   of an element of such a slot that nothing else typed.
+- Release integer loop-count caches after Forward over Reverse through nested
+  dynamic loops (dogfood libEnzyme build `c1743bf9`). The outer Forward pass
+  removed their original deallocation because the pointer needed no shadow,
+  so repeated Hessian-vector products retained native memory despite reporting
+  no Julia allocations. Consumer code needs no change.
 - Fix Forward over Reverse of a function with a large tape on Julia 1.10
   (dogfood libEnzyme build `048872e7`), such as a `filter!` or a few array
   operations under a function that returns several arrays. It segfaulted in
