@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Merge upstream through `dd86d5435`, including LLVM lifetime fixes, separate
+  readonly and attribute-preserving custom-rule hooks, and the shadow of a
+  type-unstable `setfield!` return. Keep dogfood's Enzyme_jll 0.0.301 pin and
+  declared compiler build. Dogfood is 0.13.218 and requires its in-tree
+  EnzymeCore 0.8.28, which also carries `set_atomic_add`.
+
 - Fix `Illegal cached pointer` on the first Reverse gradient, on Julia 1.10, of a
   function that reads an array element in a loop when both the array and the
   index have to be kept for the reverse pass (dogfood libEnzyme build `fce75191`).
