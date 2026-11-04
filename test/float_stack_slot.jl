@@ -92,7 +92,7 @@ slot_loop(x::Float32, n::Int, k::Int) =
 function slot_loop_plain(x, n, k)
     t = (zero(x), zero(x), zero(x))
     acc = zero(x)
-    for j in 0:n-1
+    for j in 0:(n - 1)
         for l in 1:j
             acc += t[l] * x
         end
