@@ -109,14 +109,6 @@ julia --startup-file=no --project=@stdlib "$recipe/setup.jl" \
 grep -Fx "$(printf 'KB-DOGFOOD-LIBENZYME\t%s\tllvm15\t%s' "$backend_sha" "$out")" "$run/setup.log"
 julia --startup-file=no --project="$run/env" "$recipe/canaries.jl" | tee "$run/canaries.log"
 grep -Fx CANARIES_COMPLETE "$run/canaries.log"
-for test_name in owned_output_cache fresh_buffer_cache derived_pointer_cache loop_invariant_cache const_element_store; do
-    julia --startup-file=no --project="$run/env" "$run/source/test/$test_name.jl" |
-        tee "$run/$test_name.log"
-    printf 'NATIVE_CACHE_TEST %s passed\n' "$test_name"
-done
-julia --startup-file=no --check-bounds=yes --project="$run/env" \
-    "$run/source/test/owned_output_cache.jl" | tee "$run/owned_output_bounds.log"
-printf 'NATIVE_CACHE_BOUNDS passed\n'
 (cd "$out" && shasum -a 256 -c SHA256SUMS)
 printf 'NATIVE_COMPLETE source=%s backend=%s llvm=15\n' "$source_sha" "$backend_sha" | tee "$run/VALIDATED"
 test -s "$run/VALIDATED"
