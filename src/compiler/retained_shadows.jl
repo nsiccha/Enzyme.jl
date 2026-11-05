@@ -275,8 +275,24 @@ function retained_shadow_no_argument_memory(attrs)::Bool
     return false
 end
 
+# Whether values of the LLVM type `ty` hold no pointers.
+function retained_shadow_pointer_free(@nospecialize(ty::LLVM.LLVMType))::Bool
+    ty isa LLVM.PointerType && return false
+    if ty isa LLVM.StructType
+        for el in elements(ty)
+            retained_shadow_pointer_free(el) || return false
+        end
+    elseif ty isa LLVM.ArrayType || ty isa LLVM.VectorType
+        return retained_shadow_pointer_free(eltype(ty))
+    end
+    return true
+end
+
 function retained_shadow_global_pointer(@nospecialize(v::LLVM.Value))::Bool
-    v isa LLVM.GlobalVariable && return true
+    # Constant data without pointers cannot reach a buffer. Julia 1.12 copies the
+    # literal fields of a view, such as its `1:2` indices, from such a global.
+    v isa LLVM.GlobalVariable &&
+        return !(isconstant(v) && retained_shadow_pointer_free(global_value_type(v)))
     if v isa LLVM.ConstantExpr || v isa LLVM.ConstantAggregate
         value_type(v) isa LLVM.PointerType && return true
         for op in operands(v)
@@ -286,10 +302,33 @@ function retained_shadow_global_pointer(@nospecialize(v::LLVM.Value))::Bool
     return false
 end
 
+# Whether `obj`, a Julia object a function loads from a global slot, can hold
+# no buffer and receive no write: a bits value, a name, a type, or the empty
+# `Memory` that Julia 1.11 and later share between empty arrays.
+function retained_shadow_inert(@nospecialize(obj))::Bool
+    isbits(obj) && return true
+    obj isa Union{Symbol, String, Type} && return true
+    isdefined(Core, :GenericMemory) && obj isa getfield(Core, :GenericMemory) && return isempty(obj)
+    return false
+end
+
+# Whether the load `inst` reads the slot of a Julia object literal that
+# `retained_shadow_inert` accepts.
+function retained_shadow_inert_literal(inst::LLVM.LoadInst, enzyme_ctx)::Bool
+    enzyme_ctx isa EnzymeContext || return false
+    slot = operands(inst)[1]
+    slot isa LLVM.GlobalVariable || return false
+    val = slot_value(enzyme_ctx, LLVM.name(slot))
+    val === nothing && return false
+    return retained_shadow_inert(unbind(val.value))
+end
+
 # Whether `f` and everything it calls access only memory reached through their
 # arguments or allocated by them, so a buffer that is zero at the store stays
 # zero until it reaches the output.
-function retained_shadow_local_memory(f::LLVM.Function, seen::Set{LLVM.Function} = Set{LLVM.Function}())::Bool
+function retained_shadow_local_memory(
+        f::LLVM.Function, enzyme_ctx, seen::Set{LLVM.Function} = Set{LLVM.Function}()
+    )::Bool
     f in seen && return true
     push!(seen, f)
     dead = guaranteed_unreachable(f)
@@ -304,12 +343,15 @@ function retained_shadow_local_memory(f::LLVM.Function, seen::Set{LLVM.Function}
                 if isempty(blocks(callee))
                     retained_shadow_external_readonly(attrs) || return false
                 else
-                    retained_shadow_local_memory(callee, seen) || return false
+                    retained_shadow_local_memory(callee, enzyme_ctx, seen) || return false
                 end
                 retained_shadow_no_argument_memory(attrs) && continue
             end
             for op in operands(inst)
-                retained_shadow_global_pointer(op) && return false
+                retained_shadow_global_pointer(op) || continue
+                inst isa LLVM.LoadInst && op == operands(inst)[1] &&
+                    retained_shadow_inert_literal(inst, enzyme_ctx) && continue
+                return false
             end
         end
     end
@@ -348,7 +390,7 @@ function emit_reused_retained_shadow!(
     legal, C, _ = abs_typeof(cur, enzyme_ctx, true)
     legal && C <: Array{<:RetainedSinkElement} || return nothing
     f = parent_scope(root)
-    retained_shadow_local_memory(f) || return nothing
+    retained_shadow_local_memory(f, enzyme_ctx) || return nothing
     for p in parameters(f)
         ty = value_type(p)
         ty isa LLVM.PointerType || continue
