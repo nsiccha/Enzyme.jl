@@ -20,11 +20,13 @@
 #
 # Only combined reverse mode at batch width 1 without runtime activity qualifies,
 # for a store by the differentiated function itself into one of its own
-# `Duplicated` arguments, which it only writes and does not capture, when that
-# function touches no global memory and it and its callees call nothing with
-# unknown memory effects. Otherwise the handler allocates a new copy as before. A reference kept
-# from an earlier call's output shadow may therefore be the same buffer as a
-# later call's (docs/src/faq.md, "Reused zero shadows of constant data").
+# `Duplicated` arguments, which it only writes and does not capture, when
+# neither that function nor its callees access global memory other than
+# constant data without pointers and literals that hold no buffer
+# (`retained_shadow_inert`), or call anything with unknown memory effects.
+# Otherwise the handler allocates a new copy as before. A reference kept from an
+# earlier call's output shadow may therefore be the same buffer as a later
+# call's (docs/src/faq.md, "Reused zero shadows of constant data").
 # Checking the buffer takes time linear in its length; this saves the
 # allocation, not that time.
 
