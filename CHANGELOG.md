@@ -6,6 +6,13 @@
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
   instead of raising `EnzymeRuntimeActivityError`.
+- Reuse the zero shadow of constant data stored into a write-only output. When
+  combined Reverse mode stores a constant array, such as the parent of a view
+  that mixes it with active data, into a `Duplicated` output, a later call now
+  reuses the zero copy an earlier call put there, if Enzyme allocated it and it
+  is still zero, instead of allocating a new copy as long as the array. A
+  reference kept to an earlier output shadow may therefore share that buffer
+  with a later call's shadow (FAQ, "Reused zero shadows of constant data").
 - Differentiate conditional integer/float denominators and boxed scalar/vector
   unions in ordinary Reverse mode. Uses with a proven branch condition now
   select the appropriate input before casts and loads, avoiding conflicting
