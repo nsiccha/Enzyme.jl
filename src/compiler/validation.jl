@@ -984,7 +984,7 @@ is inlined and discarded just as a lone import was.
 """
 function import_cached_autodiff!(mod::LLVM.Module, ptr::Ptr{Cvoid}, FT::LLVM.FunctionType)
     enzyme_ctx = enzyme_context()
-    cached = autodiff_cache[ptr]
+    cached = cached_autodiff(ptr)::CachedThunk
     pname = cached.entry
 
     if haskey(enzyme_ctx.imported_thunks, ptr)
@@ -1594,7 +1594,7 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
             ptr_val = convert(Int, ptr_arg)
             ptr = Ptr{Cvoid}(ptr_val)
 
-            if haskey(autodiff_cache, ptr)
+            if cached_autodiff(ptr) !== nothing
                 replaceWith = import_cached_autodiff!(
                     mod,
                     ptr,

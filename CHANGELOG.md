@@ -6,6 +6,18 @@
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
   instead of raising `EnzymeRuntimeActivityError`.
+- Preserve input shadows when a function returns newly initialized storage
+  (dogfood libEnzyme build `33709d12`). Reverse differentiation through a
+  non-inlined array gather could segfault because the compiler treated those
+  writes as invisible outside the call and discarded the input's shadow.
+  Returning a pointer loaded from a new object also retains the writes.
+- Fix a deadlock when derivatives first compile on several threads at once. A
+  derivative compiled at its first call held Enzyme's compile lock while it
+  emitted code, which needs Julia's codegen lock (the type-inference lock on
+  Julia 1.11 to 1.13). A split-mode or nested derivative compiles while Julia
+  infers its caller, holding that lock, and waited for Enzyme's. It now
+  compiles beside the holder instead, and what compiles share in globals is
+  guarded by locks held without blocking.
 - Reuse the zero shadow of constant data stored into a write-only output. When
   combined Reverse mode stores a constant array, such as the parent of a view
   that mixes it with active data, into a `Duplicated` output, a later call now

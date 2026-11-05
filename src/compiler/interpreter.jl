@@ -87,8 +87,11 @@ struct EnzymeInterpreter{T} <: AbstractInterpreter
     handler::T
 end
 
-const SigCacheLock = ReentrantLock()
-const InterpreterLock = ReentrantLock()
+# Spin locks: an interpreter is also built in `thunk`'s generator, which may not switch tasks,
+# and derivatives can compile beside each other (see `Compiler.cached_compilation`). Both are
+# held only for the bookkeeping below.
+const SigCacheLock = Threads.SpinLock()
+const InterpreterLock = Threads.SpinLock()
 const SigCache = Dict{Tuple, Dict{UInt, Base.IdSet{Type}}}()
 function get_rule_signatures(f, TT, world)
     subdict = lock(SigCacheLock) do
@@ -197,9 +200,16 @@ function EnzymeInterpreter(
                     invalid = true
                 end
             end
-            
-            if invalid
+        end
+        if invalid
+            # Julia's codegen lock guards this cache, as it does GPUCompiler's inference into
+            # it. It is taken outside the spin lock above, which a holder of the codegen lock
+            # may itself take.
+            ccall(:jl_typeinf_lock_begin, Cvoid, ())
+            try
                 Base.empty!(cache_or_token)
+            finally
+                ccall(:jl_typeinf_lock_end, Cvoid, ())
             end
         end
     end

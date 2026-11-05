@@ -419,6 +419,11 @@ const ActivityWorldCache = Ref(0)
 
 const ActivityMethodCache = Core.MethodMatch[]
 
+# Guards `ActivityCache`, `ActivityWorldCache` and `ActivityMethodCache`, held only while they
+# are read or changed: derivatives can compile beside each other (see
+# `Compiler.cached_compilation`), and a spin lock is safe to take in a generator.
+const ActivityCacheLock = Threads.SpinLock()
+
 # The signatures of the functions that packages can add methods to, and that change the
 # result of `active_reg`.
 const ActivityHookSigs = (
@@ -430,9 +435,13 @@ const ActivityHookSigs = (
 # of the activity hooks which may invalidate the cache, and if so clear it.
 function check_activity_cache_invalidations(world::UInt)
     # We've already guaranteed that this world doesn't have any stale caches
-    if world <= ActivityWorldCache[]
-        return
+    lock(ActivityCacheLock)
+    checked = try
+        world <= ActivityWorldCache[]
+    finally
+        unlock(ActivityCacheLock)
     end
+    checked && return
 
     methods = Core.MethodMatch[]
     for tt in ActivityHookSigs
@@ -446,28 +455,42 @@ function check_activity_cache_invalidations(world::UInt)
         end
     end
 
-    if methods == ActivityMethodCache
-        return
+    lock(ActivityCacheLock)
+    try
+        if methods == ActivityMethodCache
+            return
+        end
+
+        empty!(ActivityCache)
+        empty!(ActivityMethodCache)
+        for match in methods
+            push!(ActivityMethodCache, match)
+        end
+
+        ActivityWorldCache[] = world
+    finally
+        unlock(ActivityCacheLock)
     end
-
-    empty!(ActivityCache)
-    empty!(ActivityMethodCache)
-    for match in methods
-        push!(ActivityMethodCache, match)
-    end
-
-    ActivityWorldCache[] = world
-
+    return
 end
 
 Base.@nospecializeinfer @inline function active_reg(@nospecialize(ST::Type), world::UInt; justActive=false, UnionSret = false, AbstractIsMixed = false)
     key = (ST, justActive, UnionSret, AbstractIsMixed)
-    if haskey(ActivityCache, key)
-        return ActivityCache[key]
+    lock(ActivityCacheLock)
+    cached = try
+        get(ActivityCache, key, nothing)
+    finally
+        unlock(ActivityCacheLock)
     end
+    cached === nothing || return cached
     set = Base.IdSet{Type}()
     result = active_reg_inner(ST, set, world, justActive, UnionSret, AbstractIsMixed)
-    ActivityCache[key] = result
+    lock(ActivityCacheLock)
+    try
+        ActivityCache[key] = result
+    finally
+        unlock(ActivityCacheLock)
+    end
     return result
 end
 
