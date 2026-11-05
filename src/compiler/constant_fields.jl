@@ -45,6 +45,12 @@
 # a parameter reaches every place its call sites pass, so those places are proved
 # constant together, and the struct's other fields keep their own proof.
 #
+# A pointer can also be forwarded through several records without ever being
+# observed. Such fields need no shadow regardless of their stored values: prove
+# this by propagating observations backward along the field-copy graph. This
+# avoids copying unused literal metadata, without treating the contents of a
+# mutable literal object as constant when code actually reads or writes them.
+#
 # The tags hold only for the activities of the current compilation;
 # `strip_activity_inactive_md!` removes them after `enzyme!`.
 const CONSTANT_FIELD_STORE = "enzymejl_constant_field"
@@ -77,7 +83,7 @@ mutable struct ConstantFields
     field_parent::Dict{ConstantField, ConstantField}
     # Classes with a place in a root whose memory escapes.
     escaped_fields::Set{ConstantField}
-    # class => whether the field is still assumed constant.
+    # class => whether the field is still assumed constant or unobserved.
     constant::Dict{ConstantField, Bool}
 end
 
@@ -857,9 +863,74 @@ function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
     return length(todo)
 end
 
+# Collect the fields a loaded pointer is only forwarded into. Reading through the
+# pointer, returning it, or passing it to other code is an observation. Forwarding
+# through another record is not: if that record never observes the field either,
+# neither copy needs a shadow, regardless of the activity of the stored object.
+function forwarded_field_targets!(cf::ConstantFields, @nospecialize(val::LLVM.Value), targets::Set{ConstantField}, seen::Set{LLVM.Value})::Bool
+    val in seen && return true
+    push!(seen, val)
+    for u in LLVM.uses(val)
+        user = LLVM.user(u)
+        isa(user, LLVM.Instruction) || return false
+        in_unreachable(cf, user) && continue
+        if isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst)
+            forwarded_field_targets!(cf, user, targets, seen) || return false
+        elseif isa(user, LLVM.StoreInst) && operands(user)[1] == val && operands(user)[2] != val
+            base, off = constant_field_pointer(operands(user)[2])
+            key = constant_field_key(cf, base, off)
+            (key !== nothing && get(cf.constant, key, false)) || return false
+            push!(targets, key)
+        else
+            return false
+        end
+    end
+    return true
+end
+
+# Backward liveness of pointer fields. Only candidate fields are followed, so an
+# escaping slot or an overlapping access still blocks the proof. Propagate each
+# observed field to the fields forwarded into it with a worklist, rather than
+# rescanning the whole forwarding chain at every step.
+function unobserved_fields(cf::ConstantFields)::Set{ConstantField}
+    observed = Set{ConstantField}()
+    sources = Dict{ConstantField, Set{ConstantField}}()
+    for (base, ls) in cf.loads
+        for (ld, off) in ls
+            key = constant_field_key(cf, base, off)
+            (key !== nothing && get(cf.constant, key, false)) || continue
+            targets = Set{ConstantField}()
+            if !forwarded_field_targets!(cf, ld, targets, Set{LLVM.Value}())
+                push!(observed, key)
+            end
+            for target in targets
+                push!(get!(sources, target, Set{ConstantField}()), key)
+            end
+        end
+    end
+    todo = collect(observed)
+    while !isempty(todo)
+        target = pop!(todo)
+        incoming = get(sources, target, nothing)
+        incoming === nothing && continue
+        for source in incoming
+            source in observed && continue
+            push!(observed, source)
+            push!(todo, source)
+        end
+    end
+    unobserved = Set{ConstantField}()
+    for (key, candidate) in cf.constant
+        candidate && !(key in observed) && push!(unobserved, key)
+    end
+    return unobserved
+end
+
 # Drop a field once one of its stores writes data that is not constant, or one of
-# its loads is used unsafely, under the current assumptions.
+# its loads is used unsafely, under the current assumptions. An unobserved field
+# needs no shadow even when its stored object could otherwise hold derivatives.
 function settle_constant_fields!(cf::ConstantFields)
+    unobserved = unobserved_fields(cf)
     changed = true
     while changed
         changed = false
@@ -867,6 +938,7 @@ function settle_constant_fields!(cf::ConstantFields)
             for (st, off) in ss
                 key = constant_field_key(cf, base, off)
                 (key !== nothing && get(cf.constant, key, false)) || continue
+                key in unobserved && continue
                 if !constant_field_data(cf, operands(st)[1], Set{LLVM.Value}())
                     cf.constant[key] = false
                     changed = true
@@ -878,6 +950,7 @@ function settle_constant_fields!(cf::ConstantFields)
             for (ld, off) in ls
                 key = constant_field_key(cf, base, off)
                 (key !== nothing && get(cf.constant, key, false)) || continue
+                key in unobserved && continue
                 if !constant_field_uses_safe(cf, ld, Set{LLVM.Value}())
                     cf.constant[key] = false
                     changed = true
