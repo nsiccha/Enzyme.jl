@@ -145,10 +145,12 @@ end
     @test dx ≈ fd rtol = 1.0e-6
 end
 
-# A phi joins the by-reference argument with a GC object copied from it, which
-# nodecayed_phis! cannot yet root (SciMLSensitivity.jl#1696). Reaching the phi's
-# block throws at runtime instead, so paths that skip it still work.
-# Once such phis are supported, the throwing case needs another trigger.
+# A phi joins the by-reference argument with a GC object copied from it
+# (SciMLSensitivity.jl#1696). nodecayed_phis! has no addrspace(10) parent for the
+# argument, so reaching the phi used to throw. Its only use is a load of `x`, which
+# `unfold_argument_phi_loads!` now makes in the phi's predecessors. The runtime
+# error for a phi it cannot unfold is checked in test/passes.jl ("nodecayed_phis!
+# loads through a phi of an argument and an object in its predecessors").
 struct UnrootedPhiArg
     x::Float64
     flag::Bool
@@ -165,8 +167,10 @@ end
 
 unrooted_phi_loss(x, n) = unrooted_phi_sum(UnrootedPhiArg(x, true), n)
 
-@testset "Unrootable phi becomes a runtime error" begin
-    @test autodiff(Reverse, unrooted_phi_loss, Active, Active(2.0), Const(0))[1][1] == 2.0
-    @test autodiff(Forward, unrooted_phi_loss, Duplicated(2.0, 1.0), Const(0))[1] == 2.0
-    @test_throws Enzyme.Compiler.EnzymeRuntimeExceptionMI autodiff(Reverse, unrooted_phi_loss, Active, Active(2.0), Const(1))
+@testset "Phi of a by-reference argument and a GC copy of it" begin
+    # unrooted_phi_loss(x, n) = (n + 2) * x
+    for n in (0, 1, 3)
+        @test autodiff(Reverse, unrooted_phi_loss, Active, Active(2.0), Const(n))[1][1] == n + 2
+        @test autodiff(Forward, unrooted_phi_loss, Duplicated(2.0, 1.0), Const(n))[1] == n + 2
+    end
 end

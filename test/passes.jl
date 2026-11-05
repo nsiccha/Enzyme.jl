@@ -1231,6 +1231,209 @@ end
     end
 end
 
+# The address spaces of the pointer phis in `f`.
+pointer_phi_addrspaces(f) = sort!(
+    [
+        LLVM.addrspace(value_type(inst)) for bb in blocks(f) for inst in instructions(bb)
+            if isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType)
+    ]
+)
+
+const ARGUMENT_PHI_HEADER = """
+source_filename = "start"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+target triple = "x86_64-linux-gnu"
+"""
+
+# Loads through a phi of an argument and a pointer into an object.
+const ARGUMENT_PHI_UNFOLDED = """
+; The argument comes straight from `top`, which also branches to `copy`, so that
+; edge needs a block of its own for the load.
+define i64 @field(i1 %c, {} addrspace(10)* %obj, { {} addrspace(10)*, i64, i64 } addrspace(11)* %arg) #0 {
+top:
+  br i1 %c, label %copy, label %merge
+
+copy:
+  %o = bitcast {} addrspace(10)* %obj to { {} addrspace(10)*, i64, i64 } addrspace(10)*
+  %d = addrspacecast { {} addrspace(10)*, i64, i64 } addrspace(10)* %o to { {} addrspace(10)*, i64, i64 } addrspace(11)*
+  br label %merge
+
+merge:
+  %p = phi { {} addrspace(10)*, i64, i64 } addrspace(11)* [ %d, %copy ], [ %arg, %top ]
+  %f = getelementptr inbounds { {} addrspace(10)*, i64, i64 }, { {} addrspace(10)*, i64, i64 } addrspace(11)* %p, i64 0, i32 2
+  %v = load i64, i64 addrspace(11)* %f, align 8
+  ret i64 %v
+}
+
+; Two fields, one through a bitcast of a GEP, the tracked one atomic unordered.
+define i64 @fields(i1 %c, {} addrspace(10)* %obj, { {} addrspace(10)*, i64, i64 } addrspace(11)* %arg) #0 {
+top:
+  br i1 %c, label %copy, label %orig
+
+copy:
+  %o = bitcast {} addrspace(10)* %obj to { {} addrspace(10)*, i64, i64 } addrspace(10)*
+  %d = addrspacecast { {} addrspace(10)*, i64, i64 } addrspace(10)* %o to { {} addrspace(10)*, i64, i64 } addrspace(11)*
+  br label %merge
+
+orig:
+  br label %merge
+
+merge:
+  %p = phi { {} addrspace(10)*, i64, i64 } addrspace(11)* [ %d, %copy ], [ %arg, %orig ]
+  %f0 = getelementptr inbounds { {} addrspace(10)*, i64, i64 }, { {} addrspace(10)*, i64, i64 } addrspace(11)* %p, i64 0, i32 0
+  %parent = load atomic {} addrspace(10)*, {} addrspace(10)* addrspace(11)* %f0 unordered, align 8
+  %f1 = getelementptr inbounds { {} addrspace(10)*, i64, i64 }, { {} addrspace(10)*, i64, i64 } addrspace(11)* %p, i64 0, i32 1
+  %f1a = bitcast i64 addrspace(11)* %f1 to [1 x i64] addrspace(11)*
+  %a = load [1 x i64], [1 x i64] addrspace(11)* %f1a, align 8
+  %ai = extractvalue [1 x i64] %a, 0
+  %parenti = ptrtoint {} addrspace(10)* %parent to i64
+  %s = add i64 %ai, %parenti
+  ret i64 %s
+}
+
+; Every incoming value is an argument: left alone, as before.
+define i64 @args(i1 %c, { {} addrspace(10)*, i64, i64 } addrspace(11)* %a, { {} addrspace(10)*, i64, i64 } addrspace(11)* %b) #0 {
+top:
+  br i1 %c, label %l, label %r
+
+l:
+  br label %merge
+
+r:
+  br label %merge
+
+merge:
+  %p = phi { {} addrspace(10)*, i64, i64 } addrspace(11)* [ %a, %l ], [ %b, %r ]
+  %f = getelementptr inbounds { {} addrspace(10)*, i64, i64 }, { {} addrspace(10)*, i64, i64 } addrspace(11)* %p, i64 0, i32 2
+  %v = load i64, i64 addrspace(11)* %f, align 8
+  ret i64 %v
+}
+"""
+
+const ARGUMENT_PHI_ATTRIBUTES = """
+attributes #0 = { "enzymejl_world"="1" }
+"""
+
+# Phis of an argument and an object that stay: a write before the load, and the phi
+# reaching a call.
+const ARGUMENT_PHI_KEPT = """
+define i64 @written(i1 %c, {} addrspace(10)* %obj, { {} addrspace(10)*, i64, i64 } addrspace(11)* %arg, i64* %out) #0 {
+top:
+  br i1 %c, label %copy, label %orig
+
+copy:
+  %o = bitcast {} addrspace(10)* %obj to { {} addrspace(10)*, i64, i64 } addrspace(10)*
+  %d = addrspacecast { {} addrspace(10)*, i64, i64 } addrspace(10)* %o to { {} addrspace(10)*, i64, i64 } addrspace(11)*
+  br label %merge
+
+orig:
+  br label %merge
+
+merge:
+  %p = phi { {} addrspace(10)*, i64, i64 } addrspace(11)* [ %d, %copy ], [ %arg, %orig ]
+  store i64 0, i64* %out, align 8
+  %f = getelementptr inbounds { {} addrspace(10)*, i64, i64 }, { {} addrspace(10)*, i64, i64 } addrspace(11)* %p, i64 0, i32 2
+  %v = load i64, i64 addrspace(11)* %f, align 8
+  ret i64 %v
+}
+
+declare i64 @use({ {} addrspace(10)*, i64, i64 } addrspace(11)*)
+
+define i64 @escapes(i1 %c, {} addrspace(10)* %obj, { {} addrspace(10)*, i64, i64 } addrspace(11)* %arg) #0 {
+top:
+  br i1 %c, label %copy, label %orig
+
+copy:
+  %o = bitcast {} addrspace(10)* %obj to { {} addrspace(10)*, i64, i64 } addrspace(10)*
+  %d = addrspacecast { {} addrspace(10)*, i64, i64 } addrspace(10)* %o to { {} addrspace(10)*, i64, i64 } addrspace(11)*
+  br label %merge
+
+orig:
+  br label %merge
+
+merge:
+  %p = phi { {} addrspace(10)*, i64, i64 } addrspace(11)* [ %d, %copy ], [ %arg, %orig ]
+  %v = call i64 @use({ {} addrspace(10)*, i64, i64 } addrspace(11)* %p)
+  ret i64 %v
+}
+"""
+
+@testset "nodecayed_phis! loads through a phi of an argument and an object in its predecessors" begin
+    # Instcombine folds `phi [load (gep %obj, k)], [load (gep %arg, k)]` into a load
+    # through `phi [%obj, %arg]`. The addrspace(11) argument has no addrspace(10)
+    # parent, so `nodecayed_phis!` cannot rewrite that phi. Enzyme's augmented primal
+    # of `copyto!` from a `SubArray` has one, and a nested derivative (Forward over
+    # Reverse of `append!(v, @view w[i:end])`) runs `nodecayed_phis!` on it
+    # (test/nested_unalias_view.jl).
+    LLVM.Context() do ctx
+        mod = parse(LLVM.Module, ARGUMENT_PHI_HEADER * ARGUMENT_PHI_UNFOLDED * ARGUMENT_PHI_KEPT * ARGUMENT_PHI_ATTRIBUTES)
+        field = functions(mod)["field"]
+        fields = functions(mod)["fields"]
+        @test pointer_phi_addrspaces(field) == [11]
+        @test pointer_phi_addrspaces(fields) == [11]
+
+        # Not rewritten: a write before the load, a phi that reaches a call, and a
+        # phi of arguments only (which `nodecayed_phis!` leaves alone).
+        for name in ("written", "escapes", "args")
+            @test !Enzyme.Compiler.unfold_argument_phi_loads!(functions(mod)[name])
+            @test pointer_phi_addrspaces(functions(mod)[name]) == [11]
+        end
+
+        @test Enzyme.Compiler.unfold_argument_phi_loads!(field)
+        @test Enzyme.Compiler.unfold_argument_phi_loads!(fields)
+        @test LLVM.verify(mod) === nothing
+
+        # The loads moved to the predecessors: the addrspace(11) phi is gone, and the
+        # merge block takes a phi of each loaded value.
+        T_prjlvalue = LLVM.PointerType(LLVM.StructType(LLVM.LLVMType[]), 10)
+        for (f, merged) in ((field, [LLVM.IntType(64)]), (fields, [LLVM.ArrayType(LLVM.IntType(64), 1), T_prjlvalue]))
+            merge = only(bb for bb in blocks(f) if LLVM.name(bb) == "merge")
+            phis = [inst for inst in instructions(merge) if isa(inst, LLVM.PHIInst)]
+            @test sort!(string.(value_type.(phis))) == sort!(string.(merged))
+            for phi in phis, (v, pred) in LLVM.incoming(phi)
+                # Each value is loaded at the end of its own predecessor, which
+                # branches only to the merge block.
+                @test isa(v, LLVM.LoadInst)
+                @test LLVM.parent(v) == pred
+                @test collect(successors(terminator(pred))) == [merge]
+            end
+            @test !any(isa(inst, LLVM.LoadInst) for inst in instructions(merge))
+        end
+        @test pointer_phi_addrspaces(field) == Int[]
+        @test pointer_phi_addrspaces(fields) == [10]
+        # The tracked field stays an atomic unordered load.
+        fields_merge = only(bb for bb in blocks(fields) if LLVM.name(bb) == "merge")
+        tracked = only(inst for inst in instructions(fields_merge) if isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType))
+        for (v, _) in LLVM.incoming(tracked)
+            @test LLVM.API.LLVMGetOrdering(v) == LLVM.API.LLVMAtomicOrderingUnordered
+        end
+        # `field`'s argument came straight from `top`, so that edge got a block.
+        @test count(bb -> LLVM.name(bb) == "unsink.edge", blocks(field)) == 1
+    end
+
+    # `nodecayed_phis!` itself does this before it looks for parents. The phis it
+    # still cannot root make their block throw when reached, as before.
+    LLVM.Context() do ctx
+        mod = parse(LLVM.Module, ARGUMENT_PHI_HEADER * ARGUMENT_PHI_UNFOLDED * ARGUMENT_PHI_KEPT * ARGUMENT_PHI_ATTRIBUTES)
+        Enzyme.Compiler.nodecayed_phis!(mod)
+        @test LLVM.verify(mod) === nothing
+        @test pointer_phi_addrspaces(functions(mod)["field"]) == Int[]
+        @test pointer_phi_addrspaces(functions(mod)["fields"]) == [10]
+        @test pointer_phi_addrspaces(functions(mod)["args"]) == [11]
+        for name in ("field", "fields", "args")
+            @test !occursin("nodecayed.", string(functions(mod)[name]))
+            @test !occursin("jl_throw", string(functions(mod)[name]))
+        end
+        for name in ("written", "escapes")
+            f = functions(mod)[name]
+            merge = only(bb for bb in blocks(f) if LLVM.name(bb) == "merge")
+            @test isa(terminator(merge), LLVM.UnreachableInst)
+            @test any(inst -> isa(inst, LLVM.CallInst) && occursin("jl_throw", LLVM.name(LLVM.called_operand(inst))), instructions(merge))
+            @test pointer_phi_addrspaces(f) == Int[]
+        end
+    end
+end
+
 @testset "get_function! doesn't rename a clashing declaration" begin
     LLVM.Context() do ctx
         mod = parse(

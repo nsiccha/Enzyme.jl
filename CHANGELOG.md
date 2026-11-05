@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Differentiate Forward over Reverse through `append!` or `copyto!` from a
+  `SubArray` on Julia 1.10. The augmented primal of `copyto!` reads a field of
+  `unalias(dest, src)` through a pointer phi of the `src` argument and a copy of
+  it; a nested derivative could not keep that phi rooted and threw "Enzyme could
+  not determine how to keep a pointer phi in this function rooted" when it was
+  reached. Such loads are now made in the phi's predecessors.
 - Support literal constant objects captured beside active data, including a
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
