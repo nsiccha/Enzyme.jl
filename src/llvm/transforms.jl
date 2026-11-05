@@ -969,8 +969,14 @@ function memcpy_alloca_to_loadstore(mod::LLVM.Module, world::UInt, enzyme_ctx::E
     return
 end
 
-# Split a memcpy into an sret with jlvaluet into individual load/stores
-function memcpy_sret_split!(mod::LLVM.Module)
+# Split a memcpy into an sret with jlvaluet into individual load/stores.
+# By default only an sret that mixes GC-tracked pointers with other data is split: the
+# post-AD calling-convention fixup needs exactly those. Before AD, `all_tracked = true`
+# also splits an sret of only tracked pointers (a `NamedTuple` or `Tuple` of arrays), so
+# that each copied pointer is a store the mixed-activity handler sees.
+# That pre-AD split copies the pointer fields on every Julia version. Only the post-AD
+# fixup omits them on Julia 1.12+, where their roots are handled separately.
+function memcpy_sret_split!(mod::LLVM.Module; all_tracked::Bool = false)
     dl = datalayout(mod)
     ctx = context(mod)
     sretkind = LLVM.kind(
@@ -999,7 +1005,7 @@ function memcpy_sret_split!(mod::LLVM.Module)
             continue
         end
         tracked = CountTrackedPointers(sty)
-        if tracked.all || tracked.count == 0
+        if tracked.count == 0 || (tracked.all && !all_tracked)
             continue
         end
         todo = LLVM.CallInst[]
@@ -1027,7 +1033,7 @@ function memcpy_sret_split!(mod::LLVM.Module)
             if !LLVM.is_opaque(value_type(dst)) && eltype(value_type(dst)) != eltype(value_type(src))
                 src = pointercast!(B, src, LLVM.PointerType(eltype(value_type(dst)), addrspace(value_type(src))), "memcpy_sret_split_pointercast")
             end
-            copy_struct_into!(B, sty, dst, src, VERSION < v"1.12")
+            copy_struct_into!(B, sty, dst, src, all_tracked || VERSION < v"1.12")
             LLVM.API.LLVMInstructionEraseFromParent(cur)
         end
     end
