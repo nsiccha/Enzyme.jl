@@ -1308,14 +1308,16 @@ merge:
   %v = load i64, i64 addrspace(11)* %f, align 8
   ret i64 %v
 }
+"""
 
+const ARGUMENT_PHI_ATTRIBUTES = """
 attributes #0 = { "enzymejl_world"="1" }
 """
 
 # Phis of an argument and an object that stay: a write before the load, and the phi
 # reaching a call.
 const ARGUMENT_PHI_KEPT = """
-define i64 @written(i1 %c, {} addrspace(10)* %obj, { {} addrspace(10)*, i64, i64 } addrspace(11)* %arg, i64* %out) {
+define i64 @written(i1 %c, {} addrspace(10)* %obj, { {} addrspace(10)*, i64, i64 } addrspace(11)* %arg, i64* %out) #0 {
 top:
   br i1 %c, label %copy, label %orig
 
@@ -1337,7 +1339,7 @@ merge:
 
 declare i64 @use({ {} addrspace(10)*, i64, i64 } addrspace(11)*)
 
-define i64 @escapes(i1 %c, {} addrspace(10)* %obj, { {} addrspace(10)*, i64, i64 } addrspace(11)* %arg) {
+define i64 @escapes(i1 %c, {} addrspace(10)* %obj, { {} addrspace(10)*, i64, i64 } addrspace(11)* %arg) #0 {
 top:
   br i1 %c, label %copy, label %orig
 
@@ -1364,7 +1366,7 @@ merge:
     # Reverse of `append!(v, @view w[i:end])`) runs `nodecayed_phis!` on it
     # (test/nested_unalias_view.jl).
     LLVM.Context() do ctx
-        mod = parse(LLVM.Module, ARGUMENT_PHI_HEADER * ARGUMENT_PHI_UNFOLDED * ARGUMENT_PHI_KEPT)
+        mod = parse(LLVM.Module, ARGUMENT_PHI_HEADER * ARGUMENT_PHI_UNFOLDED * ARGUMENT_PHI_KEPT * ARGUMENT_PHI_ATTRIBUTES)
         field = functions(mod)["field"]
         fields = functions(mod)["fields"]
         @test pointer_phi_addrspaces(field) == [11]
@@ -1409,15 +1411,26 @@ merge:
         @test count(bb -> LLVM.name(bb) == "unsink.edge", blocks(field)) == 1
     end
 
-    # `nodecayed_phis!` itself does this before it looks for parents.
+    # `nodecayed_phis!` itself does this before it looks for parents. The phis it
+    # still cannot root make their block throw when reached, as before.
     LLVM.Context() do ctx
-        mod = parse(LLVM.Module, ARGUMENT_PHI_HEADER * ARGUMENT_PHI_UNFOLDED)
+        mod = parse(LLVM.Module, ARGUMENT_PHI_HEADER * ARGUMENT_PHI_UNFOLDED * ARGUMENT_PHI_KEPT * ARGUMENT_PHI_ATTRIBUTES)
         Enzyme.Compiler.nodecayed_phis!(mod)
         @test LLVM.verify(mod) === nothing
         @test pointer_phi_addrspaces(functions(mod)["field"]) == Int[]
         @test pointer_phi_addrspaces(functions(mod)["fields"]) == [10]
         @test pointer_phi_addrspaces(functions(mod)["args"]) == [11]
-        @test !occursin("nodecayed.", string(mod))
+        for name in ("field", "fields", "args")
+            @test !occursin("nodecayed.", string(functions(mod)[name]))
+            @test !occursin("jl_throw", string(functions(mod)[name]))
+        end
+        for name in ("written", "escapes")
+            f = functions(mod)[name]
+            merge = only(bb for bb in blocks(f) if LLVM.name(bb) == "merge")
+            @test isa(terminator(merge), LLVM.UnreachableInst)
+            @test any(inst -> isa(inst, LLVM.CallInst) && occursin("jl_throw", LLVM.name(LLVM.called_operand(inst))), instructions(merge))
+            @test pointer_phi_addrspaces(f) == Int[]
+        end
     end
 end
 
