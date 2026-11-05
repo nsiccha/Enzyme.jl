@@ -11,6 +11,8 @@
   select the appropriate input before casts and loads, avoiding conflicting
   integer, floating-point and pointer types during analysis. The same proofs
   remove unreachable boxing branches before their layouts enter a pointer PHI.
+  This also handles PHIs formed by branches with side effects, including
+  scalar/vector broadcast preprocessing followed by a generated shape fold.
 - Stop copying everything activity analysis knows into every hypothesis
   (dogfood libEnzyme build `c9796794`). Each hypothesis now shares its sets
   with the analyzer that created it, importing one walks only what it added,

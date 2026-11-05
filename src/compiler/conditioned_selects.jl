@@ -179,7 +179,55 @@ function known_condition_at_use(condition, user, local_condition, local_taken, t
     return selected
 end
 
-function specialize_conditioned_select!(builder, value, user, local_condition, local_taken, tree, tests, domains, proofs, depth::Int = 8)
+# Recognize only a closed two-arm diamond. Its PHIs have the same selection
+# condition as a select, even when calls or stores prevent LLVM from folding
+# the diamond itself. No loop-carried or extra-predecessor edge is admitted.
+function record_conditioned_phis!(phis, term, condition, unique_predecessors)
+    left = LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(term, 0))
+    right = LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(term, 1))
+    left == right && return
+    for arm in (left, right)
+        if !haskey(unique_predecessors, arm)
+            unique_predecessors[arm] = length(LLVM.predecessors(arm)) == 1
+        end
+        unique_predecessors[arm] || return
+        branch = terminator(arm)
+        branch isa LLVM.BrInst && LLVM.API.LLVMGetNumSuccessors(branch) == 1 || return
+    end
+    merge = LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(terminator(left), 0))
+    merge == LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(terminator(right), 0)) || return
+    merge in (left, right, LLVM.parent(term)) && return
+    for phi in instructions(merge)
+        phi isa LLVM.PHIInst || break
+        incoming = LLVM.incoming(phi)
+        length(incoming) == 2 || return
+        a, b = incoming
+        if a[2] == left && b[2] == right
+            phis[phi] = (condition, a[1], b[1])
+        elseif b[2] == left && a[2] == right
+            phis[phi] = (condition, b[1], a[1])
+        end
+    end
+    return
+end
+
+# A selected PHI input need not dominate the use. Only recreate casts whose
+# source is available there; never speculate a load, call, or allocation from
+# the selected arm. The original arm and its side effects remain in place.
+function available_conditioned_value!(builder, value, user, tree, depth)
+    value isa LLVM.Instruction || return value
+    LLVM.dominates(tree, value, user) && return value
+    depth == 0 && return nothing
+    LLVM.API.LLVMIsACastInst(value) != C_NULL || return nothing
+    input = available_conditioned_value!(builder, operands(value)[1], user, tree, depth - 1)
+    input === nothing && return nothing
+    clone = LLVM.Instruction(LLVM.API.LLVMInstructionClone(value))
+    LLVM.API.LLVMSetOperand(clone, 0, input)
+    LLVM.API.LLVMInsertIntoBuilderWithName(builder, clone, "phi.cast")
+    return clone
+end
+
+function specialize_conditioned_select!(builder, value, user, local_condition, local_taken, tree, tests, domains, proofs, phis, depth::Int = 8)
     depth == 0 && return value
     if value_type(value) == LLVM.Int1Type() && !(value isa LLVM.ConstantInt)
         known = known_condition_at_use(value, user, local_condition, local_taken, tree, tests, domains, proofs)
@@ -188,10 +236,16 @@ function specialize_conditioned_select!(builder, value, user, local_condition, l
     if value isa LLVM.SelectInst && value_type(operands(value)[1]) == LLVM.Int1Type()
         selected = known_condition_at_use(operands(value)[1], user, local_condition, local_taken, tree, tests, domains, proofs)
         selected === nothing && return value
-        return specialize_conditioned_select!(builder, operands(value)[selected ? 2 : 3], user, local_condition, local_taken, tree, tests, domains, proofs, depth - 1)
+        return specialize_conditioned_select!(builder, operands(value)[selected ? 2 : 3], user, local_condition, local_taken, tree, tests, domains, proofs, phis, depth - 1)
+    elseif value isa LLVM.PHIInst && haskey(phis, value)
+        condition, left, right = phis[value]
+        selected = known_condition_at_use(condition, user, local_condition, local_taken, tree, tests, domains, proofs)
+        selected === nothing && return value
+        replacement = available_conditioned_value!(builder, selected ? left : right, user, tree, depth - 1)
+        return replacement === nothing ? value : replacement
     elseif value isa LLVM.Instruction && LLVM.API.LLVMIsACastInst(value) != C_NULL
         input = operands(value)[1]
-        replacement = specialize_conditioned_select!(builder, input, user, local_condition, local_taken, tree, tests, domains, proofs, depth - 1)
+        replacement = specialize_conditioned_select!(builder, input, user, local_condition, local_taken, tree, tests, domains, proofs, phis, depth - 1)
         replacement == input && return value
         # Clone only casts. Loads and calls must retain their execution order,
         # and other users must keep the original (potentially mixed) value.
@@ -217,10 +271,12 @@ function simplify_conditioned_selects!(mod::LLVM.Module)
         has_control || continue
         tests = Dict{LLVM.Value, Vector{Tuple{LLVM.Value, LLVM.Instruction, Bool}}}()
         unique_predecessors = Dict{LLVM.BasicBlock, Bool}()
+        phis = Dict{LLVM.PHIInst, Tuple{LLVM.Value, LLVM.Value, LLVM.Value}}()
         for bb in blocks(fn)
             term = terminator(bb)
             term isa LLVM.BrInst && LLVM.API.LLVMGetNumSuccessors(term) == 2 || continue
             condition = LLVM.Value(LLVM.API.LLVMGetCondition(term))
+            record_conditioned_phis!(phis, term, condition, unique_predecessors)
             leaf = something(select_condition_leaf(condition), condition)
             entries = get!(tests, leaf, Tuple{LLVM.Value, LLVM.Instruction, Bool}[])
             for edge in 0:1
@@ -251,7 +307,7 @@ function simplify_conditioned_selects!(mod::LLVM.Module)
                 value = operands(user)[index]
                 local_condition = user isa LLVM.SelectInst && index in (2, 3) &&
                     value_type(operands(user)[1]) == LLVM.Int1Type() ? operands(user)[1] : nothing
-                replacement = specialize_conditioned_select!(builder, value, user, local_condition, index == 2, tree, tests, domains, proofs)
+                replacement = specialize_conditioned_select!(builder, value, user, local_condition, index == 2, tree, tests, domains, proofs, phis)
                 replacement == value && continue
                 LLVM.API.LLVMSetOperand(user, index - 1, replacement)
                 cfg_changed |= user isa LLVM.BrInst && index == 1
