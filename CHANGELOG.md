@@ -11,6 +11,13 @@
   non-inlined array gather could segfault because the compiler treated those
   writes as invisible outside the call and discarded the input's shadow.
   Returning a pointer loaded from a new object also retains the writes.
+- Differentiate conditional integer/float denominators and boxed scalar/vector
+  unions in ordinary Reverse mode. Uses with a proven branch condition now
+  select the appropriate input before casts and loads, avoiding conflicting
+  integer, floating-point and pointer types during analysis. The same proofs
+  remove unreachable boxing branches before their layouts enter a pointer PHI.
+  This also handles PHIs formed by branches with side effects, including
+  scalar/vector broadcast preprocessing followed by a generated shape fold.
 - Stop copying everything activity analysis knows into every hypothesis
   (dogfood libEnzyme build `c9796794`). Each hypothesis now shares its sets
   with the analyzer that created it, importing one walks only what it added,
