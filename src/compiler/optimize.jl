@@ -255,6 +255,10 @@ function optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, enz
 
     run!(GCInvariantVerifierPass(strong = false), mod)
 
+    for f in functions(mod)
+        isempty(blocks(f)) && continue
+        unfold_field_phi_loads!(f)
+    end
     nodecayed_phis!(mod)
     fold_array_data_phis!(mod)
 
