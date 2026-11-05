@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Avoid saving reader inputs for every term when results are written into a
+  fresh output array that the reader cannot access (dogfood libEnzyme build
+  `90af5b23`). The cache analysis now proves that private output storage stays
+  inaccessible to the reader, including across loop iterations. Passing or
+  publishing that storage to the reader still retains the required caches.
 - Support literal constant objects captured beside active data, including a
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
