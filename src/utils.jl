@@ -86,6 +86,19 @@ const Derived = 11
 export Tracked, Derived
 
 const captured_constants = Base.IdSet{Any}()
+# Held only to add to `captured_constants`: derivatives can compile beside each other (see
+# `Compiler.cached_compilation`), and a spin lock is safe to take in a generator.
+const captured_constants_lock = Threads.SpinLock()
+
+function capture_constant!(@nospecialize(val))
+    lock(captured_constants_lock)
+    try
+        push!(captured_constants, val) # Globally root
+    finally
+        unlock(captured_constants_lock)
+    end
+    return nothing
+end
 
 function arg_operands_view(inst::LLVM.CallInst)
     N_args = LLVM.API.LLVMGetNumArgOperands(inst)
@@ -111,11 +124,11 @@ function unsafe_to_ptr(@nospecialize(val))
     if !Base.ismutable(val)
         val = Core.Box(val) # FIXME many objects could be leaked here
         @assert Base.ismutable(val)
-        push!(captured_constants, val) # Globally root
+        capture_constant!(val)
         ptr = unsafe_load(Base.reinterpret(Ptr{Ptr{Cvoid}}, Base.pointer_from_objref(val)))
     else
         @assert Base.ismutable(val)
-        push!(captured_constants, val) # Globally root
+        capture_constant!(val)
         ptr = Base.pointer_from_objref(val)
     end
     return ptr

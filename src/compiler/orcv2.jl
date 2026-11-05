@@ -50,19 +50,32 @@ absolute_symbol_materialization(name, ptr) = LLVM.absolute_symbols(Ref(absolute_
 
 const hnd_string_map = Dict{String, Ref{Ptr{Cvoid}}}()
 const hnd_int_map = Dict{Int, Ref{Ptr{Cvoid}}}()
+# Held only to look up or add a handle cell: derivatives can compile beside each other (see
+# `Compiler.cached_compilation`), and a spin lock is safe to take in a generator.
+const hnd_lock = Threads.SpinLock()
+
+function handle_cell!(map::Dict{K, Ref{Ptr{Cvoid}}}, key::K) where {K}
+    lock(hnd_lock)
+    try
+        cell = get(map, key, nothing)
+        if cell === nothing
+            cell = Ref{Ptr{Cvoid}}(C_NULL)
+            map[key] = cell
+        end
+        return cell
+    finally
+        unlock(hnd_lock)
+    end
+end
 
 function fix_ptr_lookup(name)
     if startswith(name, "ejlstr\$") || startswith(name, "ejlptr\$")
         _, fname, arg1 = split(name, "\$")
         if startswith(name, "ejlstr\$")
-            hnd_cache = get!(hnd_string_map, arg1) do
-                Ref{Ptr{Cvoid}}(C_NULL)
-            end
+            hnd_cache = handle_cell!(hnd_string_map, String(arg1))
         else
             arg1 =  parse(Int, arg1)
-            hnd_cache = get!(hnd_int_map, arg1) do
-                Ref{Ptr{Cvoid}}(C_NULL)
-            end
+            hnd_cache = handle_cell!(hnd_int_map, arg1)
             arg1 = reinterpret(Ptr{Cchar}, arg1)
         end
         return @ccall jl_load_and_lookup(arg1::Cstring, fname::Cstring, hnd_cache::Ptr{Cvoid})::Ptr{Cvoid}

@@ -702,99 +702,123 @@ const ATTRIBUTE_PRESERVING_RULE_CACHE = Dict{Tuple{Type, UInt}, Bool}()
 const READONLY_RULE_CACHE = Dict{Tuple{Type, UInt}, Bool}()
 const NOALIAS_CACHE = Dict{Tuple{Type, UInt, Any}, Bool}()
 
+# The rule memos are read and written under this lock, held only for the dictionary
+# operation: compiles can run beside each other (see `cached_compilation`), and inference in
+# a generator may consult them, where a spin lock is safe to take.
+const RULE_CACHE_LOCK = Threads.SpinLock()
+
+function rule_memo(cache::Dict{K, Bool}, key)::Union{Nothing, Bool} where {K}
+    lock(RULE_CACHE_LOCK)
+    try
+        return get(cache, key, nothing)
+    finally
+        unlock(RULE_CACHE_LOCK)
+    end
+end
+
+function rule_memo!(cache::Dict{K, Bool}, key, val) where {K}
+    lock(RULE_CACHE_LOCK)
+    try
+        cache[key] = val
+    finally
+        unlock(RULE_CACHE_LOCK)
+    end
+    return nothing
+end
+
 function cached_has_attribute_preserving_rule(specTypes::Type, world::UInt)
     key = (specTypes, world)
-    val = get(ATTRIBUTE_PRESERVING_RULE_CACHE, key, nothing)
+    val = rule_memo(ATTRIBUTE_PRESERVING_RULE_CACHE, key)
     if val !== nothing
         return val::Bool
     end
     func = specTypes.parameters[1]
     if func isa Core.Builtin
-        ATTRIBUTE_PRESERVING_RULE_CACHE[key] = false
+        rule_memo!(ATTRIBUTE_PRESERVING_RULE_CACHE, key, false)
         return false
     end
     res = EnzymeRules.has_attribute_preserving_rule_from_sig(specTypes; world)
-    ATTRIBUTE_PRESERVING_RULE_CACHE[key] = res
+    rule_memo!(ATTRIBUTE_PRESERVING_RULE_CACHE, key, res)
     return res
 end
 
 function cached_has_readonly_rule(specTypes::Type, world::UInt)
     key = (specTypes, world)
-    val = get(READONLY_RULE_CACHE, key, nothing)
+    val = rule_memo(READONLY_RULE_CACHE, key)
     if val !== nothing
         return val::Bool
     end
     func = specTypes.parameters[1]
     if func isa Core.Builtin
-        READONLY_RULE_CACHE[key] = false
+        rule_memo!(READONLY_RULE_CACHE, key, false)
         return false
     end
     res = EnzymeRules.has_readonly_rule_from_sig(specTypes; world)
-    READONLY_RULE_CACHE[key] = res
+    rule_memo!(READONLY_RULE_CACHE, key, res)
     return res
 end
 
 function cached_has_frule(specTypes::Type, world::UInt, method_table)
     key = (specTypes, world, method_table)
-    val = get(FRULE_CACHE, key, nothing)
+    val = rule_memo(FRULE_CACHE, key)
     if val !== nothing
         return val::Bool
     end
     func = specTypes.parameters[1]
     if func isa Core.Builtin
-        FRULE_CACHE[key] = false
+        rule_memo!(FRULE_CACHE, key, false)
         return false
     end
     res = EnzymeRules.has_frule_from_sig(specTypes; world, method_table)
-    FRULE_CACHE[key] = res
+    rule_memo!(FRULE_CACHE, key, res)
     return res
 end
 
 function cached_has_rrule(specTypes::Type, world::UInt, method_table)
     key = (specTypes, world, method_table)
-    val = get(RRULE_CACHE, key, nothing)
+    val = rule_memo(RRULE_CACHE, key)
     if val !== nothing
         return val::Bool
     end
     func = specTypes.parameters[1]
     if func isa Core.Builtin
-        RRULE_CACHE[key] = false
+        rule_memo!(RRULE_CACHE, key, false)
         return false
     end
     res = EnzymeRules.has_rrule_from_sig(specTypes; world, method_table)
-    RRULE_CACHE[key] = res
+    rule_memo!(RRULE_CACHE, key, res)
     return res
 end
 
 function cached_is_inactive(specTypes::Type, world::UInt, method_table)
     key = (specTypes, world, method_table)
-    val = get(INACTIVE_CACHE, key, nothing)
+    val = rule_memo(INACTIVE_CACHE, key)
     if val !== nothing
         return val::Bool
     end
     func = specTypes.parameters[1]
     if func isa Core.Builtin
-        INACTIVE_CACHE[key] = false
+        rule_memo!(INACTIVE_CACHE, key, false)
         return false
     end
     res = EnzymeRules.is_inactive_from_sig(specTypes; world, method_table)
-    INACTIVE_CACHE[key] = res
+    rule_memo!(INACTIVE_CACHE, key, res)
     return res
 end
 
 function cached_noalias(specTypes::Type, world::UInt, method_table)
     key = (specTypes, world, method_table)
-    val = get(NOALIAS_CACHE, key, nothing)
+    val = rule_memo(NOALIAS_CACHE, key)
     if val !== nothing
         return val::Bool
     end
     func = specTypes.parameters[1]
     if func isa Core.Builtin
-        NOALIAS_CACHE[key] = false
+        rule_memo!(NOALIAS_CACHE, key, false)
         return false
     end
     res = EnzymeRules.noalias_from_sig(specTypes; world, method_table)
-    NOALIAS_CACHE[key] = res
+    rule_memo!(NOALIAS_CACHE, key, res)
     return res
 end
 
@@ -8775,26 +8799,87 @@ end
 # adjoint/primal pointer => the thunk's IR, for nested differentiation
 const autodiff_cache = Dict{Ptr{Cvoid}, CachedThunk}()
 
+# Guards `cache` and `autodiff_cache`. It is held only for their dictionary operations, never
+# while compiling, and a spin lock does not switch tasks, so a generator may take it.
+const cache_publish_lock = Threads.SpinLock()
+
+# Compiles one derivative at a time where the compiling task may wait (see
+# `cached_compilation`).
 const cache_lock = ReentrantLock()
-@inline function cached_compilation(@nospecialize(job::CompilerJob))::CompileResult
+
+function compiled_result(key::UInt)::Union{Nothing, CompileResult}
+    lock(cache_publish_lock)
+    try
+        return get(cache, key, nothing)
+    finally
+        unlock(cache_publish_lock)
+    end
+end
+
+function cached_autodiff(ptr::Ptr{Cvoid})::Union{Nothing, CachedThunk}
+    lock(cache_publish_lock)
+    try
+        return get(autodiff_cache, ptr, nothing)
+    finally
+        unlock(cache_publish_lock)
+    end
+end
+
+# Compile `job` and publish it under `key`. If another compile of the same job published
+# first, return that one: a compile beside the holder of `cache_lock` (see
+# `cached_compilation`) can finish the same job.
+function compile_and_publish(@nospecialize(job::CompilerJob), key::UInt)::CompileResult
+    mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table = _thunk(job)
+    obj = _link(job, mod, edges, adjoint_name, primal_name, TapeType, prepost)
+    lock(cache_publish_lock)
+    try
+        if obj.adjoint isa Ptr{Nothing}
+            autodiff_cache[obj.adjoint] = CachedThunk(adjoint_name, prepost, value_table)
+        end
+        if obj.primal isa Ptr{Nothing} && primal_name isa String
+            autodiff_cache[obj.primal] = CachedThunk(primal_name, prepost, value_table)
+        end
+        published = get(cache, key, nothing)
+        if published !== nothing
+            return published
+        end
+        cache[key] = obj
+        return obj
+    finally
+        unlock(cache_publish_lock)
+    end
+end
+
+"""
+    cached_compilation(job, may_wait = true)
+
+The compiled derivative of `job`, compiled now unless an earlier compile is cached.
+
+Compiles take `cache_lock`, one at a time, except where the caller cannot wait for it:
+`may_wait = false` in `thunk`'s generator. Julia runs a generator while it infers its
+caller, and when the runtime triggered that inference it holds a process-wide lock (the
+codegen lock on Julia 1.10, the type-inference lock on 1.11 to 1.13). A derivative compiled
+at its first call holds `cache_lock` without that lock and takes it whenever it emits or
+JIT-compiles Julia code, so a generator waiting for `cache_lock` would deadlock with it. A
+generator also may not switch tasks, which waiting would do. Where `cache_lock` is taken, the
+generator compiles beside its holder instead; what compiles share in globals is guarded by
+locks of its own, held without blocking.
+"""
+@inline function cached_compilation(@nospecialize(job::CompilerJob), may_wait::Bool = true)::CompileResult
     key = hash(job)
+    obj = compiled_result(key)
+    obj === nothing || return obj
 
     # NOTE: no use of lock(::Function)/@lock/get! to keep stack traces clean
-    lock(cache_lock)
+    if may_wait
+        lock(cache_lock)
+    elseif !trylock(cache_lock)
+        return compile_and_publish(job, key)
+    end
     try
-        obj = get(cache, key, nothing)
-        if obj === nothing
-            mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table = _thunk(job)
-            obj = _link(job, mod, edges, adjoint_name, primal_name, TapeType, prepost)
-            if obj.adjoint isa Ptr{Nothing}
-                autodiff_cache[obj.adjoint] = CachedThunk(adjoint_name, prepost, value_table)
-            end
-            if obj.primal isa Ptr{Nothing} && primal_name isa String
-                autodiff_cache[obj.primal] = CachedThunk(primal_name, prepost, value_table)
-            end
-            cache[key] = obj
-        end
-        obj
+        obj = compiled_result(key)
+        obj === nothing || return obj
+        return compile_and_publish(job, key)
     finally
         unlock(cache_lock)
     end
@@ -9047,7 +9132,8 @@ end
         RuntimeActivity::Bool,
         StrongZero::Bool,
         AtomicAdd::Union{Bool, Nothing},
-        edges::Union{Nothing, Vector{Any}}
+        edges::Union{Nothing, Vector{Any}},
+        may_wait::Bool = true,
     )
     job, rt2, run_enzyme = thunk_job(
         mi,
@@ -9067,7 +9153,7 @@ end
         AtomicAdd,
     )
 
-    compile_result = cached_compilation(job)
+    compile_result = cached_compilation(job, may_wait)
     if edges !== nothing
         for e in compile_result.edges
             push!(edges, e)
@@ -9529,7 +9615,8 @@ function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, sou
                 RuntimeActivity,
                 StrongZero,
                 AtomicAdd,
-                edges
+                edges,
+                #=may_wait=# false,
             )
         finally
             deactivate(ctx)

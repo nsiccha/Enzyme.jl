@@ -11,6 +11,13 @@
   non-inlined array gather could segfault because the compiler treated those
   writes as invisible outside the call and discarded the input's shadow.
   Returning a pointer loaded from a new object also retains the writes.
+- Fix a deadlock when derivatives first compile on several threads at once. A
+  derivative compiled at its first call held Enzyme's compile lock while it
+  emitted code, which needs Julia's codegen lock (the type-inference lock on
+  Julia 1.11 to 1.13). A split-mode or nested derivative compiles while Julia
+  infers its caller, holding that lock, and waited for Enzyme's. It now
+  compiles beside the holder instead, and what compiles share in globals is
+  guarded by locks held without blocking.
 - Differentiate conditional integer/float denominators and boxed scalar/vector
   unions in ordinary Reverse mode. Uses with a proven branch condition now
   select the appropriate input before casts and loads, avoiding conflicting
