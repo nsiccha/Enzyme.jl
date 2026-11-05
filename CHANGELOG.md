@@ -6,6 +6,11 @@
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
   instead of raising `EnzymeRuntimeActivityError`.
+- Differentiate conditional integer/float denominators and boxed scalar/vector
+  unions in ordinary Reverse mode. Uses with a proven branch condition now
+  select the appropriate input before casts and loads, avoiding conflicting
+  integer, floating-point and pointer types during analysis. The same proofs
+  remove unreachable boxing branches before their layouts enter a pointer PHI.
 - Stop copying everything activity analysis knows into every hypothesis
   (dogfood libEnzyme build `c9796794`). Each hypothesis now shares its sets
   with the analyzer that created it, importing one walks only what it added,
