@@ -12,6 +12,14 @@
   field addresses, which Enzyme turned into a phi of the two objects and then
   rejected with `IllegalTypeAnalysisException`. The load now stays on each
   edge. This covers broadcasting a scalar/vector union inside a loop.
+- Stop copying the numbers a call read when the caller then stores only
+  pointers (dogfood libEnzyme build `ece5ac54`). Any store after a call that
+  Julia does not inline made Enzyme assume it may overwrite what the call
+  read, so the call's reverse pass kept a copy. Storing a buffer back into
+  the `Ref` it came from, as in `slot[] = mul!(slot[], X, b)`, copied all of
+  `X` on every gradient, about half again the time of the same product
+  without the store. A store of a pointer cannot overwrite numbers, so such
+  a call now rereads them. A later store of a number still keeps the copy.
 - Cache a value that does not change across the iterations of a loop once
   per entry of that loop, not once per iteration (dogfood libEnzyme build
   `f392eba5`). A load in a loop, from memory no instruction of the loop
