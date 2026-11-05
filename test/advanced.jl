@@ -1403,14 +1403,14 @@ end
     f_union(cond, x) = cond ? x : 0
     g_union(cond, x) = f_union(cond, x) * x
 
-    # This only works as a test in < 1.12 as we actually optimize away the issue in later LLVM's
-    if VERSION < v"1.12"
-        if sizeof(Int) == sizeof(Int64)
-            @test_throws Enzyme.Compiler.IllegalTypeAnalysisException autodiff(Reverse, g_union, Active, Const(true), Active(1.0))
-        else
-            @test_throws Enzyme.Compiler.IllegalTypeAnalysisException autodiff(Reverse, g_union, Active, Const(true), Active(1.0f0))
-        end
-    end
+    # Before Julia 1.12 the union payload is one integer that a select fills with
+    # either 0 or the float's bits, and both `sitofp` and a bitcast to double read it,
+    # so upstream raises IllegalTypeAnalysisException. Dogfood moves each cast onto the
+    # select arm its condition proves (src/compiler/conditioned_selects.jl), so the
+    # derivative is defined on every version.
+    x_union = sizeof(Int) == sizeof(Int64) ? 3.0 : 3.0f0
+    @test autodiff(Reverse, g_union, Active, Const(true), Active(x_union))[1][2] ≈ 2x_union
+    @test autodiff(Reverse, g_union, Active, Const(false), Active(x_union))[1][2] == 0
 
     # TODO: Add test for NoShadowException
 end
