@@ -1,13 +1,37 @@
+# Before Julia's integrated cache (1.11), Enzyme's interpreter keeps what it infers in caches
+# of its own (`GLOBAL_FWD_CACHE`, `GLOBAL_REV_CACHE`), which nothing else guards. GPUCompiler
+# infers under Julia's codegen lock there, so inference that Enzyme starts itself takes that
+# lock too: derivatives can compile beside each other (see `cached_compilation`). The lock is
+# recursive; the task may already hold it.
+@inline function lock_enzyme_inference()
+    @static if !Interpreter.HAS_INTEGRATED_CACHE
+        ccall(:jl_typeinf_lock_begin, Cvoid, ())
+    end
+    return nothing
+end
+
+@inline function unlock_enzyme_inference()
+    @static if !Interpreter.HAS_INTEGRATED_CACHE
+        ccall(:jl_typeinf_lock_end, Cvoid, ())
+    end
+    return nothing
+end
+
 function return_type(interp::Core.Compiler.AbstractInterpreter, mi::Core.MethodInstance)::Type
     return @static if VERSION < v"1.11.0"
-        code = Core.Compiler.get(Core.Compiler.code_cache(interp), mi, nothing)
-        if code isa Core.Compiler.CodeInstance
-            return code.rettype
+        lock_enzyme_inference()
+        try
+            code = Core.Compiler.get(Core.Compiler.code_cache(interp), mi, nothing)
+            if code isa Core.Compiler.CodeInstance
+                return code.rettype
+            end
+            result = Core.Compiler.InferenceResult(mi, Core.Compiler.typeinf_lattice(interp))
+            Core.Compiler.typeinf(interp, result, :global)
+            Core.Compiler.is_inferred(result) || return Any
+            Core.Compiler.widenconst(Core.Compiler.ignorelimited(result.result))
+        finally
+            unlock_enzyme_inference()
         end
-        result = Core.Compiler.InferenceResult(mi, Core.Compiler.typeinf_lattice(interp))
-        Core.Compiler.typeinf(interp, result, :global)
-        Core.Compiler.is_inferred(result) || return Any
-        Core.Compiler.widenconst(Core.Compiler.ignorelimited(result.result))
     else
         something(Core.Compiler.typeinf_type(interp, mi), Any)
     end
@@ -65,7 +89,12 @@ function primal_return_type_world(
         world::UInt,
         @nospecialize(TT::Type),
     )
-    return Core.Compiler._return_type(primal_interp_world(mode, world), TT)
+    lock_enzyme_inference()
+    try
+        return Core.Compiler._return_type(primal_interp_world(mode, world), TT)
+    finally
+        unlock_enzyme_inference()
+    end
 end
 
 function primal_return_type_world(
