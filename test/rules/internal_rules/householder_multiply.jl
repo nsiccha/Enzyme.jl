@@ -167,20 +167,13 @@ function q_types(rng)
     )
 end
 
-# Static Forward over Reverse through the product needs runtime activity for some Q types:
-# the inner Reverse pass keeps the rule's constant factors on its tape, as it does for any
-# custom rule given a constant array, and the outer Forward pass then raises
-# EnzymeRuntimeActivityError. Which types depends on the Julia version, not on bounds
-# checking (measured on 1.10.12 and 1.12.7; other versions are not pinned).
-function static_forward_over_reverse_broken(name)
-    if VERSION < v"1.11"
-        return name == "lq" || startswith(name, "hessenberg")
-    elseif v"1.12" <= VERSION < v"1.13"
-        return name == "lq" || startswith(name, "qr")
-    else
-        return nothing
-    end
-end
+# Static Forward over Reverse through the product raised EnzymeRuntimeActivityError for some
+# Q types (lq and hessenberg on Julia 1.10, qr and lq on 1.12) until the mixed-activity
+# handler accepted literal Julia objects as constant data (`literal_constant_data` in
+# src/errors.jl). It is checked on the versions where it was measured to pass for every
+# Q type: 1.10.12, 1.12.7 and 1.13.1, with default and forced bounds checking. Julia 1.11
+# was not measured.
+static_forward_over_reverse_measured() = VERSION < v"1.11" || v"1.12" <= VERSION < v"1.14"
 
 @testset "x -> Q * x with constant Q: $name" for (name, Q) in q_types(Xoshiro(6))
     rng = Xoshiro(7)
@@ -208,11 +201,8 @@ end
     hv_ref = M' * (exp.(M * x) .* (M * v))
     q_hvp(mode) = autodiff(mode, q_grad, Duplicated, Const(q_sum_exp), Duplicated(x, v), Const(Q))[1]
     @test q_hvp(set_runtime_activity(Forward)) ≈ hv_ref
-    broken = static_forward_over_reverse_broken(name)
-    if broken === false
+    if static_forward_over_reverse_measured()
         @test q_hvp(Forward) ≈ hv_ref
-    elseif broken === true
-        @test_broken q_hvp(Forward) ≈ hv_ref
     end
     for mode in (Reverse, set_runtime_activity(Reverse))
         hv = Enzyme.gradient(mode, q_directional, Const(q_sum_exp), x, Const(v), Const(Q))[2]
