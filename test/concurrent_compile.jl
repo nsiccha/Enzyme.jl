@@ -8,7 +8,9 @@ using Enzyme, Test
 # the compile lock deadlocked with it (see `Enzyme.Compiler.cached_compilation`).
 #
 # The workload runs in a child process with several threads, so that a deadlock fails this
-# test (a watchdog in the child, then a timeout here) instead of hanging the test run.
+# test (a watchdog in the child, then a timeout here) instead of hanging the test run. The
+# child's main task, which runs the watchdog, is on its interactive thread: the workload's
+# tasks run on the default threads, so a deadlocked one cannot hold the watchdog's thread.
 
 const CONCURRENT_COMPILE_CHILD = raw"""
 using Enzyme
@@ -122,11 +124,11 @@ main()
 """
 
 @testset "Concurrent first calls of lazily and eagerly compiled derivatives" begin
-    cmd = `$(Base.julia_cmd()) --threads=4 --startup-file=no --project=$(Base.active_project()) -e $CONCURRENT_COMPILE_CHILD`
+    cmd = `$(Base.julia_cmd()) --threads=4,1 --startup-file=no --project=$(Base.active_project()) -e $CONCURRENT_COMPILE_CHILD`
     out = IOBuffer()
     proc = run(pipeline(cmd; stdout = out, stderr = out); wait = false)
     # The child's own watchdog ends a stalled run; this ends one whose watchdog cannot run.
-    timer = Timer(1800) do _
+    timer = Timer(1200) do _
         kill(proc, Base.SIGKILL)
     end
     wait(proc)
