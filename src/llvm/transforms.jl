@@ -974,6 +974,8 @@ end
 # post-AD calling-convention fixup needs exactly those. Before AD, `all_tracked = true`
 # also splits an sret of only tracked pointers (a `NamedTuple` or `Tuple` of arrays), so
 # that each copied pointer is a store the mixed-activity handler sees.
+# That pre-AD split copies the pointer fields on every Julia version. Only the post-AD
+# fixup omits them on Julia 1.12+, where their roots are handled separately.
 function memcpy_sret_split!(mod::LLVM.Module; all_tracked::Bool = false)
     dl = datalayout(mod)
     ctx = context(mod)
@@ -1031,7 +1033,7 @@ function memcpy_sret_split!(mod::LLVM.Module; all_tracked::Bool = false)
             if !LLVM.is_opaque(value_type(dst)) && eltype(value_type(dst)) != eltype(value_type(src))
                 src = pointercast!(B, src, LLVM.PointerType(eltype(value_type(dst)), addrspace(value_type(src))), "memcpy_sret_split_pointercast")
             end
-            copy_struct_into!(B, sty, dst, src, VERSION < v"1.12")
+            copy_struct_into!(B, sty, dst, src, all_tracked || VERSION < v"1.12")
             LLVM.API.LLVMInstructionEraseFromParent(cur)
         end
     end

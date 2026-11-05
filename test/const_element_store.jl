@@ -411,9 +411,9 @@ view_copy_returned(u, c) = sum(view_copy_pass(view(c, 2:3)) .* u[1:2])
     end
 end
 
-# Before Julia 1.12 a non-inlined function returning a struct of only arrays (a
-# `NamedTuple`, a `Tuple`, an immutable struct) also fills its `sret` buffer with one
-# `memcpy`. The split above skipped structs whose fields are all GC-tracked pointers,
+# A non-inlined function returning a struct of only arrays (a `NamedTuple`, a `Tuple`,
+# an immutable struct) fills its `sret` buffer with one `memcpy`, including on Julia
+# 1.12+. The split above skipped structs whose fields are all GC-tracked pointers,
 # so a `Const` record passed through a `@noinline` identity gave the caller its own
 # arrays as their shadows: Reverse added derivatives into them, and Forward took their
 # values as tangents.
