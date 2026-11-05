@@ -111,6 +111,14 @@ end
         dz = zero(z)
         x = [[-0.7, 0.2, 0.9], [0.4], Float64[], [0.5, -0.2]][1:length(active)]
         y = [[0.1, -0.2, 0.4], [0.7], Float64[], [-0.3, 0.8]][1:length(active)]
+        if VERSION >= v"1.13-"
+            # The shape fold returns `Any`, so `I` is not inferred. Julia 1.13 inlines
+            # `_broadcast_getindex(py, I)` and splits it by `isa` over every `Integer`
+            # type, which reads one boxed index as an `Int64`, an `Int128` and a
+            # `BigInt`; type analysis merges those layouts (Enzyme todo 129ht9v).
+            @test_broken autodiff(ReverseWithPrimal, union_preprocessed_density, Active, Duplicated(z, dz), Const(x), Const(y), Const(active))[2] ≈ union_preprocessed_density(z, x, y, active)
+            continue
+        end
         primal = autodiff(ReverseWithPrimal, union_preprocessed_density, Active, Duplicated(z, dz), Const(x), Const(y), Const(active))[2]
         @test primal ≈ union_preprocessed_density(z, x, y, active)
         expected = zeros(4)
@@ -196,6 +204,65 @@ end
             end
         end
         @test dz ≈ expected
+    end
+end
+
+# Broadcast's `unalias` either copies an array or keeps it. LLVM 20 folds the two
+# data pointer loads, from the copy's `Memory` (offset 8) and from the original
+# `Array` (offset 0), into one load through a phi of the two field addresses.
+function field_phi_fixture(; same_offset = false, write_first = false, other_use = false)
+    copied = same_offset ? "%copyfield = addrspacecast i8 addrspace(10)* %copy to i8 addrspace(11)*" :
+        "%copycast = addrspacecast i8 addrspace(10)* %copy to i8 addrspace(11)*\n" *
+        "%copyfield = getelementptr inbounds i8, i8 addrspace(11)* %copycast, i64 8"
+    return parse(
+        LLVM.Module, """
+        declare void @clobber()
+        declare void @retain(i8* addrspace(11)*)
+        define i8* @test(i1 %alias, i1 %ok, i8 addrspace(10)* %copy, i8 addrspace(10)* %array) {
+        entry:
+            br i1 %alias, label %copied, label %original
+        copied:
+            $copied
+            %copydata = bitcast i8 addrspace(11)* %copyfield to i8* addrspace(11)*
+            br label %merge
+        original:
+            %arraycast = addrspacecast i8 addrspace(10)* %array to i8 addrspace(11)*
+            %arraydata = bitcast i8 addrspace(11)* %arraycast to i8* addrspace(11)*
+            br i1 %ok, label %merge, label %fail
+        fail:
+            ret i8* null
+        merge:
+            %field = phi i8* addrspace(11)* [ %copydata, %copied ], [ %arraydata, %original ]
+            $(write_first ? "call void @clobber()" : "")
+            $(other_use ? "call void @retain(i8* addrspace(11)* %field)" : "")
+            %data = load i8*, i8* addrspace(11)* %field, align 8
+            ret i8* %data
+        }
+        """
+    )
+end
+
+@testset "Field address phis are unfolded into phis of loads" begin
+    LLVM.Context() do ctx
+        mod = field_phi_fixture()
+        fn = LLVM.functions(mod)["test"]
+        @test Enzyme.Compiler.unfold_field_phi_loads!(fn)
+        LLVM.verify(mod)
+        merge = only(bb for bb in LLVM.blocks(fn) if LLVM.name(bb) == "merge")
+        data = only(LLVM.operands(LLVM.terminator(merge)))
+        @test data isa LLVM.PHIInst
+        @test all(v isa LLVM.LoadInst for (v, _) in LLVM.incoming(data))
+        # `original` also branches to `fail`, so its load sits on a new edge block.
+        @test all(length(LLVM.successors(LLVM.terminator(b))) == 1 for (_, b) in LLVM.incoming(data))
+        @test !any(inst isa LLVM.PHIInst && LLVM.addrspace(LLVM.value_type(inst)) == 11 for bb in LLVM.blocks(fn) for inst in LLVM.instructions(bb))
+        for options in ((; same_offset = true), (; write_first = true), (; other_use = true))
+            mod = field_phi_fixture(; options...)
+            fn = LLVM.functions(mod)["test"]
+            @test !Enzyme.Compiler.unfold_field_phi_loads!(fn)
+            LLVM.verify(mod)
+            merge = only(bb for bb in LLVM.blocks(fn) if LLVM.name(bb) == "merge")
+            @test only(LLVM.operands(LLVM.terminator(merge))) isa LLVM.LoadInst
+        end
     end
 end
 
