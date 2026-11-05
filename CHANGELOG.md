@@ -6,6 +6,11 @@
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
   instead of raising `EnzymeRuntimeActivityError`.
+- Preserve input shadows when a function returns newly initialized storage
+  (dogfood libEnzyme build `33709d12`). Reverse differentiation through a
+  non-inlined array gather could segfault because the compiler treated those
+  writes as invisible outside the call and discarded the input's shadow.
+  Returning a pointer loaded from a new object also retains the writes.
 - Differentiate conditional integer/float denominators and boxed scalar/vector
   unions in ordinary Reverse mode. Uses with a proven branch condition now
   select the appropriate input before casts and loads, avoiding conflicting
