@@ -7644,8 +7644,11 @@ end
         # shadow of e.g. `unalias(dest, view(c, i))` pointed into the `Const` array `c`.
         # Field-wise stores reach the mixed-activity handler like any other store of a
         # constant pointer. Julia 1.12+ passes those pointers in `returnRoots` instead.
+        # A struct of only tracked pointers is split too: a `@noinline` function that
+        # returns a `Const` `NamedTuple` of arrays otherwise gave the caller the arrays
+        # themselves as their shadows, and Reverse added derivatives into them.
         @static if VERSION < v"1.12"
-            memcpy_sret_split!(mod)
+            memcpy_sret_split!(mod; all_tracked = true)
         end
         memcpy_alloca_to_loadstore(mod, job.world, enzyme_ctx)
         force_recompute!(mod)

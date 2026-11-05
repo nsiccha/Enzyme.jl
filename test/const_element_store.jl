@@ -411,6 +411,85 @@ view_copy_returned(u, c) = sum(view_copy_pass(view(c, 2:3)) .* u[1:2])
     end
 end
 
+# Before Julia 1.12 a non-inlined function returning a struct of only arrays (a
+# `NamedTuple`, a `Tuple`, an immutable struct) also fills its `sret` buffer with one
+# `memcpy`. The split above skipped structs whose fields are all GC-tracked pointers,
+# so a `Const` record passed through a `@noinline` identity gave the caller its own
+# arrays as their shadows: Reverse added derivatives into them, and Forward took their
+# values as tangents.
+@noinline record_pass(r) = r
+@noinline record_pass_twice(r) = record_pass(r)
+@noinline record_inner(r) = r.inner
+struct ArrayRecord
+    a::Vector{Float64}
+    k::Vector{Int}
+end
+record_namedtuple(u, r) = (s = record_pass(r); sum(u .* s.a .+ s.k))
+record_tuple(u, r) = (s = record_pass(r); sum(u .* s[1] .+ s[2]))
+record_struct(u, r) = (s = record_pass(r); sum(u .* s.a .+ s.k))
+record_nested(u, r) = (s = record_inner(r); sum(u .* s.a .+ s.k))
+record_twice(u, r) = (s = record_pass_twice(r); sum(u .* s.a .+ s.k))
+record_scaled(r, b) = (s = record_pass(r); sum(b .* s.a .+ s.k))
+record_contents(r::ArrayRecord) = (r.a, r.k)
+record_contents(r) = r
+
+@testset "Records of constant arrays returned by non-inlined calls" begin
+    u = [0.5, 0.25]
+    a = [1.0, 2.0]
+    @testset "$(nameof(f))" for (f, r, geta) in (
+            (record_namedtuple, (; a = copy(a), k = [1, 2]), s -> s.a),
+            (record_tuple, (copy(a), [1.0, 2.0]), s -> s[1]),
+            (record_struct, ArrayRecord(copy(a), [1, 2]), s -> s.a),
+            (record_nested, (; inner = (; a = copy(a), k = [1, 2]), w = [5.0]), s -> s.inner.a),
+            (record_twice, (; a = copy(a), k = [1, 2]), s -> s.a),
+        )
+        r0 = deepcopy(record_contents(r))
+        for mode in (Reverse, set_runtime_activity(Reverse))
+            for _ in 1:2
+                du = zero(u)
+                autodiff(mode, f, Active, Duplicated(u, du), Const(r))
+                @test du ≈ a
+                @test record_contents(r) == r0
+            end
+        end
+
+        du = zero(u)
+        dr = Enzyme.make_zero(r)
+        autodiff(Reverse, f, Active, Duplicated(u, du), Duplicated(r, dr))
+        @test du ≈ a
+        @test geta(dr) ≈ u
+        @test record_contents(r) == r0
+
+        @test autodiff(Forward, f, Duplicated(u, ones(2)), Const(r))[1] ≈ sum(a)
+        bres = autodiff(Forward, f, BatchDuplicated(u, (ones(2), 2 .* ones(2))), Const(r))[1]
+        @test bres[1] ≈ sum(a)
+        @test bres[2] ≈ 2 * sum(a)
+
+        du1 = zero(u)
+        du2 = zero(u)
+        autodiff(Reverse, f, Active, BatchDuplicated(u, (du1, du2)), Const(r))
+        @test du1 ≈ a
+        @test du2 ≈ a
+
+        du = zero(u)
+        fwd, rev = autodiff_thunk(
+            ReverseSplitWithPrimal, Const{typeof(f)}, Active, Duplicated{typeof(u)}, Const{typeof(r)}
+        )
+        tape, prim, _ = fwd(Const(f), Duplicated(u, du), Const(r))
+        @test prim ≈ f(u, r)
+        rev(Const(f), Duplicated(u, du), Const(r), 1.0, tape)
+        @test du ≈ a
+        @test record_contents(r) == r0
+    end
+
+    # The reported shape: an active scalar beside the record, repeated calls.
+    r = (; a = copy(a), k = [1, 2])
+    for _ in 1:3
+        @test autodiff(Reverse, record_scaled, Active, Const(r), Active(0.1))[1][2] ≈ sum(a)
+        @test r.a == a
+    end
+end
+
 # Julia 1.13 constructs a reshaped Array by copying the source MemoryRef into
 # a new header. A constant row reduction can make that header active when it
 # shares the reshaped array with a broadcast over active data.
