@@ -1,5 +1,5 @@
 using Enzyme, LinearAlgebra, Libdl, Test
-import EnzymeCore.EnzymeRules
+using Enzyme: EnzymeRules
 
 # `mul!` reaches BLAS through `gemv!`, which Julia does not inline. The reverse
 # pass of that call reads the matrix again, so the call's augmented pass copies
