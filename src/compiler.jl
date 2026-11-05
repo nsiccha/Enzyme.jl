@@ -3511,6 +3511,7 @@ const DumpPostWrap = Ref(false)
 
 include("compiler/narrow_tuple_fields.jl")
 include("compiler/fold_type_tests.jl")
+include("compiler/conditioned_selects.jl")
 include("compiler/constant_fields.jl")
 include("compiler/slot_field_types.jl")
 
@@ -3534,6 +3535,7 @@ function enzyme!(
         enzyme_ctx::EnzymeContext,
 )
     fold_type_tests!(mod, enzyme_ctx)
+    simplify_conditioned_selects!(mod)
     narrow_tuple_fields!(mod, enzyme_ctx)
     if DumpPreEnzyme[]
         API.EnzymeDumpModuleRef(mod.ref)
