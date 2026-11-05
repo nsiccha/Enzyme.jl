@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Decide which arm of a branch a loop iteration took from the recomputed
+  branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
+  When four or more paths met in one block inside a loop, as in
+  `LogExpFunctions.log1pexp`, the reverse pass taped the path taken at every
+  iteration. In a nested loop whose inner trip count varies, each outer
+  iteration allocated its own buffer for that tape, which made Reverse of
+  such a nest about 1.35 times slower than the same loop with its inner loop
+  outlined. Conditions that cannot be recomputed safely keep the cache.
 - Differentiate Forward over Reverse through `append!` or `copyto!` from a
   `SubArray` on Julia 1.10. The augmented primal of `copyto!` reads a field of
   `unalias(dest, src)` through a pointer phi of the `src` argument and a copy of
