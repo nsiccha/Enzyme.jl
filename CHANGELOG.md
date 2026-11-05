@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Support literal constant objects captured beside active data, including a
+  dictionary inside a callback that reads active views. Static differentiation
+  now gives these objects a separate zero-filled shadow when one is needed,
+  instead of raising `EnzymeRuntimeActivityError`.
 - Preserve input shadows when a function returns newly initialized storage
   (dogfood libEnzyme build `ef0cd634`). Reverse differentiation through a
   non-inlined array gather could segfault because the compiler treated those
