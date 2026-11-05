@@ -12,6 +12,12 @@
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
   instead of raising `EnzymeRuntimeActivityError`.
+- Differentiate a broadcast that copies an operand which may alias its
+  destination, on Julia 1.13. LLVM 20 merged the data pointers of the copy's
+  `Memory` and of the original `Array` into one load through a phi of their
+  field addresses, which Enzyme turned into a phi of the two objects and then
+  rejected with `IllegalTypeAnalysisException`. The load now stays on each
+  edge. This covers broadcasting a scalar/vector union inside a loop.
 - Cache a value that does not change across the iterations of a loop once
   per entry of that loop, not once per iteration (dogfood libEnzyme build
   `f392eba5`). A load in a loop, from memory no instruction of the loop

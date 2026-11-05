@@ -969,8 +969,14 @@ function memcpy_alloca_to_loadstore(mod::LLVM.Module, world::UInt, enzyme_ctx::E
     return
 end
 
-# Split a memcpy into an sret with jlvaluet into individual load/stores
-function memcpy_sret_split!(mod::LLVM.Module)
+# Split a memcpy into an sret with jlvaluet into individual load/stores.
+# By default only an sret that mixes GC-tracked pointers with other data is split: the
+# post-AD calling-convention fixup needs exactly those. Before AD, `all_tracked = true`
+# also splits an sret of only tracked pointers (a `NamedTuple` or `Tuple` of arrays), so
+# that each copied pointer is a store the mixed-activity handler sees.
+# That pre-AD split copies the pointer fields on every Julia version. Only the post-AD
+# fixup omits them on Julia 1.12+, where their roots are handled separately.
+function memcpy_sret_split!(mod::LLVM.Module; all_tracked::Bool = false)
     dl = datalayout(mod)
     ctx = context(mod)
     sretkind = LLVM.kind(
@@ -999,7 +1005,7 @@ function memcpy_sret_split!(mod::LLVM.Module)
             continue
         end
         tracked = CountTrackedPointers(sty)
-        if tracked.all || tracked.count == 0
+        if tracked.count == 0 || (tracked.all && !all_tracked)
             continue
         end
         todo = LLVM.CallInst[]
@@ -1027,7 +1033,7 @@ function memcpy_sret_split!(mod::LLVM.Module)
             if !LLVM.is_opaque(value_type(dst)) && eltype(value_type(dst)) != eltype(value_type(src))
                 src = pointercast!(B, src, LLVM.PointerType(eltype(value_type(dst)), addrspace(value_type(src))), "memcpy_sret_split_pointercast")
             end
-            copy_struct_into!(B, sty, dst, src, VERSION < v"1.12")
+            copy_struct_into!(B, sty, dst, src, all_tracked || VERSION < v"1.12")
             LLVM.API.LLVMInstructionEraseFromParent(cur)
         end
     end
@@ -2101,6 +2107,125 @@ function fold_array_data_phis!(mod::LLVM.Module)
         end
         return nothing
     end
+end
+
+"""
+    unfold_field_phi_loads!(f::LLVM.Function) -> Bool
+
+Turn a load through a phi of field addresses at different offsets back into a phi
+of loads.
+
+LLVM's instcombine folds a phi of two loads into one load through a phi of their
+addresses. Julia 1.13.1 (LLVM 20) does so in broadcast's `unalias`, for the data
+pointer of a copied `Memory` (its field at offset 8) and that of the original
+`Array` (its field at offset 0). `nodecayed_phis!` then rewrites that phi into a
+phi of the two objects and a phi of the offsets, and Enzyme's type analysis merges
+the layouts of a `Memory` and an `Array` (`IllegalTypeAnalysisException`). Loading
+in the predecessors keeps the objects apart, as they were before the fold.
+
+Only rewrite what is certainly equivalent: a phi in address space 11 whose incoming
+values are not all at the same constant offset from their base, and whose users
+are all non-volatile loads from it in its own block that no memory write precedes.
+Each load is re-created before the terminator of every predecessor. An edge whose
+predecessor also branches elsewhere is split first, so no load becomes speculative.
+"""
+function unfold_field_phi_loads!(f::LLVM.Function)::Bool
+    # Splitting an edge rebuilds the phis of the block it leads to, so the
+    # candidates are collected again afterwards.
+    edges = Tuple{LLVM.BasicBlock, LLVM.BasicBlock}[]
+    for bb in blocks(f)
+        for phi in instructions(bb)
+            isa(phi, LLVM.PHIInst) || break
+            field_phi_loads(phi) === nothing && continue
+            for (_, pred) in LLVM.incoming(phi)
+                length(successors(terminator(pred))) == 1 && continue
+                (pred, bb) in edges || push!(edges, (pred, bb))
+            end
+        end
+    end
+    changed = false
+    builder = IRBuilder()
+    for (pred, succ) in edges
+        split_edge!(builder, pred, succ)
+    end
+    for bb in blocks(f)
+        phis = LLVM.PHIInst[]
+        for phi in instructions(bb)
+            isa(phi, LLVM.PHIInst) || break
+            push!(phis, phi)
+        end
+        for phi in phis
+            loads = field_phi_loads(phi)
+            loads === nothing && continue
+            all_single = true
+            for (_, pred) in LLVM.incoming(phi)
+                all_single &= length(successors(terminator(pred))) == 1
+            end
+            all_single || continue
+            unfold_field_phi_loads!(builder, phi, loads)
+            changed = true
+        end
+    end
+    dispose(builder)
+    return changed
+end
+
+# The loads `unfold_field_phi_loads!` moves out of `phi`'s block, or `nothing`.
+function field_phi_loads(phi::LLVM.PHIInst)::Union{Nothing, Vector{LLVM.LoadInst}}
+    ty = value_type(phi)
+    (isa(ty, LLVM.PointerType) && addrspace(ty) == Derived) || return nothing
+    bb = LLVM.parent(phi)
+    offset = nothing
+    same = true
+    for (v, pred) in LLVM.incoming(phi)
+        count(Base.Fix2(==, bb), successors(terminator(pred))) == 1 || return nothing
+        _, off = get_base_and_offset(v)
+        offset === nothing || offset == off || (same = false)
+        offset = off
+    end
+    same && return nothing
+    loads = LLVM.LoadInst[]
+    for u in LLVM.uses(phi)
+        ld = LLVM.user(u)
+        (isa(ld, LLVM.LoadInst) && LLVM.parent(ld) == bb) || return nothing
+        Bool(LLVM.API.LLVMGetVolatile(ld)) && return nothing
+        ld in loads || push!(loads, ld)
+    end
+    isempty(loads) && return nothing
+    # A write before one of the loads could change what it reads.
+    remaining = length(loads)
+    for inst in instructions(bb)
+        isa(inst, LLVM.PHIInst) && continue
+        if isa(inst, LLVM.LoadInst) && inst in loads
+            remaining -= 1
+            remaining == 0 && break
+        elseif root_path_may_write(inst)
+            return nothing
+        end
+    end
+    return loads
+end
+
+function unfold_field_phi_loads!(builder::LLVM.IRBuilder, phi::LLVM.PHIInst, loads::Vector{LLVM.LoadInst})
+    for ld in loads
+        position!(builder, phi)
+        merged = phi!(builder, value_type(ld), LLVM.name(ld))
+        for (v, pred) in LLVM.incoming(phi)
+            position!(builder, terminator(pred))
+            clone = LLVM.Instruction(LLVM.API.LLVMInstructionClone(ld))
+            LLVM.API.LLVMSetOperand(clone, 0, v)
+            LLVM.API.LLVMInsertIntoBuilderWithName(builder, clone, LLVM.name(ld))
+            push!(LLVM.incoming(merged), (clone, pred))
+        end
+        # Memory metadata such as `!tbaa` is not allowed on a phi.
+        for k in ("enzyme_type", "enzyme_inactive", "enzyme_active")
+            haskey(metadata(ld), k) && (metadata(merged)[k] = metadata(ld)[k])
+        end
+        replace_uses!(ld, merged)
+        LLVM.erase!(ld)
+    end
+    LLVM.erase!(phi)
+    return
 end
 
 function nodecayed_phis!(mod::LLVM.Module)
