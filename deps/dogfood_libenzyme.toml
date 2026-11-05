@@ -7,6 +7,6 @@
 # for the consumer's LLVM version, and refuses to resolve when that build is
 # missing. Every jll pin move rebases the branch, and every new repair is one
 # more cherry-pick; either way `commit` changes here in the same landing.
-commit = "c1743bf9ac66c1c7513e221f94d88be2b025b5ab"
+commit = "842cbefee01f8a7fed68a98587cbe6fbee2be4e4"
 branch = "dogfood-jll"
 repository = "https://github.com/nsiccha/Enzyme"
