@@ -2282,6 +2282,15 @@ end
             end
 
             if constant_element
+                # A store into a write-only output can reuse the zero copy an
+                # earlier call stored there (`reuse_retained_shadow`).
+                shadowres = emit_reused_retained_shadow!(
+                    prevbb, gutils, val, cur, width, created, enzyme_ctx,
+                )
+                if shadowres !== nothing
+                    seen[cur] = shadowres
+                    return shadowres
+                end
                 shadowargs = LLVM.Value[unsafe_to_llvm(prevbb, make_zero), ncur]
                 shadowres = emit_zero_shadows!(
                     prevbb, shadowargs, value_type(cur), width, created,

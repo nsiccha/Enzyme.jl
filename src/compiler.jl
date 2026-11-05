@@ -3537,6 +3537,7 @@ include("compiler/narrow_tuple_fields.jl")
 include("compiler/fold_type_tests.jl")
 include("compiler/conditioned_selects.jl")
 include("compiler/constant_fields.jl")
+include("compiler/retained_shadows.jl")
 include("compiler/slot_field_types.jl")
 
 function enzyme!(
@@ -3829,6 +3830,9 @@ function enzyme!(
     elseif mode == API.DEM_ReverseModeCombined
         returnUsed = !isghostty(actualRetType)
         returnUsed &= returnPrimal
+            # Only the arguments of the differentiated function itself are outputs whose
+            # earlier zero copies `reuse_retained_shadow` may reuse.
+            mark_retained_shadow_entry!(primalf)
         adjointf = LLVM.Function(
             API.EnzymeCreatePrimalAndGradient(
                 logic,
@@ -3850,6 +3854,8 @@ function enzyme!(
                 parallel,
             ),
         ) #=atomicAdd=#
+            unmark_retained_shadow_entry!(primalf)
+            unmark_retained_shadow_entry!(adjointf)
         augmented_primalf = nothing
         if wrap
             adjointf = create_abi_wrapper(

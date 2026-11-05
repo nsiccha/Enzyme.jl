@@ -309,6 +309,29 @@ Enzyme.autodiff(Reverse, f, Active(1.2), Duplicated(Vector{Float64}(undef, 1), z
 ((10.367999999999999, nothing, nothing, nothing),)
 ```
 
+## Reused zero shadows of constant data
+
+A function can store constant data into a `Duplicated` argument, for example a view of a struct that holds a `Const` array beside active data, assigned to a `Duplicated` `Ref`. The stored struct then needs a shadow, and Enzyme gives the constant array a zero-filled copy as its part of that shadow. Derivatives written into that copy are discarded.
+
+In combined Reverse mode (`autodiff(Reverse, ...)`), a later call can reuse the zero copy an earlier call stored at the same place instead of allocating a new one. This happens only when the differentiated function itself stores into one of its own `Duplicated` arguments, which it only writes and does not capture, when neither it nor anything it calls touches global memory or has unknown memory effects, and only when the copy
+
+- was allocated by Enzyme itself,
+- has the constant array's type and size,
+- shares no memory with any argument or shadow of the call, and
+- holds only positive zeros, for example after `make_zero!` of the output's shadow.
+
+A copy the caller supplied is never reused, because Enzyme reads a caller's shadow only where the primal accesses the corresponding memory (see "Identical types in `Duplicated` / Memory Layout" above). Checking a copy reads all of it, so reusing it saves the allocation, not time proportional to its length.
+
+As a consequence, a reference kept to an earlier call's output shadow may hold the same buffer as a later call's shadow:
+
+```julia
+kept = dbox[]
+Enzyme.autodiff(Reverse, f, Active, Duplicated(x, dx), Duplicated(box, dbox), Const(data))
+parent(kept).base === parent(dbox[]).base  # may be true
+```
+
+Copy what you need out of an output shadow before the next call. Do not pass an earlier output shadow, or part of it, as the shadow of another argument of a later call: Enzyme recognizes that only for arrays passed directly or held in inline fields of an argument.
+
 ## [Runtime Activity](@id faq-runtime-activity)
 
 When computing the derivative of mutable variables, Enzyme also needs additional temporary storage space for the corresponding derivative variables. If an argument `tmp` is marked as Const, Enzyme does not have any temporary storage space for the derivatives!
