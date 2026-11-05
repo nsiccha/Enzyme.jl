@@ -6,6 +6,13 @@
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
   instead of raising `EnzymeRuntimeActivityError`.
+- Cache a value that does not change across the iterations of a loop once
+  per entry of that loop, not once per iteration (dogfood libEnzyme build
+  `f392eba5`). A load in a loop, from memory no instruction of the loop
+  writes, through an address the loop does not change, was taped at every
+  iteration when the reverse pass could not reload it. A `sum` over a
+  generator inside a loop did so for each captured array and its shadow, at
+  every term of the sum: about 150 bytes per term, now about 2.
 - Preserve input shadows when a function returns newly initialized storage
   (dogfood libEnzyme build `33709d12`). Reverse differentiation through a
   non-inlined array gather could segfault because the compiler treated those
