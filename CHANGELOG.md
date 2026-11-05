@@ -7,7 +7,7 @@
   now gives these objects a separate zero-filled shadow when one is needed,
   instead of raising `EnzymeRuntimeActivityError`.
 - Preserve input shadows when a function returns newly initialized storage
-  (dogfood libEnzyme build `ef0cd634`). Reverse differentiation through a
+  (dogfood libEnzyme build `33709d12`). Reverse differentiation through a
   non-inlined array gather could segfault because the compiler treated those
   writes as invisible outside the call and discarded the input's shadow.
   Returning a pointer loaded from a new object also retains the writes.
