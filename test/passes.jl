@@ -1455,3 +1455,265 @@ end
         @test LLVM.name(F) == "fresh"
     end
 end
+
+# A load through a merge of what a call returned and an argument, behind a branch.
+function merge_tail_ir(typed::Bool)
+    obj = typed ? "{} addrspace(10)*" : "ptr addrspace(10)"
+    data = typed ? "double addrspace(13)*" : "ptr addrspace(13)"
+    slot = typed ? "double addrspace(13)* addrspace(11)*" : "ptr addrspace(11)"
+    lenp = typed ? "i64*" : "ptr"
+    sides = """
+      %fs = addrspacecast $obj %f to $slot
+      br i1 %c, label %left, label %right
+
+    left:
+      %fd = load $data, $slot %fs, align 8
+      %pl = getelementptr inbounds double, $data %fd, i64 %i
+      br label %merge
+
+    right:
+      %as = addrspacecast $obj %a to $slot
+      %ad = load $data, $slot %as, align 8
+      %pr = getelementptr inbounds double, $data %ad, i64 %i
+      br label %merge
+    """
+    return """
+    source_filename = "start"
+    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+    target triple = "x86_64-linux-gnu"
+
+    declare noalias nonnull $obj @fresh()
+    declare void @throw(i64) noreturn
+    declare void @throw_array($obj) noreturn
+    declare void @use($data)
+
+    ; The load sits behind a check that does not depend on the merge. `%len` is used
+    ; in both blocks behind it.
+    define double @behind(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+    $sides
+    merge:
+      %p = phi $data [ %pl, %left ], [ %pr, %right ]
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %in, label %oob
+
+    oob:
+      call void @throw(i64 %len)
+      unreachable
+
+    in:
+      %v = load double, $data %p, align 8
+      %s = sitofp i64 %len to double
+      %r = fmul double %v, %s
+      ret double %r
+    }
+
+    ; Two branches between the merge and the load.
+    define double @twice(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+    $sides
+    merge:
+      %p = phi $data [ %pl, %left ], [ %pr, %right ]
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %mid, label %oob
+
+    oob:
+      call void @throw(i64 %len)
+      unreachable
+
+    mid:
+      %ok2 = icmp ne i64 %i, 3
+      br i1 %ok2, label %in, label %oob2
+
+    oob2:
+      call void @throw(i64 %i)
+      unreachable
+
+    in:
+      %v = load double, $data %p, align 8
+      ret double %v
+    }
+
+    ; A merge of whole arrays, as a select, whose other use is the bounds error.
+    define double @picked(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+      %m = select i1 %c, $obj %f, $obj %a
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %in, label %oob
+
+    oob:
+      call void @throw_array($obj %m)
+      unreachable
+
+    in:
+      %ms = addrspacecast $obj %m to $slot
+      %md = load $data, $slot %ms, align 8
+      %p = getelementptr inbounds double, $data %md, i64 %i
+      %v = load double, $data %p, align 8
+      ret double %v
+    }
+
+    ; Left alone. The pointer reaches a call that returns.
+    define double @escapes(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+    $sides
+    merge:
+      %p = phi $data [ %pl, %left ], [ %pr, %right ]
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %in, label %oob
+
+    oob:
+      call void @throw(i64 %len)
+      unreachable
+
+    in:
+      call void @use($data %p)
+      %v = load double, $data %p, align 8
+      ret double %v
+    }
+
+    ; Left alone. The load's block has another predecessor.
+    define double @joined(i1 %c, i1 %d, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+    $sides
+    merge:
+      %p = phi $data [ %pl, %left ], [ %pr, %right ]
+      br i1 %d, label %in, label %other
+
+    other:
+      br label %in
+
+    in:
+      %v = load double, $data %p, align 8
+      ret double %v
+    }
+
+    ; Left alone. A store before the load could write what it reads.
+    define double @written(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+    $sides
+    merge:
+      %p = phi $data [ %pl, %left ], [ %pr, %right ]
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %in, label %oob
+
+    oob:
+      call void @throw(i64 %len)
+      unreachable
+
+    in:
+      store i64 0, $lenp %lenp, align 8
+      %v = load double, $data %p, align 8
+      ret double %v
+    }
+
+    ; Left alone. Another pointer into an object leaves the block to be cloned.
+    define double @other_pointer(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+      %as2 = addrspacecast $obj %a to $slot
+      %pl2 = load $data, $slot %as2, align 8
+    $sides
+    merge:
+      %p = phi $data [ %pl, %left ], [ %pr, %right ]
+      %q = getelementptr inbounds double, $data %pl2, i64 %i
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %in, label %oob
+
+    oob:
+      call void @throw(i64 %len)
+      unreachable
+
+    in:
+      %v = load double, $data %p, align 8
+      %w = load double, $data %q, align 8
+      %r = fadd double %v, %w
+      ret double %r
+    }
+
+    ; Left alone. Neither side is data the function made.
+    define double @arguments(i1 %c, i64 %i, $lenp %lenp, $obj %a, $obj %f) {
+    top:
+    $sides
+    merge:
+      %p = phi $data [ %pl, %left ], [ %pr, %right ]
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %in, label %oob
+
+    oob:
+      call void @throw(i64 %len)
+      unreachable
+
+    in:
+      %v = load double, $data %p, align 8
+      ret double %v
+    }
+    """
+end
+
+function merge_tail_split!(mod, name)
+    f = functions(mod)[name]
+    Enzyme.Compiler.split_constant_merges!(mod, Enzyme.Compiler.ConstantFields(f, Set{LLVM.Value}()))
+    return f
+end
+
+@testset "Merges of data a function made, behind branches" begin
+    LLVM.Context() do ctx
+        mod = parse(LLVM.Module, merge_tail_ir(LLVM.supports_typed_pointers(ctx)))
+
+        behind = merge_tail_split!(mod, "behind")
+        @test LLVM.verify(mod) === nothing
+        @test pointer_phi_addrspaces(behind) == Int[]
+        in_block = only(bb for bb in blocks(behind) if LLVM.name(bb) == "in")
+        loaded = only(inst for inst in instructions(in_block) if isa(inst, LLVM.PHIInst) && value_type(inst) == LLVM.DoubleType())
+        for (v, pred) in LLVM.incoming(loaded)
+            # Each load runs on its own edge into `in`, behind its copy of the check.
+            @test isa(v, LLVM.LoadInst)
+            @test LLVM.parent(v) == pred
+            @test collect(successors(terminator(pred))) == [in_block]
+            check = only(LLVM.predecessors(pred))
+            @test any(isa(inst, LLVM.ICmpInst) for inst in instructions(check))
+        end
+        # `%len`, used behind the check, is a phi on both sides of it.
+        oob = only(bb for bb in blocks(behind) if LLVM.name(bb) == "oob")
+        @test count(inst -> isa(inst, LLVM.PHIInst) && value_type(inst) == LLVM.IntType(64), collect(instructions(oob))) == 1
+        @test count(inst -> isa(inst, LLVM.PHIInst) && value_type(inst) == LLVM.IntType(64), collect(instructions(in_block))) == 1
+        @test length(LLVM.predecessors(oob)) == 2
+
+        twice = merge_tail_split!(mod, "twice")
+        @test LLVM.verify(mod) === nothing
+        @test pointer_phi_addrspaces(twice) == Int[]
+        in_block = only(bb for bb in blocks(twice) if LLVM.name(bb) == "in")
+        @test count(inst -> isa(inst, LLVM.PHIInst) && value_type(inst) == LLVM.DoubleType(), collect(instructions(in_block))) == 1
+        @test !any(isa(inst, LLVM.LoadInst) for inst in instructions(in_block))
+
+        picked = merge_tail_split!(mod, "picked")
+        @test LLVM.verify(mod) === nothing
+        @test !any(isa(inst, LLVM.SelectInst) for bb in blocks(picked) for inst in instructions(bb))
+        in_block = only(bb for bb in blocks(picked) if LLVM.name(bb) == "in")
+        @test pointer_phi_addrspaces(picked) == [10]
+        oob = only(bb for bb in blocks(picked) if LLVM.name(bb) == "oob")
+        @test isa(first(instructions(oob)), LLVM.PHIInst)
+        @test !any(isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType) for inst in instructions(in_block))
+
+        for (name, kept) in (("escapes", 13), ("joined", 13), ("written", 13), ("other_pointer", 13), ("arguments", 13))
+            f = merge_tail_split!(mod, name)
+            @test LLVM.verify(mod) === nothing
+            @test pointer_phi_addrspaces(f) == [kept]
+            @test any(LLVM.name(bb) == "merge" for bb in blocks(f))
+        end
+    end
+end

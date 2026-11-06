@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Decide which arm of a branch a loop iteration took from the recomputed
+  branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
+  When four or more paths met in one block inside a loop, as in
+  `LogExpFunctions.log1pexp`, the reverse pass taped the path taken at every
+  iteration. In a nested loop whose inner trip count varies, each outer
+  iteration allocated its own buffer for that tape, which made Reverse of
+  such a nest about 1.35 times slower than the same loop with its inner loop
+  outlined. Conditions that cannot be recomputed safely keep the cache.
 - Differentiate a read that picks each element from data the function made
   itself or from active data, `iszero(s) ? c[i] : active[s]` with `c` computed
   from a `Const` argument, under static activity. LLVM folds the two loads into
@@ -13,14 +21,6 @@
   `Const` array that remained on Julia 1.12 under `--check-bounds=yes`. An array
   a call returns as new memory, such as a `copy`, now gets a zero shadow where
   the merged array itself reaches a call, as an array the function allocates did.
-- Decide which arm of a branch a loop iteration took from the recomputed
-  branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
-  When four or more paths met in one block inside a loop, as in
-  `LogExpFunctions.log1pexp`, the reverse pass taped the path taken at every
-  iteration. In a nested loop whose inner trip count varies, each outer
-  iteration allocated its own buffer for that tape, which made Reverse of
-  such a nest about 1.35 times slower than the same loop with its inner loop
-  outlined. Conditions that cannot be recomputed safely keep the cache.
 - Differentiate Forward over Reverse through `append!` or `copyto!` from a
   `SubArray` on Julia 1.10. The augmented primal of `copyto!` reads a field of
   `unalias(dest, src)` through a pointer phi of the `src` argument and a copy of
