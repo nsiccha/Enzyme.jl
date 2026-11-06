@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Do not recompute a call on a path the forward pass skipped (dogfood
+  libEnzyme build `045d93e1`). When the reverse pass recomputes a value that
+  three paths merge, one of which skips a call while the other two branch on
+  its result, it evaluated that branch condition on all three paths, from
+  values the skipping path never computed. A recomputed `sqrt` then threw a
+  `DomainError` the primal never raised, for example in a loop over
+  `x <= 0 ? 1.0 : (r = sqrt(x); r >= 2 ? exp(r) : r)`. The condition is now
+  computed only on the two paths that ran it, unless it is safe to speculate.
+- Avoid saving reader inputs for every term when results are written into a
+  fresh output array that the reader cannot access (dogfood libEnzyme build
+  `08f0e8d9`). The cache analysis now proves that private output storage stays
+  inaccessible to the reader, including across loop iterations. Passing or
+  publishing that storage to the reader still retains the required caches.
+- Fix a segfault on Julia 1.13 (LLVM 20) while compiling a Reverse derivative
+  (dogfood libEnzyme build `2cc9b459`). Deciding whether a split reverse pass
+  replays a loop only once asked scalar evolution for the loop's trip count
+  after Enzyme had inserted placeholder phis without incoming values, and
+  LLVM 20's loop guards read the first incoming block of such a phi. The
+  decision now takes the loop limit Enzyme already computed for that loop.
 - Decide which arm of a branch a loop iteration took from the recomputed
   branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
   When four or more paths met in one block inside a loop, as in

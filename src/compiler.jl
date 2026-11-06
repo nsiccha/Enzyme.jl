@@ -8836,6 +8836,7 @@ end
 # first, return that one: a compile beside the holder of `cache_lock` (see
 # `cached_compilation`) can finish the same job.
 function compile_and_publish(@nospecialize(job::CompilerJob), key::UInt)::CompileResult
+    Threads.atomic_add!(compiled_derivatives, 1)
     mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table = _thunk(job)
     obj = _link(job, mod, edges, adjoint_name, primal_name, TapeType, prepost)
     lock(cache_publish_lock)
@@ -8892,6 +8893,8 @@ locks of its own, held without blocking.
     end
 end
 
+include("compiler/retained.jl")
+
 """
     clear_caches!()
 
@@ -8920,6 +8923,10 @@ function clear_caches!()
     empty!(autodiff_cache)
     empty!(Enzyme.tape_cache)
     empty!(Enzyme.captured_constants)
+    empty!(Enzyme.captured_addresses)
+    empty!(materialized_derivatives)
+    compiled_derivatives[] = 0
+    reset_retained_statistics!()
 
     # Which rules apply, memoized against the world the methods were read in.
     empty!(FRULE_CACHE)
@@ -9247,6 +9254,10 @@ is done. For the modes whose thunk type is known before compiling (see
 [`untaped_thunk_type`](@ref)), the generator emits a call to [`lazy_thunk`](@ref) on one of
 these instead, which compiles the derivative in the calling task the first time it runs.
 
+While a package image is written, the generator compiles the derivative after all, for the
+cell to hold in `retained` (see [`retained_derivatives!`](@ref)). The cell goes into the image
+with the code that holds it, and a later session links what it holds in place of compiling.
+
 What the compiled derivative depends on (rules, natively compiled callees, nested
 derivatives) is only known once it is compiled, so it cannot be an edge of the generated
 code. The cell keeps it in a [`LazyCompiled`](@ref) instead, and compiles again when that
@@ -9255,7 +9266,10 @@ is invalidated.
 mutable struct LazyThunk{T}
     @atomic compiled::Union{Nothing, LazyCompiled{Ptr{Cvoid}}}
     const job::CompilerJob
-    LazyThunk{T}(job::CompilerJob) where {T} = new{T}(nothing, job)
+    # What the package image this cell comes from keeps of the derivative (see
+    # `retained_derivatives!`).
+    const retained::Union{Nothing, RetainedDerivatives}
+    LazyThunk{T}(job::CompilerJob, retained::Union{Nothing, RetainedDerivatives} = nothing) where {T} = new{T}(nothing, job, retained)
 end
 
 """
@@ -9272,6 +9286,7 @@ image is written, which types them with what its generator compiled (see
 mutable struct LazySplitThunks
     @atomic compiled::Union{Nothing, LazyCompiled{Any}}
     const job::CompilerJob
+    const retained::Union{Nothing, RetainedDerivatives}
     const run_enzyme::Bool
     const FA::Type
     const RT::Type
@@ -9280,6 +9295,7 @@ mutable struct LazySplitThunks
     const ReturnPrimal::Bool
     function LazySplitThunks(
             job::CompilerJob,
+            retained::Union{Nothing, RetainedDerivatives},
             run_enzyme::Bool,
             @nospecialize(FA::Type),
             @nospecialize(RT::Type),
@@ -9287,7 +9303,7 @@ mutable struct LazySplitThunks
             width::Int,
             ReturnPrimal::Bool,
         )
-        return new(nothing, job, run_enzyme, FA, RT, TT, width, ReturnPrimal)
+        return new(nothing, job, retained, run_enzyme, FA, RT, TT, width, ReturnPrimal)
     end
 end
 
@@ -9345,7 +9361,7 @@ const LAZY_THUNK_LOCK = ReentrantLock()
         if compiled !== nothing && lazy_valid(compiled)
             return compiled.value
         end
-        compile_result, validity = lazy_compilation(cell.job)
+        compile_result, validity = lazy_compilation(cell.job, compiled === nothing ? cell.retained : nothing)
         adjoint = compile_result.adjoint::Ptr{Cvoid}
         if validity !== nothing
             @atomic :release cell.compiled = LazyCompiled{Ptr{Cvoid}}(adjoint, validity)
@@ -9363,7 +9379,7 @@ end
         if compiled !== nothing && lazy_valid(compiled)
             return compiled.value
         end
-        compile_result, validity = lazy_compilation(cell.job)
+        compile_result, validity = lazy_compilation(cell.job, compiled === nothing ? cell.retained : nothing)
         thunks = split_thunks(compile_result, cell.run_enzyme, cell.FA, cell.RT, cell.TT, cell.width, cell.ReturnPrimal)
         if validity !== nothing
             @atomic :release cell.compiled = LazyCompiled{Any}(thunks, validity)
@@ -9386,10 +9402,21 @@ to see, and in a session that loaded the caller from a package image it is a wor
 process that precompiled it. `validity` is `nothing` while precompiling, where nothing
 compiled may be kept (an address in this process's JIT means nothing to the session that
 loads the image), and when the result was invalidated before it could be tracked.
+
+`retained` is what the image the cell comes from keeps of the derivative. When it fits this
+process, it is linked in place of compiling (see [`retained_result`](@ref)).
 """
-function lazy_compilation(job::CompilerJob)
+function lazy_compilation(job::CompilerJob, retained::Union{Nothing, RetainedDerivatives} = nothing)
     world = GPUCompiler.tls_world_age()
     check_activity_cache_invalidations(world)
+    if retained !== nothing
+        compile_result = retained_result(retained, job)
+        if compile_result !== nothing
+            validity = generating_output() ? nothing : track_retained_validity(compile_result.edges)
+            # Already invalidated: what it depends on changed before it could be tracked.
+            (validity !== nothing || generating_output()) && return compile_result, validity
+        end
+    end
     job = CompilerJob(job.source, job.config, world)
     ts_ctx = JuliaContext()
     ctx = context(ts_ctx)
@@ -9646,12 +9673,13 @@ function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, sou
             StrongZero,
             AtomicAdd,
         )
+        retained = retained_derivatives!(job, edges)
         call = if Mode == API.DEM_ReverseModePrimal || Mode == API.DEM_ReverseModeGradient
-            cell = LazySplitThunks(job, run_enzyme, FA, rt2, TT, Width, ReturnPrimal)
+            cell = LazySplitThunks(job, retained, run_enzyme, FA, rt2, TT, Width, ReturnPrimal)
             Expr(:call, GlobalRef(Compiler, :lazy_split_thunks), cell)
         else
             ThunkT = untaped_thunk_type(Mode, run_enzyme, Ptr{Cvoid}, FA, rt2, TT, Width, ReturnPrimal)
-            Expr(:call, GlobalRef(Compiler, :lazy_thunk), LazyThunk{ThunkT}(job))
+            Expr(:call, GlobalRef(Compiler, :lazy_thunk), LazyThunk{ThunkT}(job, retained))
         end
         Any[call, Core.Compiler.ReturnNode(Core.SSAValue(1))]
     elseif keeps_split_thunks_lazy(Mode, ABI)
@@ -9674,20 +9702,24 @@ function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, sou
         )
         # Compile here all the same: the thunks' types carry the tape type, which only
         # compiling finds, and the code returned must be typed with them.
-        ts_ctx = JuliaContext()
-        ctx = context(ts_ctx)
-        activate(ctx)
-        compile_result = try
-            cached_compilation(job, #=may_wait=# false)
-        finally
-            deactivate(ctx)
-            dispose(ts_ctx)
-        end
-        for e in compile_result.edges
-            push!(edges, e)
+        retained = retained_derivatives!(job, edges)
+        compile_result = retained === nothing ? nothing : retained_result(retained, job)
+        if compile_result === nothing
+            ts_ctx = JuliaContext()
+            ctx = context(ts_ctx)
+            activate(ctx)
+            compile_result = try
+                cached_compilation(job, #=may_wait=# false)
+            finally
+                deactivate(ctx)
+                dispose(ts_ctx)
+            end
+            for e in compile_result.edges
+                push!(edges, e)
+            end
         end
         aug, adj = split_thunks(compile_result, run_enzyme, FA, rt2, TT, Width, ReturnPrimal)
-        cell = LazySplitThunks(job, run_enzyme, FA, rt2, TT, Width, ReturnPrimal)
+        cell = LazySplitThunks(job, retained, run_enzyme, FA, rt2, TT, Width, ReturnPrimal)
         Any[
             Expr(:call, GlobalRef(Compiler, :image_split_thunks), cell, typeof(aug), typeof(adj)),
             Core.Compiler.ReturnNode(Core.SSAValue(1)),

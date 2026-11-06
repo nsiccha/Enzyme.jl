@@ -9,9 +9,10 @@ using Enzyme, Test
 #
 # Enzyme keeps the caches its own workload fills out of an image by emptying them before the
 # image is written. The derivatives of combined reverse mode and forward mode are compiled
-# at their first call, and one first called while precompiling is not kept by the code that
-# calls it (see `Enzyme.Compiler.LazyThunk`), so no address of that session reaches an image
-# that way. A split-mode thunk (`autodiff_thunk` with `ReverseSplit...`) is still compiled
+# at their first call, and the code that calls one holds no address of that session (see
+# `Enzyme.Compiler.LazyThunk`). What it holds instead, where `retention_supported()`, is the
+# derivative with every address replaced by a name, which a later session links (see
+# `Enzyme.Compiler.retained_derivatives!`, and the testsets at the end of this file). A split-mode thunk (`autodiff_thunk` with `ReverseSplit...`) is still compiled
 # while its caller is inferred, because its type carries the tape type; while an image is
 # written, the code of that call fetches the thunks at run time instead of holding them (see
 # `Enzyme.Compiler.image_split_thunks`). The one-hot seeds of forward-mode `gradient` and
@@ -20,7 +21,8 @@ using Enzyme, Test
 # a nested one is still compiled while the outer one is inferred, as a constant of the
 # inferred code; from Julia 1.11 that code sits in Julia's own cache, which writes what is
 # valid in every later world into the image, so while an image is written it is made valid
-# only in the world it was inferred in.
+# only in the world it was inferred in. Julia 1.10 reports it as newly inferred too, and
+# widens that bound, so there Enzyme's interpreter keeps its results from being reported.
 
 # Write the packages into a directory of their own and put it first on the child's load
 # path. The depot is the one this test runs under, so the packages precompile next to the
@@ -162,7 +164,7 @@ end
 
         # Differentiating again from a loaded image works too. The derivatives were first
         # called while the package precompiled, so the code the image holds kept no address
-        # of that process and compiles them again here.
+        # of that process: it links them again here, or where that is not supported, compiles them.
         call_code = """
         using Enzyme, EnzymePrecompileAtBuild
         print(EnzymePrecompileAtBuild.rev(3.0), " ", EnzymePrecompileAtBuild.fwd(3.0))
@@ -256,6 +258,85 @@ const modes_expected = (
     end
 end
 
+const PLAIN_AND_NESTED = """
+module EnzymePrecompilePlainAndNested
+using Enzyme
+
+@noinline callee(x) = x^3
+f(v) = sum(callee, v)
+gradient_of(g, x) = Enzyme.gradient(Reverse, g, x)[1]
+inner(x) = Enzyme.gradient(Reverse, f, x)[1]
+hessian_vector(x, v) = Enzyme.autodiff(Forward, inner, Duplicated(x, v))[1]
+
+const PRECOMPILED = (gradient_of(f, [1.0, 2.0, 3.0]), hessian_vector([1.0, 2.0, 3.0], [1.0, 0.0, 0.0]))
+end
+"""
+
+@testset "a package that takes a plain and a nested derivative of one function" begin
+    # The inner derivative of a nested one holds the address of what it calls. On Julia 1.10
+    # the code of that call used to reach the image as the native code of `gradient`, for
+    # every later session to jump to. Only the nested derivative goes through that code, so
+    # the plain one is what crashed.
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymePrecompilePlainAndNested.jl"), PLAIN_AND_NESTED)
+        code = """
+        using Enzyme, EnzymePrecompilePlainAndNested
+        const P = EnzymePrecompilePlainAndNested
+        print(join(P.gradient_of(P.f, [0.5, 1.5, 2.5, 3.5]), " "))
+        """
+        ok, fields = run_child(load_path, code)
+        @test ok
+        ok && @test parse.(Float64, fields) ≈ 3 .* [0.5, 1.5, 2.5, 3.5] .^ 2
+    end
+end
+
+@testset "Enzyme's image holds the passes that act on branches" begin
+    # The first derivative of a function with branches or selects runs passes that the
+    # workload's `x^2` never reaches, such as `simplify_conditioned_selects!`. The workload
+    # also differentiates `cos` so that Enzyme's image holds their code, and their helpers
+    # are compiled once for every LLVM value type, so that code is all a later function
+    # needs. Without both, the first Reverse gradient of a function calling `cos` or `log`
+    # took 8-11 s on Julia 1.10, against about 2 s with registered Enzyme.
+    precompile_test_harness() do load_path
+        code = """
+        using Enzyme
+        function precompiled_specializations(f)
+            world = Base.get_world_counter()
+            n = 0
+            for m in methods(f), mi in Base.specializations(m)
+                mi isa Core.MethodInstance && isdefined(mi, :cache) || continue
+                ci = mi.cache
+                while true
+                    if ci.min_world <= world <= ci.max_world && ci.invoke != C_NULL
+                        n += 1
+                        break
+                    end
+                    isdefined(ci, :next) || break
+                    ci = ci.next
+                end
+            end
+            return n
+        end
+        specializations(f) = sum(m -> Base.count(mi -> mi isa Core.MethodInstance, Base.specializations(m)), methods(f))
+        f = Enzyme.Compiler.specialize_conditioned_select!
+        native = precompiled_specializations(f)
+        before = specializations(f)
+        branchy(x) = x > 1.0 ? log(x) : exp(-x)
+        grad = Enzyme.autodiff(Reverse, branchy, Active(2.0))[1][1]
+        print(native, " ", before, " ", specializations(f), " ", grad)
+        """
+        ok, fields = run_child(load_path, code)
+        @test ok
+        if ok
+            native, before, after, grad = fields
+            @test parse(Int, native) > 0
+            # Nothing of it was compiled again for this function.
+            @test parse(Int, after) == parse(Int, before)
+            @test parse(Float64, grad) ≈ 0.5
+        end
+    end
+end
+
 @testset "Enzyme's own precompilation" begin
     precompile_test_harness() do load_path
         # Enzyme differentiates in its `@compile_workload`, and the caches that fills are
@@ -305,5 +386,380 @@ end
         else
             @test ok
         end
+    end
+end
+
+# How many specializations of three functions every derivative is compiled through hold native
+# code that is valid in the current world, read before anything is differentiated. On Julia
+# 1.10 and 1.12 alike, loading StaticArrays left none of these three with any, and the
+# extension's image gives each back what Enzyme's own image has, in either load order. Not
+# every compiler function is restored that completely (`thunk_generator` is not, on 1.12).
+const PRECOMPILED_COMPILER = """
+function precompiled_specializations(f)
+    world = Base.get_world_counter()
+    n = 0
+    for m in methods(f), mi in Base.specializations(m)
+        mi isa Core.MethodInstance && isdefined(mi, :cache) || continue
+        ci = mi.cache
+        while true
+            if ci.min_world <= world <= ci.max_world && ci.invoke != C_NULL
+                n += 1
+                break
+            end
+            isdefined(ci, :next) || break
+            ci = ci.next
+        end
+    end
+    return n
+end
+C = Enzyme.Compiler
+for f in (C.handle_compiled, C.lower_convention, C.check_ir!)
+    print(precompiled_specializations(f), " ")
+end
+print(Enzyme.autodiff(Reverse, x -> x * x, Active(4.0))[1][1])
+"""
+
+@testset "StaticArrays leaves Enzyme's compiler precompiled" begin
+    # StaticArrays' `Base.cconvert(::Type{Ptr{T}}, ...)` methods match the `cconvert` calls
+    # Enzyme's compiler makes with an argument inferred as `Any`, so loading it discards the
+    # native code Enzyme's image holds for that compiler, in either load order, and the first
+    # derivative compiled it all again. `EnzymeStaticArraysExt` runs Enzyme's workload once
+    # more so that its own image holds the compiler as it stands with both packages loaded.
+    # Enzyme alone is the control: what its image holds is what the other two must keep.
+    precompile_test_harness() do load_path
+        for packages in ("Enzyme", "StaticArrays, Enzyme", "Enzyme, StaticArrays")
+            ok, fields = run_child(load_path, "using $packages\n" * PRECOMPILED_COMPILER)
+            @test ok
+            if ok
+                @test length(fields) == 4
+                @test all(n -> parse(Int, n) > 0, fields[1:3])
+                @test parse(Float64, fields[4]) ≈ 8.0
+            end
+        end
+    end
+end
+
+const RETAINED = """
+module EnzymeRetained
+using Enzyme, LinearAlgebra
+using Enzyme.EnzymeRules
+
+@noinline callee(x) = x^3
+@inline forced(x) = 2x
+inlined(x) = 5x
+middle(x) = inlined(x) + 1
+through_callee(v) = sum(callee, v)
+through_forced(v) = sum(forced, v)
+through_middle(v) = sum(middle, v)
+
+# The slope comes from a helper that only the reverse pass of the rule calls.
+slope(x) = 4.0
+ruled(x) = 4.0 * x
+function EnzymeRules.augmented_primal(config::EnzymeRules.RevConfig, ::Const{typeof(ruled)}, ::Type{<:Active}, x::Active)
+    primal = EnzymeRules.needs_primal(config) ? ruled(x.val) : nothing
+    return EnzymeRules.AugmentedReturn(primal, nothing, x.val)
+end
+function EnzymeRules.reverse(::EnzymeRules.RevConfig, ::Const{typeof(ruled)}, dret::Active, tape, x::Active)
+    return (slope(tape) * dret.val,)
+end
+through_rule(v) = sum(ruled, v)
+
+gradient_of(f, x) = Enzyme.gradient(Reverse, f, x)[1]
+
+function split_gradient(x)
+    fwd, rev = autodiff_thunk(ReverseSplitWithPrimal, Const{typeof(through_callee)}, Active, Duplicated{typeof(x)})
+    dx = zero(x)
+    tape, _, _ = fwd(Const(through_callee), Duplicated(x, dx))
+    rev(Const(through_callee), Duplicated(x, dx), 1.0, tape)
+    return dx
+end
+
+inner(x) = Enzyme.gradient(Reverse, through_callee, x)[1]
+hessian_vector(x, v) = Enzyme.autodiff(Forward, inner, Duplicated(x, v))[1]
+
+# The data is an input to the derivative, which holds neither its values nor its size.
+least_squares(b, X, y) = 0.5 * sum(abs2, y .- X * b)
+function least_squares_gradient(b, X, y)
+    db = zero(b)
+    Enzyme.autodiff(Reverse, least_squares, Active, Duplicated(b, db), Const(X), Const(y))
+    return db
+end
+
+function workload()
+    x = [1.0, 2.0, 3.0]
+    return (
+        gradient_of(through_callee, x), gradient_of(through_forced, x), gradient_of(through_middle, x),
+        gradient_of(through_rule, x), split_gradient(x), hessian_vector(x, [1.0, 0.0, 0.0]),
+        least_squares_gradient([1.0, 2.0], [1.0 0.0; 0.0 1.0; 1.0 1.0], [1.0, 2.0, 3.0]),
+    )
+end
+
+const WORKLOAD = workload()
+end
+"""
+
+# Defining these changes the result of everything in `RETAINED` that depends on one of them.
+const RETAINED_CHANGES = """
+EnzymeRetained.callee(x::Float64) = x^2
+EnzymeRetained.forced(x::Float64) = 3x
+EnzymeRetained.inlined(x::Float64) = 7x
+EnzymeRetained.slope(x::Float64) = 9.0
+"""
+
+const RETAINED_PIRATE = """
+module EnzymeRetainedPirate
+using EnzymeRetained
+$RETAINED_CHANGES
+end
+"""
+
+# Other values and sizes than the image was built with.
+const RETAINED_CHECK = """
+const R = EnzymeRetained
+x = [0.5, 1.5, 2.5, 3.5]
+results = (
+    R.gradient_of(R.through_callee, x), R.gradient_of(R.through_forced, x), R.gradient_of(R.through_middle, x),
+    R.gradient_of(R.through_rule, x), R.split_gradient(x), R.hessian_vector(x, [1.0, 1.0, 0.0, 0.0]),
+    R.least_squares_gradient([1.0, 2.0, 3.0], [1.0 2.0 3.0; 4.0 5.0 6.0; 7.0 8.0 10.0; 1.0 0.0 1.0; 0.0 1.0 0.0], [1.0, 0.0, 1.0, 0.0, 1.0]),
+)
+stats = Enzyme.Compiler.retained_derivative_stats()
+print(stats.compiled, " ", stats.materialized, " ", isempty(stats.rejected), " ", isempty(stats.absent), " ")
+print(join(reduce(vcat, results), " "))
+"""
+
+function retained_expected(; changed::Bool)
+    x = [0.5, 1.5, 2.5, 3.5]
+    X = [1.0 2.0 3.0; 4.0 5.0 6.0; 7.0 8.0 10.0; 1.0 0.0 1.0; 0.0 1.0 0.0]
+    y = [1.0, 0.0, 1.0, 0.0, 1.0]
+    b = [1.0, 2.0, 3.0]
+    d_callee = changed ? 2 .* x : 3 .* x .^ 2
+    d2_callee = changed ? [2.0, 2.0, 0.0, 0.0] : [6 * x[1], 6 * x[2], 0.0, 0.0]
+    return vcat(
+        d_callee, fill(changed ? 3.0 : 2.0, 4), fill(changed ? 7.0 : 5.0, 4),
+        fill(changed ? 9.0 : 4.0, 4), d_callee, d2_callee, X' * (X * b .- y),
+    )
+end
+
+# Run a session against the packages in `load_path`, and give back what it linked and compiled
+# and whether its gradients are the expected ones.
+function retained_session(load_path, setup, expected; threads = 1)
+    code = "using Enzyme, EnzymeRetained\n$setup\n$RETAINED_CHECK"
+    exec = `$(child_julia_cmd()) --threads=$threads --project=$(Base.active_project()) --startup-file=no -e $(CHILD_PREAMBLE * code)`
+    cmd = addenv(exec, "JULIA_LOAD_PATH" => join([load_path, "@", "@v#.#", "@stdlib"], Sys.iswindows() ? ";" : ":"))
+    out = IOBuffer()
+    err = IOBuffer()
+    ok = success(pipeline(cmd; stdout = out, stderr = err))
+    ok || println(stderr, "Child process failed:\n", String(take!(err)))
+    @test ok
+    fields = split(String(take!(out)))
+    @test length(fields) >= 2 && fields[1] == "1" && fields[2] == "0"
+    @test length(fields) == 6 + length(expected)
+    length(fields) == 6 + length(expected) || return (compiled = -1, linked = -1, clean = false, close = false)
+    grads = parse.(Float64, fields[7:end])
+    return (
+        compiled = parse(Int, fields[3]),
+        linked = parse(Int, fields[4]),
+        clean = fields[5] == "true" && fields[6] == "true",
+        close = all(isapprox(g, e; atol = 1.0e-10) for (g, e) in zip(grads, expected)),
+    )
+end
+
+# The number of derivatives `RETAINED_CHECK` takes from the image.
+const RETAINED_KINDS = 7
+
+@testset "a package image keeps the derivatives it compiled" begin
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymeRetained.jl"), RETAINED)
+        write(joinpath(load_path, "EnzymeRetainedPirate.jl"), RETAINED_PIRATE)
+        retained = Enzyme.Compiler.retention_supported()
+        unchanged = retained_expected(; changed = false)
+        changed = retained_expected(; changed = true)
+
+        @testset "fresh processes link it, for values and sizes the image never saw" begin
+            for _ in 1:2
+                s = retained_session(load_path, "", unchanged)
+                @test s.close
+                if retained
+                    @test s.compiled == 0
+                    @test s.linked == RETAINED_KINDS
+                    @test s.clean
+                end
+            end
+        end
+
+        @testset "with threads, it takes the variant that accumulates atomically" begin
+            s = retained_session(load_path, "", unchanged; threads = 2)
+            @test s.close
+            if retained
+                @test s.compiled == 0
+                @test s.linked == RETAINED_KINDS
+            end
+        end
+
+        @testset "a method defined before its first call reaches it" begin
+            s = retained_session(load_path, RETAINED_CHANGES, changed)
+            @test s.close
+            # Only the least squares gradient does not depend on what changed.
+            retained && @test s.linked == 1
+        end
+
+        @testset "a package that changes a method reaches it" begin
+            s = retained_session(load_path, "using EnzymeRetainedPirate", changed)
+            @test s.close
+            retained && @test s.linked == 1
+        end
+
+        @testset "a method defined after its first call reaches it" begin
+            setup = """
+            first_x = [1.0, 2.0]
+            before = Enzyme.autodiff(Reverse, EnzymeRetained.through_callee, Active, Duplicated(first_x, zero(first_x)))
+            $RETAINED_CHANGES
+            """
+            s = retained_session(load_path, setup, changed)
+            @test s.close
+        end
+
+        @testset "options that change the code keep it from being used" begin
+            s = retained_session(load_path, "Enzyme.API.strictAliasing!(false)", unchanged)
+            @test s.close
+            if retained
+                @test s.linked == 0
+                @test s.compiled >= RETAINED_KINDS
+                @test !s.clean
+            end
+        end
+
+        @testset "another element type compiles" begin
+            code = """
+            using Enzyme, EnzymeRetained
+            g = EnzymeRetained.gradient_of(EnzymeRetained.through_callee, Float32[1, 2])
+            stats = Enzyme.Compiler.retained_derivative_stats()
+            print(stats.compiled, " ", stats.materialized, " ", join(g, " "))
+            """
+            ok, fields = run_child(load_path, code)
+            @test ok
+            @test parse(Int, fields[1]) == 1
+            @test parse(Int, fields[2]) == 0
+            @test parse.(Float32, fields[3:4]) == Float32[3, 12]
+        end
+
+        retained && @testset "what the image holds" begin
+            code = """
+            using Enzyme, EnzymeRetained
+            const C = Enzyme.Compiler
+            function cells()
+                found = Any[]
+                for m in methods(C.thunk), mi in Base.specializations(m)
+                    mi === nothing && continue
+                    occursin("EnzymeRetained.through_callee", string(mi.specTypes)) || continue
+                    occursin("DEM_ReverseModeCombined", string(mi.specTypes)) || continue
+                    ci = mi.cache
+                    while !(ci.inferred isa String) && isdefined(ci, :next)
+                        ci = ci.next
+                    end
+                    src = Base._uncompressed_ir(ci, ci.inferred)
+                    for st in src.code, arg in (st isa Expr ? st.args : ())
+                        arg isa C.LazyThunk && push!(found, arg)
+                        if arg isa Expr
+                            for a in arg.args
+                                a isa C.LazyThunk && push!(found, a)
+                            end
+                        end
+                    end
+                end
+                return found
+            end
+            function lock_cmpxchg(object)
+                return any(i -> object[i] == 0xf0 && object[i + 2] == 0x0f && object[i + 3] == 0xb1, 1:(length(object) - 3))
+            end
+            cell = only(unique(objectid, cells()))
+            r = cell.retained
+            print(lock_cmpxchg(r.serial.object), " ", lock_cmpxchg(r.threaded.object), " ")
+            print(C.address_in_object(r.serial.object) === nothing, " ", C.address_in_object(r.threaded.object) === nothing)
+            """
+            ok, fields = run_child(load_path, code)
+            @test ok
+            # Only the variant for several threads accumulates with a locked exchange.
+            @test fields[1] == "false"
+            @test fields[2] == "true"
+            # Neither holds an address that is mapped in this process, or in the one that wrote it.
+            @test fields[3] == "true"
+            @test fields[4] == "true"
+        end
+    end
+end
+
+# A rule whose augmented primal has a constant result. From an image on Julia 1.13 its
+# `CodeInstance` already has the constant-return entry point, and codegen emits nothing for it,
+# so a session that has to compile through it stops at an assertion in GPUCompiler. This happens
+# with or without a derivative kept in the image, which is used in place of compiling when it can
+# be (Enzyme todo `0wovnyy`).
+const RETAINED_CONST_RULE = """
+module EnzymeRetainedConstRule
+using Enzyme
+using Enzyme.EnzymeRules
+ruled(x) = 4.0 * x
+function EnzymeRules.augmented_primal(config::EnzymeRules.RevConfig, ::Const{typeof(ruled)}, ::Type{<:Active}, x::Active)
+    primal = EnzymeRules.needs_primal(config) ? ruled(x.val) : nothing
+    return EnzymeRules.AugmentedReturn(primal, nothing, nothing)
+end
+function EnzymeRules.reverse(::EnzymeRules.RevConfig, ::Const{typeof(ruled)}, dret::Active, tape, x::Active)
+    return (4.0 * dret.val,)
+end
+through_rule(v) = sum(ruled, v)
+gradient_of(f, x) = Enzyme.gradient(Reverse, f, x)[1]
+const WORKLOAD = gradient_of(through_rule, [1.0, 2.0])
+end
+"""
+
+@testset "a rule with a constant result, held in an image" begin
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymeRetainedConstRule.jl"), RETAINED_CONST_RULE)
+        call = """
+        print(join(EnzymeRetainedConstRule.gradient_of(EnzymeRetainedConstRule.through_rule, [1.0, 2.0, 3.0]), " "))
+        """
+        # Linked from the image, where that is supported.
+        ok, fields = run_child(load_path, "using Enzyme, EnzymeRetainedConstRule\n" * call)
+        if Enzyme.Compiler.retention_supported() || VERSION.minor != 13
+            @test ok
+            ok && @test parse.(Float64, fields) == [4.0, 4.0, 4.0]
+        end
+        # Compiled in the session, as it is when the derivative cannot be used.
+        out = IOBuffer()
+        code = "using Enzyme, EnzymeRetainedConstRule\nEnzyme.API.strictAliasing!(false)\n" * call
+        cmd = child_command(load_path, CHILD_PREAMBLE * code)
+        compiled = success(pipeline(cmd; stdout = out, stderr = devnull))
+        if VERSION.minor == 13
+            @test_broken compiled
+        else
+            @test compiled
+        end
+    end
+end
+
+const RETAINED_OFF = """
+module EnzymeNotRetained
+using Enzyme
+Enzyme.Compiler.RetainDerivatives[] = false
+f(v) = sum(abs2, v)
+const WORKLOAD = Enzyme.gradient(Reverse, f, [1.0, 2.0])
+Enzyme.Compiler.RetainDerivatives[] = true
+end
+"""
+
+@testset "a package can keep its derivatives out of its image" begin
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymeNotRetained.jl"), RETAINED_OFF)
+        code = """
+        using Enzyme, EnzymeNotRetained
+        g = Enzyme.gradient(Reverse, EnzymeNotRetained.f, [3.0, 4.0, 5.0])[1]
+        stats = Enzyme.Compiler.retained_derivative_stats()
+        print(stats.compiled, " ", stats.materialized, " ", join(g, " "))
+        """
+        ok, fields = run_child(load_path, code)
+        @test ok
+        @test parse(Int, fields[1]) == 1
+        @test parse(Int, fields[2]) == 0
+        @test parse.(Float64, fields[3:5]) == [6.0, 8.0, 10.0]
     end
 end

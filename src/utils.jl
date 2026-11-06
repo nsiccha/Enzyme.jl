@@ -90,10 +90,25 @@ const captured_constants = Base.IdSet{Any}()
 # `Compiler.cached_compilation`), and a spin lock is safe to take in a generator.
 const captured_constants_lock = Threads.SpinLock()
 
+# While a package image is written, the value behind each address `unsafe_to_ptr` gave out, by
+# which a derivative that the image keeps refers to it by name instead (see
+# `Compiler.symbolic_addresses!`).
+const captured_addresses = Dict{UInt, Some{Any}}()
+
 function capture_constant!(@nospecialize(val))
     lock(captured_constants_lock)
     try
         push!(captured_constants, val) # Globally root
+    finally
+        unlock(captured_constants_lock)
+    end
+    return nothing
+end
+
+function capture_address!(ptr::Ptr{Cvoid}, @nospecialize(val))
+    lock(captured_constants_lock)
+    try
+        captured_addresses[convert(UInt, ptr)] = Some{Any}(val)
     finally
         unlock(captured_constants_lock)
     end
@@ -121,6 +136,7 @@ function unsafe_nothing_to_llvm(mod::LLVM.Module)
 end
 
 function unsafe_to_ptr(@nospecialize(val))
+    original = val
     if !Base.ismutable(val)
         val = Core.Box(val) # FIXME many objects could be leaked here
         @assert Base.ismutable(val)
@@ -131,6 +147,7 @@ function unsafe_to_ptr(@nospecialize(val))
         capture_constant!(val)
         ptr = Base.pointer_from_objref(val)
     end
+    Compiler.generating_output() && capture_address!(ptr, original)
     return ptr
 end
 export unsafe_to_ptr

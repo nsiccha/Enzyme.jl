@@ -46,13 +46,8 @@ end
     g, hv = tape_closed_form(x, v)
     @test tape_objective(x) ≈ sum(sum(abs2, max.(x .- c, 0.0))^2 for c in TAPE_SHIFTS)
     # On Julia 1.12 and later, Reverse through a filter! that drops an element puts
-    # derivatives on the wrong entries (Enzyme todo 063gmv7). On Julia 1.13, compiling
-    # this Reverse pass also segfaults in LLVM's ScalarEvolution (Enzyme todo 0e58pgu),
-    # which @test_broken cannot catch.
-    if VERSION >= v"1.13-"
-        @test_skip tape_gradient(x) ≈ g
-        @test_skip only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
-    elseif VERSION >= v"1.12-"
+    # derivatives on the wrong entries (Enzyme todo 063gmv7).
+    if VERSION >= v"1.12-"
         @test_broken tape_gradient(x) ≈ g
         @test_broken only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
     else
@@ -90,13 +85,21 @@ function central_difference(gradient, u, v, h)
     return (gradient(u .+ h .* v) .- gradient(u .- h .* v)) ./ (2h)
 end
 
+function central_gradient(f, u, h)
+    return [(f(u .+ h .* (eachindex(u) .== i)) - f(u .- h .* (eachindex(u) .== i))) / (2h) for i in eachindex(u)]
+end
+
 @testset "Forward over Reverse rebuilds a tape returned through an sret" begin
     u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
     h = 1.0e-6
-    # On Julia 1.13, compiling this Reverse pass segfaults too (Enzyme todo 0e58pgu).
+    # On Julia 1.13 (LLVM 20), compiling this plain Reverse pass segfaulted in LLVM's
+    # ScalarEvolution loop guards before dogfood libEnzyme f6cb9e61 (Enzyme todo 0e58pgu).
+    @test stick_gradient(u) ≈ central_gradient(stick_objective, u, h) rtol = 1.0e-7
+    # On Julia 1.13 the outer Forward pass raises EnzymeRuntimeActivityError in the
+    # dynamic call that builds CartesianIndices, with every libEnzyme (Enzyme todo 0k6qyml).
     if VERSION >= v"1.13-"
-        @test_skip only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
+        @test_broken only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
     else
         @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
     end
@@ -132,8 +135,9 @@ end
     u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
     h = 1.0e-6
+    @test simplex_gradient(u) ≈ central_gradient(simplex_objective, u, h) rtol = 1.0e-7
     if VERSION >= v"1.13-"
-        @test_skip only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
+        @test_broken only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
     else
         @test only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
     end
