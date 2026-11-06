@@ -2,6 +2,7 @@ module EnzymeStaticArraysExt
 
 using StaticArrays
 using Enzyme
+using PrecompileTools: @setup_workload, @compile_workload
 
 @inline function Base.convert(::Type{SArray}, tpa::Enzyme.TupleArray{T, L, N}) where {T, L, N}
     return SArray{Tuple{size(tpa)...}, T, N, L}(tpa.data)
@@ -81,6 +82,31 @@ end
 ) where {S,T<:Union{AbstractFloat,Complex{<:AbstractFloat}},FT<:MArray{S,T}}
     Enzyme.EnzymeCore.make_zero!(prev, nothing)
     return nothing
+end
+
+# StaticArrays adds `Base.cconvert(::Type{Ptr{T}}, ...)` methods for its arrays. They match
+# every `cconvert` call whose argument Julia inferred as `Any`, and the compiler makes such
+# calls into the LLVM and Enzyme C APIs: most through LLVM.jl 9's `LLVM.context()`, which
+# reads the active context from task local storage untyped, the rest with values Enzyme passes
+# untyped. Each one reaches the functions every derivative is compiled through, so loading
+# StaticArrays, before or after Enzyme, discards the native code Enzyme's image holds for its
+# compiler, and the first derivative of the session compiles it all again (a trivial one took
+# 20 to 23 s instead of 2.8 s on Julia 1.10, 19 to 37 s instead of 5.4 to 6 s on 1.12). This
+# image is written with both packages loaded, so Enzyme's own workload (`src/precompile.jl`),
+# run again here, caches that compiler as it stands with StaticArrays. It does not give back
+# everything Julia drops: about 6 s remain on Julia 1.10 when StaticArrays loads first, and
+# about 9 s on 1.12 when it loads second.
+@setup_workload begin
+    precompile_module = @eval module $(gensym())
+        f(x) = x^2
+    end
+
+    @compile_workload begin
+        Enzyme.autodiff(Reverse, precompile_module.f, Active(2.0))
+    end
+
+    # As in `src/precompile.jl`: what the workload cached belongs to this process.
+    Enzyme.Compiler.clear_caches!()
 end
 
 end
