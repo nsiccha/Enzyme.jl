@@ -5,7 +5,7 @@
 # The same proof removes contradictory tag branches, whose unreachable boxing
 # paths would otherwise merge incompatible layouts into a pointer PHI.
 
-function select_condition_expression(value::LLVM.Value)
+function select_condition_expression(@nospecialize(value::LLVM.Value))
     return value isa LLVM.ICmpInst || value isa LLVM.TruncInst ||
         value isa LLVM.ZExtInst || value isa LLVM.SExtInst ||
         value isa LLVM.AndInst || value isa LLVM.OrInst || value isa LLVM.XorInst
@@ -13,7 +13,7 @@ end
 
 # Recognize small integer predicates of a single SSA value (e.g. Julia's union
 # tag tests `tag < 0` and `(tag & 127) == 1`). Unknown expressions stay opaque.
-function select_condition_leaf(value::LLVM.Value, depth::Int = 8)
+function select_condition_leaf(@nospecialize(value::LLVM.Value), depth::Int = 8)
     depth == 0 && return nothing
     value isa LLVM.ConstantInt && return nothing
     if select_condition_expression(value)
@@ -30,7 +30,7 @@ function select_condition_leaf(value::LLVM.Value, depth::Int = 8)
     return value
 end
 
-function evaluate_select_condition(value, variable, constant, depth::Int = 8)
+function evaluate_select_condition(@nospecialize(value), @nospecialize(variable), @nospecialize(constant), depth::Int = 8)
     value == variable && return constant
     value isa LLVM.ConstantInt && return value
     depth == 0 && return nothing
@@ -74,7 +74,7 @@ end
 # through non-interposable definitions. An unknown leaf, including a parameter,
 # undef or poison, invalidates the proof. The work and aggregate paths are bounded
 # even for cyclic PHIs, recursive calls and very large functions.
-function finite_select_values(root::LLVM.Value)
+function finite_select_values(@nospecialize(root::LLVM.Value))
     todo = Tuple{LLVM.Value, Tuple}[(root, ())]
     seen = Set{Tuple{LLVM.Value, Tuple}}()
     result = LLVM.ConstantInt[]
@@ -131,7 +131,7 @@ function finite_select_values(root::LLVM.Value)
     return isempty(result) ? nothing : result
 end
 
-function implied_select_condition(target, condition, taken, domains)
+function implied_select_condition(@nospecialize(target), @nospecialize(condition), taken::Bool, domains)
     target == condition && return taken
     variable = select_condition_leaf(target)
     variable === nothing && return nothing
@@ -155,7 +155,7 @@ function implied_select_condition(target, condition, taken, domains)
 end
 
 # Cache both successful and failed proofs; a shared tag can have many uses.
-function cached_select_condition(target, condition, taken, domains, proofs)
+function cached_select_condition(@nospecialize(target), @nospecialize(condition), taken::Bool, domains, proofs)
     key = (target, condition, taken)
     if !haskey(proofs, key)
         proofs[key] = implied_select_condition(target, condition, taken, domains)
@@ -163,7 +163,7 @@ function cached_select_condition(target, condition, taken, domains, proofs)
     return proofs[key]
 end
 
-function known_condition_at_use(condition, user, local_condition, local_taken, tree, tests, domains, proofs)
+function known_condition_at_use(@nospecialize(condition), @nospecialize(user), @nospecialize(local_condition), local_taken::Bool, tree, tests, domains, proofs)
     selected = local_condition === nothing ? nothing :
         cached_select_condition(condition, local_condition, local_taken, domains, proofs)
     if selected === nothing
@@ -182,7 +182,7 @@ end
 # Recognize only a closed two-arm diamond. Its PHIs have the same selection
 # condition as a select, even when calls or stores prevent LLVM from folding
 # the diamond itself. No loop-carried or extra-predecessor edge is admitted.
-function record_conditioned_phis!(phis, term, condition, unique_predecessors)
+function record_conditioned_phis!(phis, term::LLVM.BrInst, @nospecialize(condition), unique_predecessors)
     left = LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(term, 0))
     right = LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(term, 1))
     left == right && return
@@ -214,7 +214,7 @@ end
 # A selected PHI input need not dominate the use. Only recreate casts whose
 # source is available there; never speculate a load, call, or allocation from
 # the selected arm. The original arm and its side effects remain in place.
-function available_conditioned_value!(builder, value, user, tree, depth)
+function available_conditioned_value!(builder, @nospecialize(value), @nospecialize(user), tree, depth::Int)
     value isa LLVM.Instruction || return value
     LLVM.dominates(tree, value, user) && return value
     depth == 0 && return nothing
@@ -227,7 +227,7 @@ function available_conditioned_value!(builder, value, user, tree, depth)
     return clone
 end
 
-function specialize_conditioned_select!(builder, value, user, local_condition, local_taken, tree, tests, domains, proofs, phis, depth::Int = 8)
+function specialize_conditioned_select!(builder, @nospecialize(value), @nospecialize(user), @nospecialize(local_condition), local_taken::Bool, tree, tests, domains, proofs, phis, depth::Int = 8)
     depth == 0 && return value
     if value_type(value) == LLVM.Int1Type() && !(value isa LLVM.ConstantInt)
         known = known_condition_at_use(value, user, local_condition, local_taken, tree, tests, domains, proofs)
