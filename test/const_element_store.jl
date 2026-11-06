@@ -733,11 +733,9 @@ overlay_written(active, base, slots) = overlay_write(ConstFieldOverlay(base, act
         @test da == want
         @test base == base0
         # Julia 1.12 under `--check-bounds=yes` checks the bounds of `overlay_gather`'s
-        # destination between the merge of `base` and `active` and the load
-        # through it, so the load is not split and the field keeps its copy.
-        if f === overlay_cell && VERSION >= v"1.12" && Base.JLOptions().check_bounds == 1
-            @test_broken (@allocated g()) < sizeof(base) ÷ 10
-        elseif f === overlay_cell || f === overlay_two_calls
+        # destination between the merge of `base` and `active` and the load through
+        # it, which `duplicate_merge_tails!` brings together.
+        if f === overlay_cell || f === overlay_two_calls
             @test (@allocated g()) < sizeof(base) ÷ 10
         end
         v = collect(range(0.5, 1.5; length = length(active)))

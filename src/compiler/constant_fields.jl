@@ -30,6 +30,20 @@
 # execution. `split_constant_merges!` puts the load back on each side, so the
 # constant side loads a value that has no derivative.
 #
+# The same read can take its constant side from data the function made itself, as
+# in `iszero(s) ? c[i] : active[s]` with `c = base[rows]` or `copy(base)`. No proof
+# before differentiation can say that such data is constant, since it can as well
+# hold derivatives, but none is needed: putting the load back on each side is
+# correct whatever activity analysis finds, so `merge_wanted` also takes a merge
+# with such a side. The load can also sit behind a branch that follows the merge,
+# such as the bounds check of `result[i] = …` that LLVM sinks it past. Moving it
+# above that branch would read where the program does not, so
+# `duplicate_merge_tails!` clones the blocks between the merge and the load for each
+# predecessor, which brings the merge down to the load. The same goes for a merge of
+# whole arrays that is read through, `v = iszero(s) ? c : active; v[i]`, whose only
+# other use is the error of the bounds check of that read, on a path that never
+# returns and so is never differentiated.
+#
 # Nested modes meet the struct again in the outer compilation. Reverse over
 # Forward inlines the inner derivative into the outer function, which then builds
 # the struct and passes it to the inner derivative of the non-inlined function, so
@@ -487,22 +501,59 @@ end
 # on that edge. Under `--check-bounds=yes` the read of `base` can need no block of
 # its own, and the block that picks it also branches to the bounds check of the
 # read of `active`.
-function constant_field_unsink_tree(phi::LLVM.PHIInst)
+function constant_field_unsink_tree(cf::ConstantFields, phi::LLVM.PHIInst)
+    merge_predecessors_branch(phi) || return nothing
+    found = merge_load_tree(cf, phi)
+    found === nothing && return nothing
+    tree, leaves, dead = found
+    isempty(dead) || return nothing
+    bb = LLVM.parent(phi)
+    for inst in tree
+        LLVM.parent(inst) == bb || return nothing
+    end
+    ordered = unsink_order(bb, tree)
+    ordered === nothing && return nothing
+    return ordered, leaves
+end
+
+# Whether `inst` only computes an integer from integers, which cannot trap.
+speculatable_offset(@nospecialize(inst::LLVM.Instruction))::Bool =
+    isa(inst, LLVM.AddInst) || isa(inst, LLVM.SubInst) || isa(inst, LLVM.MulInst) ||
+    isa(inst, LLVM.ShlInst) || isa(inst, LLVM.LShrInst) || isa(inst, LLVM.AShrInst) ||
+    isa(inst, LLVM.AndInst) || isa(inst, LLVM.OrInst) || isa(inst, LLVM.XorInst) ||
+    isa(inst, LLVM.SExtInst) || isa(inst, LLVM.ZExtInst) || isa(inst, LLVM.TruncInst)
+
+# Whether each predecessor of the block of `phi` ends in a branch with one edge to it.
+function merge_predecessors_branch(phi::LLVM.PHIInst)::Bool
     bb = LLVM.parent(phi)
     for (_, pred) in LLVM.incoming(phi)
         term = terminator(pred)
-        (isa(term, LLVM.BrInst) || isa(term, LLVM.SwitchInst)) || return nothing
-        count(Base.Fix2(==, bb), successors(term)) == 1 || return nothing
+        (isa(term, LLVM.BrInst) || isa(term, LLVM.SwitchInst)) || return false
+        count(Base.Fix2(==, bb), successors(term)) == 1 || return false
     end
+    return true
+end
+
+# Everything computed from `merge`, wherever it sits, if that is casts, GEPs,
+# `julia.gc_loaded` and loads, ending in at least one load of a value that is not a
+# pointer: the instructions, those loads, and the blocks of those that a block that
+# never returns, which is not differentiated, also uses, as the error of a bounds
+# check uses the array.
+function merge_load_tree(cf::ConstantFields, merge::LLVM.Instruction)
     tree = Set{LLVM.Instruction}()
     leaves = LLVM.LoadInst[]
-    work = LLVM.Value[phi]
+    work = LLVM.Instruction[merge]
+    dead = Set{LLVM.BasicBlock}()
     while !isempty(work)
         v = pop!(work)
         for u in LLVM.uses(v)
             user = LLVM.user(u)
-            (isa(user, LLVM.Instruction) && LLVM.parent(user) == bb) || return nothing
+            isa(user, LLVM.Instruction) || return nothing
             user in tree && continue
+            if in_unreachable(cf, user)
+                push!(dead, LLVM.parent(v))
+                continue
+            end
             if isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst) ||
                     isa(user, LLVM.GetElementPtrInst) ||
                     (isa(user, LLVM.CallInst) && called_function_name(user) == "julia.gc_loaded")
@@ -521,16 +572,34 @@ function constant_field_unsink_tree(phi::LLVM.PHIInst)
         end
     end
     isempty(leaves) && return nothing
-    # Every other operand must be available in the predecessors.
-    for inst in tree, op in operands(inst)
-        op in tree && continue
-        if isa(op, LLVM.Instruction) && LLVM.parent(op) == bb && !isa(op, LLVM.PHIInst)
-            return nothing
+    return tree, leaves, dead
+end
+
+# `tree`, instructions of `bb`, in block order, if they can run in the predecessors
+# of `bb` instead: every other operand is available there, and nothing before them
+# in `bb` may write. With `sel`, a select in `bb` that will become a branch, `bb` is
+# what follows it.
+function unsink_order(bb::LLVM.BasicBlock, loads, sel::Union{Nothing, LLVM.SelectInst} = nothing)
+    insts = collect(instructions(bb))
+    if sel !== nothing
+        insts = insts[(findfirst(Base.Fix2(==, sel), insts)::Int + 1):end]
+    end
+    tree = Set{LLVM.Instruction}(loads)
+    work = collect(tree)
+    while !isempty(work)
+        for op in operands(pop!(work))
+            op in tree && continue
+            if isa(op, LLVM.Instruction) && !isa(op, LLVM.PHIInst) && op in insts
+                # An offset computed in `bb` moves along.
+                speculatable_offset(op) || return nothing
+                push!(tree, op)
+                push!(work, op)
+            end
         end
     end
     ordered = LLVM.Instruction[]
     written = false
-    for inst in instructions(bb)
+    for inst in insts
         isa(inst, LLVM.PHIInst) && continue
         if inst in tree
             written && return nothing
@@ -540,7 +609,7 @@ function constant_field_unsink_tree(phi::LLVM.PHIInst)
             written = true
         end
     end
-    return ordered, leaves
+    return ordered
 end
 
 function incoming_value(phi::LLVM.PHIInst, pred::LLVM.BasicBlock)
@@ -550,8 +619,8 @@ function incoming_value(phi::LLVM.PHIInst, pred::LLVM.BasicBlock)
     return nothing
 end
 
-function unsink_constant_field_phi!(phi::LLVM.PHIInst)::Bool
-    found = constant_field_unsink_tree(phi)
+function unsink_constant_field_phi!(cf::ConstantFields, phi::LLVM.PHIInst)::Bool
+    found = constant_field_unsink_tree(cf, phi)
     found === nothing && return false
     ordered, leaves = found
     bb = LLVM.parent(phi)
@@ -628,7 +697,7 @@ function constant_field_uses_safe(cf::ConstantFields, @nospecialize(val::LLVM.Va
                 constant_field_uses_safe(cf, user, visited)
             else
                 # `split_constant_merges!` splits it.
-                kind === :mixed && constant_merge_splittable(user)
+                kind === :mixed && constant_merge_splittable(cf, user)
             end
         elseif isa(user, LLVM.ICmpInst)
             true
@@ -731,8 +800,377 @@ function constant_select_load(sel::LLVM.SelectInst)::Union{Nothing, LLVM.LoadIns
     return ld
 end
 
-constant_merge_splittable(phi::LLVM.PHIInst) = constant_field_unsink_tree(phi) !== nothing
-constant_merge_splittable(sel::LLVM.SelectInst) = constant_select_load(sel) !== nothing
+constant_merge_splittable(cf::ConstantFields, phi::LLVM.PHIInst) =
+    constant_field_unsink_tree(cf, phi) !== nothing || merge_behind_branches(cf, phi)
+constant_merge_splittable(cf::ConstantFields, sel::LLVM.SelectInst) =
+    constant_select_load(sel) !== nothing || merge_behind_branches(cf, sel)
+
+# Whether `val`, a pointer, can only come from data the differentiated code made or
+# was given as `Const`: what a call returned, a stack slot, a literal, memory reached
+# from one of these, or a parameter of an internal function every call of which
+# passes such a pointer. An argument that is not `Const` can hold derivatives
+# whatever the code does with it, so a merge of only such pointers has a shadow on
+# each side and stays as it is.
+function merge_local_data(cf::ConstantFields, @nospecialize(val::LLVM.Value), seen::Set{LLVM.Value})::Bool
+    while true
+        if isa(val, LLVM.BitCastInst) || isa(val, LLVM.AddrSpaceCastInst) ||
+                isa(val, LLVM.GetElementPtrInst) || isa(val, LLVM.LoadInst) ||
+                isa(val, LLVM.ExtractValueInst)
+            val = operands(val)[1]
+        elseif isa(val, LLVM.CallInst) && called_function_name(val) == "julia.gc_loaded"
+            val = operands(val)[2]
+        else
+            break
+        end
+    end
+    val in seen && return true
+    if isa(val, LLVM.Argument)
+        val in cf.const_args && return true
+        f = LLVM.Function(LLVM.API.LLVMGetParamParent(val))
+        (f != cf.primalf && constant_field_callee(cf, f)) || return false
+        push!(seen, val)
+        idx = findfirst(==(val), collect(parameters(f)))::Int
+        for u in LLVM.uses(f)
+            call = LLVM.user(u)::LLVM.CallInst
+            in_unreachable(cf, call) && continue
+            merge_local_data(cf, arguments(call)[idx], seen) || return false
+        end
+        return true
+    end
+    if isa(val, LLVM.PHIInst)
+        push!(seen, val)
+        for (v, _) in LLVM.incoming(val)
+            merge_local_data(cf, v, seen) || return false
+        end
+        return true
+    end
+    if isa(val, LLVM.SelectInst)
+        push!(seen, val)
+        return merge_local_data(cf, operands(val)[2], seen) &&
+            merge_local_data(cf, operands(val)[3], seen)
+    end
+    return isa(val, LLVM.CallInst) || isa(val, LLVM.AllocaInst) || isa(val, LLVM.Constant)
+end
+
+# Whether to put the loads through `merge` back on each side: it merges constant data
+# with other pointers, or has a side the differentiated code made itself, which
+# activity analysis can find constant while another side is active.
+function merge_wanted(cf::ConstantFields, merge::LLVM.Instruction)::Bool
+    kind = constant_field_merge(cf, merge)
+    kind === :mixed && return true
+    kind === :active || return false
+    vals = isa(merge, LLVM.PHIInst) ? LLVM.Value[v for (v, _) in LLVM.incoming(merge)] :
+        LLVM.Value[operands(merge)[2], operands(merge)[3]]
+    for v in vals
+        merge_local_data(cf, v, Set{LLVM.Value}()) && return true
+    end
+    return false
+end
+
+# How far behind its merge a load may sit, and how long a block
+# `duplicate_merge_tails!` may clone. Each clone costs code but no run time, as only
+# one of them runs.
+const MERGE_TAIL_MAX_DEPTH = 8
+const MERGE_TAIL_MAX_INSTRUCTIONS = 128
+
+# The successors of `bb` reached only from `bb`.
+function own_successors(bb::LLVM.BasicBlock)::Vector{LLVM.BasicBlock}
+    own = LLVM.BasicBlock[]
+    for succ in successors(terminator(bb))
+        length(LLVM.predecessors(succ)) == 1 && push!(own, succ)
+    end
+    return own
+end
+
+# The one of `own` that dominates `block`, if any.
+function tail_use_successor(domtree::LLVM.DomTree, own::Vector{LLVM.BasicBlock}, block::LLVM.BasicBlock)::Union{Nothing, LLVM.BasicBlock}
+    term = terminator(block)
+    for succ in own
+        # An instruction does not dominate itself, as in a block of one instruction.
+        (succ == block || LLVM.dominates(domtree, first(instructions(succ)), term)) && return succ
+    end
+    return nothing
+end
+
+# Where `user` uses its operand at position `i`: a phi uses it at the end of the
+# block it comes from.
+function operand_use_block(user::LLVM.Instruction, i::Int)::LLVM.BasicBlock
+    isa(user, LLVM.PHIInst) || return LLVM.parent(user)
+    return collect(LLVM.incoming(user))[i][2]
+end
+
+# A pointer into an object, which libEnzyme cannot cache and which a phi must not
+# carry into differentiation (`nodecayed_phis!`).
+function is_derived_pointer(@nospecialize(ty::LLVM.LLVMType))::Bool
+    isa(ty, LLVM.PointerType) || return false
+    # Julia's derived, callee-rooted and loaded address spaces.
+    return Derived <= LLVM.addrspace(ty) <= 13
+end
+
+# Whether `duplicate_merge_tails!` can clone `bb`, given the load `tree` of the merge
+# it brings down: `bb` is a small block that does not begin a cycle, and a phi in a
+# successor can stand for each of its values that is used elsewhere. Those phis must
+# not carry a pointer into an object unless a later step splits them, so such a value
+# must be in `tree`. With `sel`, a select in `bb` that will become a branch, only what
+# follows it is cloned.
+function tail_duplicable(bb::LLVM.BasicBlock, tree::Set{LLVM.Instruction}, domtree::LLVM.DomTree, sel::Union{Nothing, LLVM.SelectInst})::Bool
+    term = terminator(bb)
+    (isa(term, LLVM.BrInst) || isa(term, LLVM.SwitchInst)) || return false
+    succs = successors(term)
+    length(unique(succs)) == length(succs) || return false
+    if sel === nothing
+        first_inst = first(instructions(bb))
+        for pred in LLVM.predecessors(bb)
+            LLVM.dominates(domtree, first_inst, terminator(pred)) && return false
+        end
+    end
+    own = own_successors(bb)
+    n = 0
+    before = sel !== nothing
+    for inst in instructions(bb)
+        if before
+            before = inst != sel
+            continue
+        end
+        isa(inst, LLVM.PHIInst) || (n += 1)
+        n > MERGE_TAIL_MAX_INSTRUCTIONS && return false
+        isa(inst, LLVM.AllocaInst) && return false
+        for u in LLVM.uses(inst)
+            user = LLVM.user(u)
+            isa(user, LLVM.Instruction) || return false
+            for (i, op) in enumerate(operands(user))
+                op == inst || continue
+                use_block = operand_use_block(user, i)
+                use_block == bb && continue
+                isa(value_type(inst), LLVM.TokenType) && return false
+                is_derived_pointer(value_type(inst)) && !(inst in tree) && return false
+                tail_use_successor(domtree, own, use_block) === nothing && return false
+            end
+        end
+    end
+    return true
+end
+
+# Whether cloning blocks for each predecessor of `merge` is what it takes to split it,
+# and can be done: its loads sit behind branches, or cannot leave their block past a
+# write, or a block that never returns uses it. Every block of the load tree must be
+# reached from the block of `merge` through blocks with one predecessor. The last block
+# on each way is cloned too only if the loads cannot move out of it.
+function merge_behind_branches(cf::ConstantFields, merge::LLVM.Instruction)::Bool
+    isa(merge, LLVM.PHIInst) && !merge_predecessors_branch(merge) && return false
+    # One load through a select is split as it is, wherever the load sits.
+    isa(merge, LLVM.SelectInst) && constant_select_load(merge) !== nothing && return false
+    found = merge_load_tree(cf, merge)
+    found === nothing && return false
+    tree, _, dead = found
+    bb = LLVM.parent(merge)
+    sel = isa(merge, LLVM.SelectInst) ? merge : nothing
+    in_block = Dict{LLVM.BasicBlock, Set{LLVM.Instruction}}()
+    for inst in tree
+        push!(get!(Set{LLVM.Instruction}, in_block, LLVM.parent(inst)), inst)
+    end
+    # A block the merge has to leave, as it cannot stay behind for a use that remains.
+    chain = copy(dead)
+    if length(in_block) == 1 && haskey(in_block, bb) && isempty(dead)
+        if sel !== nothing
+            # Several loads right after a select can be split once it is a phi.
+            unsink_order(bb, tree, sel) === nothing || return true
+        elseif unsink_order(bb, tree) !== nothing
+            return false
+        end
+        push!(chain, bb)
+    end
+    for b in keys(in_block)
+        depth = 0
+        while b != bb
+            depth += 1
+            depth > MERGE_TAIL_MAX_DEPTH && return false
+            preds = LLVM.predecessors(b)
+            length(preds) == 1 || return false
+            b = only(preds)
+            push!(chain, b)
+        end
+    end
+    for (b, insts) in in_block
+        (b in chain || b == bb) && continue
+        unsink_order(b, insts) === nothing && push!(chain, b)
+    end
+    tree_set = Set{LLVM.Instruction}(tree)
+    push!(tree_set, merge)
+    domtree = LLVM.DomTree(LLVM.parent(bb))
+    ok = true
+    for b in chain
+        if !tail_duplicable(b, tree_set, domtree, b == bb ? sel : nothing)
+            ok = false
+            break
+        end
+    end
+    dispose(domtree)
+    return ok
+end
+
+# Replace `bb`, which merges its predecessors, by one copy per predecessor. Each copy
+# takes the values of the phis of `bb` for its predecessor, so a merge of `bb` is gone
+# from the copy, and a phi in the successor stands for what it computes from it.
+function tail_duplicate_block!(bb::LLVM.BasicBlock)
+    f = LLVM.parent(bb)
+    domtree = LLVM.DomTree(f)
+    own = own_successors(bb)
+    builder = LLVM.IRBuilder()
+    preds = LLVM.BasicBlock[pred for (_, pred) in LLVM.incoming(first(instructions(bb))::LLVM.PHIInst)]
+    copies = Tuple{LLVM.BasicBlock, Dict{LLVM.Value, LLVM.Value}}[]
+    for pred in preds
+        tail = LLVM.BasicBlock(f, LLVM.name(bb) * ".tail")
+        position!(builder, tail)
+        vmap = Dict{LLVM.Value, LLVM.Value}()
+        for inst in instructions(bb)
+            if isa(inst, LLVM.PHIInst)
+                vmap[inst] = incoming_value(inst, pred)
+                continue
+            end
+            startswith(called_function_name(inst), "llvm.dbg.") && continue
+            clone = LLVM.Instruction(LLVM.API.LLVMInstructionClone(inst))
+            LLVM.API.LLVMInsertIntoBuilder(builder, clone)
+            for (i, op) in enumerate(operands(clone))
+                new = get(vmap, op, nothing)
+                new === nothing || LLVM.API.LLVMSetOperand(clone, i - 1, new)
+            end
+            vmap[inst] = clone
+        end
+        term = terminator(pred)
+        for i in 0:(Int(LLVM.API.LLVMGetNumSuccessors(term)) - 1)
+            if LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(term, i)) == bb
+                LLVM.API.LLVMSetSuccessor(term, i, tail)
+            end
+        end
+        push!(copies, (tail, vmap))
+    end
+    succs = collect(successors(terminator(bb)))
+    for succ in succs
+        for phi in collect(instructions(succ))
+            isa(phi, LLVM.PHIInst) || break
+            position!(builder, phi)
+            new = phi!(builder, value_type(phi), LLVM.name(phi))
+            for (v, b) in LLVM.incoming(phi)
+                if b == bb
+                    for (tail, vmap) in copies
+                        push!(LLVM.incoming(new), (get(vmap, v, v), tail))
+                    end
+                else
+                    push!(LLVM.incoming(new), (v, b))
+                end
+            end
+            for k in ("enzyme_type", "enzyme_inactive", "enzyme_active")
+                haskey(metadata(phi), k) && (metadata(new)[k] = metadata(phi)[k])
+            end
+            replace_uses!(phi, new)
+            LLVM.erase!(phi)
+        end
+    end
+    merged = Dict{Tuple{LLVM.Value, LLVM.BasicBlock}, LLVM.PHIInst}()
+    for inst in collect(instructions(bb))
+        users = LLVM.Instruction[LLVM.user(u) for u in LLVM.uses(inst)]
+        for user in unique(users)
+            for (i, op) in enumerate(operands(user))
+                op == inst || continue
+                use_block = operand_use_block(user, i)
+                use_block == bb && continue
+                succ = tail_use_successor(domtree, own, use_block)::LLVM.BasicBlock
+                new = get(merged, (inst, succ), nothing)
+                if new === nothing
+                    position!(builder, first(instructions(succ)))
+                    new = phi!(builder, value_type(inst), LLVM.name(inst))
+                    for (tail, vmap) in copies
+                        push!(LLVM.incoming(new), (vmap[inst], tail))
+                    end
+                    haskey(metadata(inst), "enzyme_type") &&
+                        (metadata(new)["enzyme_type"] = metadata(inst)["enzyme_type"])
+                    merged[(inst, succ)] = new
+                end
+                LLVM.API.LLVMSetOperand(user, i - 1, new)
+            end
+        end
+    end
+    LLVM.erase!(bb)
+    dispose(builder)
+    dispose(domtree)
+    return succs
+end
+
+# A phi of `bb` that `split_constant_merges!` wants split and whose loads sit behind
+# branches.
+function block_merge_behind_branches(cf::ConstantFields, bb::LLVM.BasicBlock)::Bool
+    for inst in instructions(bb)
+        isa(inst, LLVM.PHIInst) || break
+        isa(value_type(inst), LLVM.PointerType) || continue
+        in_unreachable(cf, inst) && continue
+        merge_wanted(cf, inst) && merge_behind_branches(cf, inst) && return true
+    end
+    return false
+end
+
+# Make a select a phi at the head of a block of its own, for `tail_duplicate_block!`.
+# As in `unselect_constant_load!`, each side of the branch runs only when the select
+# would pick it, though neither does anything yet.
+function branch_on_select!(sel::LLVM.SelectInst)
+    bb = LLVM.parent(sel)
+    f = LLVM.parent(bb)
+    c, p, q = operands(sel)
+    insts = collect(instructions(bb))
+    tail = insts[(findfirst(Base.Fix2(==, sel), insts)::Int + 1):end]
+    onp = LLVM.BasicBlock(f, "unselect.p")
+    onq = LLVM.BasicBlock(f, "unselect.q")
+    join = LLVM.BasicBlock(f, "unselect.join")
+    builder = LLVM.IRBuilder()
+    position!(builder, join)
+    merged = phi!(builder, value_type(sel), LLVM.name(sel))
+    for inst in tail
+        LLVM.API.LLVMInstructionRemoveFromParent(inst)
+        LLVM.API.LLVMInsertIntoBuilder(builder, inst)
+    end
+    for succ in unique(collect(successors(terminator(join))))
+        retarget_phis!(builder, succ, bb, join)
+    end
+    position!(builder, bb)
+    br!(builder, c, onp, onq)
+    position!(builder, onp)
+    br!(builder, join)
+    position!(builder, onq)
+    br!(builder, join)
+    push!(LLVM.incoming(merged), (p, onp))
+    push!(LLVM.incoming(merged), (q, onq))
+    haskey(metadata(sel), "enzyme_type") && (metadata(merged)["enzyme_type"] = metadata(sel)["enzyme_type"])
+    replace_uses!(sel, merged)
+    LLVM.erase!(sel)
+    dispose(builder)
+    return join
+end
+
+# Bring every merge `split_constant_merges!` wants split down to the block of its
+# loads, by cloning the blocks between them for each predecessor.
+function duplicate_merge_tails!(mod::LLVM.Module, cf::ConstantFields)
+    work = LLVM.BasicBlock[]
+    selects = LLVM.SelectInst[]
+    for f in functions(mod), bb in blocks(f)
+        block_merge_behind_branches(cf, bb) && push!(work, bb)
+        for inst in instructions(bb)
+            isa(inst, LLVM.SelectInst) && isa(value_type(inst), LLVM.PointerType) || continue
+            in_unreachable(cf, inst) && continue
+            merge_wanted(cf, inst) && merge_behind_branches(cf, inst) && push!(selects, inst)
+        end
+    end
+    for sel in selects
+        push!(work, branch_on_select!(sel))
+    end
+    while !isempty(work)
+        bb = pop!(work)
+        block_merge_behind_branches(cf, bb) || continue
+        for succ in tail_duplicate_block!(bb)
+            succ in work || push!(work, succ)
+        end
+    end
+    return
+end
 
 # Rebuild the phis of `succ` with `to` as the predecessor that was `from` (the C
 # API cannot set the block of an incoming value).
@@ -802,22 +1240,25 @@ function unselect_constant_load!(sel::LLVM.SelectInst)::Bool
     return true
 end
 
-split_constant_merge!(phi::LLVM.PHIInst) = unsink_constant_field_phi!(phi)
-split_constant_merge!(sel::LLVM.SelectInst) = unselect_constant_load!(sel)
+split_constant_merge!(cf::ConstantFields, phi::LLVM.PHIInst) = unsink_constant_field_phi!(cf, phi)
+split_constant_merge!(::ConstantFields, sel::LLVM.SelectInst) = unselect_constant_load!(sel)
 
-# Every phi or select that merges constant data with other pointers and only feeds
-# loads, which `split_constant_merge!` can split.
+# Every phi or select `merge_wanted` takes that only feeds loads in its block, which
+# `split_constant_merge!` can split.
 function constant_merges(mod::LLVM.Module, cf::ConstantFields)::Vector{LLVM.Instruction}
     todo = LLVM.Instruction[]
     for f in functions(mod), bb in blocks(f), inst in instructions(bb)
         (isa(inst, LLVM.PHIInst) || isa(inst, LLVM.SelectInst)) || continue
         isa(value_type(inst), LLVM.PointerType) || continue
         in_unreachable(cf, inst) && continue
-        constant_field_merge(cf, inst) === :mixed || continue
-        constant_merge_splittable(inst) && push!(todo, inst)
+        merge_wanted(cf, inst) || continue
+        split_ready(cf, inst) && push!(todo, inst)
     end
     return todo
 end
+
+split_ready(cf::ConstantFields, phi::LLVM.PHIInst) = constant_field_unsink_tree(cf, phi) !== nothing
+split_ready(::ConstantFields, sel::LLVM.SelectInst) = constant_select_load(sel) !== nothing
 
 # Put a block of its own on the edge from `pred`, which also branches elsewhere, to
 # `succ`.
@@ -840,6 +1281,7 @@ end
 # handler would otherwise copy the whole constant array there on every execution,
 # or raise `EnzymeRuntimeActivityError` for a pointer into it.
 function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
+    duplicate_merge_tails!(mod, cf)
     todo = constant_merges(mod, cf)
     # Splitting an edge rebuilds the phis of the block it leads to, so the merges
     # are collected again afterwards.
@@ -853,15 +1295,17 @@ function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
         end
     end
     if !isempty(edges)
-        builder = LLVM.IRBuilder()
         for (pred, succ) in edges
+            # A builder of its own: it stamps the location it was last positioned at on
+            # what it inserts, which must not come from another function.
+            builder = LLVM.IRBuilder()
             split_edge!(builder, pred, succ)
+            dispose(builder)
         end
-        dispose(builder)
         todo = constant_merges(mod, cf)
     end
     for merge in todo
-        split_constant_merge!(merge)
+        split_constant_merge!(cf, merge)
     end
     return length(todo)
 end
@@ -965,14 +1409,18 @@ function settle_constant_fields!(cf::ConstantFields)
 end
 
 function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospecialize(args_activity::Vector{API.CDIFFE_TYPE}))
-    # A recursive call could pass active data where the outer call passes `Const`.
-    isempty(LLVM.uses(primalf)) || return 0
     const_args = Set{LLVM.Value}()
-    for (p, act) in zip(parameters(primalf), args_activity)
-        act == API.DFT_CONSTANT && push!(const_args, p)
+    # A recursive call could pass active data where the outer call passes `Const`.
+    if isempty(LLVM.uses(primalf))
+        for (p, act) in zip(parameters(primalf), args_activity)
+            act == API.DFT_CONSTANT && push!(const_args, p)
+        end
     end
-    isempty(const_args) && return 0
     cf = ConstantFields(primalf, const_args)
+    if isempty(const_args)
+        split_constant_merges!(mod, cf)
+        return 0
+    end
 
     for f in functions(mod)
         isempty(blocks(f)) && continue
@@ -1084,7 +1532,6 @@ function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospec
     end
     # A greatest fixpoint.
     settle_constant_fields!(cf)
-    split_constant_merges!(mod, cf)
 
     marked = 0
     for (base, ls) in cf.loads
@@ -1102,5 +1549,8 @@ function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospec
             metadata(st)[CONSTANT_FIELD_STORE] = MDNode(LLVM.Metadata[])
         end
     end
+    # After the tags: this can clone and erase the accesses `cf` recorded, and a clone
+    # keeps its tags.
+    split_constant_merges!(mod, cf)
     return marked
 end
