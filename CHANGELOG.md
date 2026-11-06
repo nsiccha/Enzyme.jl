@@ -7,12 +7,32 @@
   `08f0e8d9`). The cache analysis now proves that private output storage stays
   inaccessible to the reader, including across loop iterations. Passing or
   publishing that storage to the reader still retains the required caches.
+- Decide which arm of a branch a loop iteration took from the recomputed
+  branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
+  When four or more paths met in one block inside a loop, as in
+  `LogExpFunctions.log1pexp`, the reverse pass taped the path taken at every
+  iteration. In a nested loop whose inner trip count varies, each outer
+  iteration allocated its own buffer for that tape, which made Reverse of
+  such a nest about 1.35 times slower than the same loop with its inner loop
+  outlined. Conditions that cannot be recomputed safely keep the cache.
 - Differentiate Forward over Reverse through `append!` or `copyto!` from a
   `SubArray` on Julia 1.10. The augmented primal of `copyto!` reads a field of
   `unalias(dest, src)` through a pointer phi of the `src` argument and a copy of
   it; a nested derivative could not keep that phi rooted and threw "Enzyme could
   not determine how to keep a pointer phi in this function rooted" when it was
   reached. Such loads are now made in the phi's predecessors.
+- Differentiate again, in a later session, what a package differentiated while
+  its image was written: in split mode, in forward-mode `gradient` and
+  `jacobian`, and in nested modes. Split-mode thunks (`autodiff_thunk`,
+  reverse-mode `jacobian`, and the pullbacks of DifferentiationInterface) and
+  the inner derivative of a nested one were compiled while their caller was
+  inferred and kept in its code by their addresses, and the one-hot seeds of
+  forward mode were built by code that named a type and a runtime function by
+  their addresses; an image written with any of them segfaulted in every
+  session that loaded it. While an image is written, split-mode code now
+  fetches its thunks at run time, the seeds are built in plain Julia, and
+  code that still holds an address is valid only in the world it was inferred
+  in, which keeps it out of the image.
 - Support literal constant objects captured beside active data, including a
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,

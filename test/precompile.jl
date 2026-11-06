@@ -12,7 +12,15 @@ using Enzyme, Test
 # at their first call, and one first called while precompiling is not kept by the code that
 # calls it (see `Enzyme.Compiler.LazyThunk`), so no address of that session reaches an image
 # that way. A split-mode thunk (`autodiff_thunk` with `ReverseSplit...`) is still compiled
-# while its caller is inferred and held by its address, and this file does not cover it.
+# while its caller is inferred, because its type carries the tape type; while an image is
+# written, the code of that call fetches the thunks at run time instead of holding them (see
+# `Enzyme.Compiler.image_split_thunks`). The one-hot seeds of forward-mode `gradient` and
+# `jacobian` are built by code that names objects by their addresses, which is replaced by
+# plain Julia while an image is written (see `Enzyme.onehot_tuple`). The inner derivative of
+# a nested one is still compiled while the outer one is inferred, as a constant of the
+# inferred code; from Julia 1.11 that code sits in Julia's own cache, which writes what is
+# valid in every later world into the image, so while an image is written it is made valid
+# only in the world it was inferred in.
 
 # Write the packages into a directory of their own and put it first on the child's load
 # path. The depot is the one this test runs under, so the packages precompile next to the
@@ -165,6 +173,85 @@ end
             rev3, fwd3 = fields
             @test parse(Float64, rev3) ≈ rev_at_3
             @test parse(Float64, fwd3) ≈ fwd_at_3
+        end
+    end
+end
+
+const MODES_WHILE_PRECOMPILING = """
+module EnzymePrecompileModes
+using Enzyme
+
+f(v) = sum(abs2, v) + sin(v[1])
+g(v) = v .* v .+ sin(v[1])
+
+# Combined reverse mode of a function of a vector, as `gradient` takes it.
+rev_gradient(x) = Enzyme.gradient(Reverse, f, x)[1]
+
+# Split mode, as `autodiff_thunk` hands it out.
+function split_gradient(x)
+    fwd, rev = autodiff_thunk(ReverseSplitWithPrimal, Const{typeof(f)}, Active, Duplicated{typeof(x)})
+    dx = zero(x)
+    tape, _, _ = fwd(Const(f), Duplicated(x, dx))
+    rev(Const(f), Duplicated(x, dx), 1.0, tape)
+    return dx
+end
+
+# Reverse mode of a function returning a vector, which `jacobian` takes in split mode.
+rev_jacobian(x) = vec(Enzyme.jacobian(Reverse, g, x)[1])
+
+# Forward mode seeded with one-hot vectors.
+fwd_gradient(x) = Enzyme.gradient(Forward, f, x)[1]
+
+# Forward over reverse: the inner derivative is compiled while the outer one is.
+inner(x) = Enzyme.gradient(Reverse, f, x)[1]
+hvp(x) = Enzyme.autodiff(Forward, inner, Duplicated(x, [1.0, 0.0, 0.0]))[1]
+
+const X = [0.3, -0.2, 0.1]
+const PRECOMPILED = (rev_gradient(X), split_gradient(X), rev_jacobian(X), fwd_gradient(X), hvp(X))
+end
+"""
+
+const modes_x = [0.5, 0.25, -1.0]
+const modes_gradient = [2 * modes_x[1] + cos(modes_x[1]), 2 * modes_x[2], 2 * modes_x[3]]
+const modes_expected = (
+    rev_gradient = modes_gradient,
+    split_gradient = modes_gradient,
+    # Column by column: the first input reaches every output through `sin(v[1])`.
+    rev_jacobian = [
+        modes_gradient[1], cos(modes_x[1]), cos(modes_x[1]),
+        0.0, modes_gradient[2], 0.0,
+        0.0, 0.0, modes_gradient[3],
+    ],
+    fwd_gradient = modes_gradient,
+    hvp = [2 - sin(modes_x[1]), 0.0, 0.0],
+)
+
+@testset "a package that takes derivatives of every kind while it precompiles" begin
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymePrecompileModes.jl"), MODES_WHILE_PRECOMPILING)
+
+        # The first child precompiles the package, the second only loads it.
+        values_code = """
+        using Enzyme, EnzymePrecompileModes
+        print(join(reduce(vcat, EnzymePrecompileModes.PRECOMPILED), " "))
+        """
+        for _ in 1:2
+            ok, fields = run_child(load_path, values_code)
+            @test ok
+            @test length(fields) == 21
+        end
+
+        # Each kind in a session of its own, so that one that crashes does not hide the rest.
+        for (name, expected) in pairs(modes_expected)
+            @testset "$name" begin
+                call_code = """
+                using Enzyme, EnzymePrecompileModes
+                print(join(EnzymePrecompileModes.$name($modes_x), " "))
+                """
+                ok, fields = run_child(load_path, call_code)
+                @test ok && length(fields) == length(expected) &&
+                    all(isapprox(parse(Float64, s), e; atol = 1.0e-12) for (s, e) in zip(fields, expected))
+            end
         end
     end
 end

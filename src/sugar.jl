@@ -12,7 +12,30 @@ function zerosetfn!(x, i::Int, val)
     nothing
 end
 
+"""
+    onehot_tuple(fn, x, startv, lengthv)
+
+`(fn(x, startv + 1), …, fn(x, startv + lengthv))`, built in plain Julia without specializing
+on the length. What `onehot_internal` returns while a package image is written.
+"""
+function onehot_tuple(fn::F, x::T, startv::Int, lengthv::Int) where {F, T}
+    vals = Vector{T}(undef, lengthv)
+    for i in 1:lengthv
+        @inbounds vals[i] = fn(x, startv + i)
+    end
+    return Tuple(vals)::Tuple{Vararg{T}}
+end
+
 @generated function onehot_internal(fn::F, x::T, startv::Int, lengthv::Int) where {F, T<:AbstractArray}
+    # The `llvmcall` below inlines `fn`'s code as the JIT emits it, which names the array
+    # type, `NTuple` and runtime functions by their addresses in this process. Code saved in
+    # a package image is run by other processes, where those addresses mean nothing.
+    if Compiler.generating_output()
+        return quote
+            Base.@_inline_meta
+            onehot_tuple(fn, x, startv, lengthv)
+        end
+    end
     ir = GPUCompiler.JuliaContext() do ctx
         Base.@_inline_meta
 
