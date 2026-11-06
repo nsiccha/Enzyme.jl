@@ -1168,6 +1168,18 @@ else
     end
 end
 
+# Whether `call` is declared to return memory nothing else can reach, such as
+# `copy`'s `jl_array_copy` or a function LLVM found returns what it allocates.
+function returns_new_memory(call::LLVM.CallInst)::Bool
+    fn = LLVM.called_operand(call)
+    isa(fn, LLVM.Function) || return false
+    noalias = LLVM.kind(LLVM.EnumAttribute("noalias"))
+    for attr in collect(LLVM.return_attributes(fn))
+        isa(attr, LLVM.EnumAttribute) && LLVM.kind(attr) == noalias && return true
+    end
+    return false
+end
+
 # When `cur`, an inactive tracked pointer to a Julia value of type `TT`, is (a cast
 # of) a newly allocated array, return that allocation call; otherwise `nothing`.
 # If its elements hold no references, a zero-filled array of the same shape is then
@@ -1186,6 +1198,7 @@ function fresh_array_allocation(
     (off == 0 && isa(base, LLVM.CallInst)) || return nothing
     nm = called_function_name(base)
     nm in FRESH_STORAGE_ALLOCATORS && return base
+    returns_new_memory(base) && return base
     @static if VERSION >= v"1.11-"
         if nm in GC_OBJECT_ALLOCATORS && TT <: Array && array_wrapper_owns_fresh_memory(base, enzyme_ctx)
             return base
