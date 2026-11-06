@@ -378,6 +378,25 @@ function Core.Compiler.typeinf(interp::EnzymeInterpreter, frame::InferenceState)
     end
 end
 
+@static if !HAS_INTEGRATED_CACHE
+    # Julia 1.10 reports every result of inference as newly inferred, whichever cache it went
+    # to, and what is reported is what a package image holds: it would give a method of another
+    # package the `CodeInstance` of this interpreter as its native code, in the image and in
+    # every session that loads it. That code is not for Julia's JIT (see
+    # `Compiler.invoke_codegen!`), and the code of a nested derivative holds the address of the
+    # inner one. A world bound on it does not help: `cache_result!` widens a bound at the
+    # current world to every later world.
+    function Core.Compiler.cache_result!(interp::EnzymeInterpreter, result::InferenceResult)
+        tracking = Core.Compiler.track_newly_inferred.x
+        Core.Compiler.track_newly_inferred.x = false
+        try
+            return @invoke Core.Compiler.cache_result!(interp::AbstractInterpreter, result::InferenceResult)
+        finally
+            Core.Compiler.track_newly_inferred.x = tracking
+        end
+    end
+end
+
 function is_alwaysinline_func(@nospecialize(TT))::Bool
     isa(TT, DataType) || return false
     @static if VERSION ≥ v"1.11-"

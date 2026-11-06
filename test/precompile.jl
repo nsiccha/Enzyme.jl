@@ -20,7 +20,8 @@ using Enzyme, Test
 # a nested one is still compiled while the outer one is inferred, as a constant of the
 # inferred code; from Julia 1.11 that code sits in Julia's own cache, which writes what is
 # valid in every later world into the image, so while an image is written it is made valid
-# only in the world it was inferred in.
+# only in the world it was inferred in. Julia 1.10 reports it as newly inferred too, and
+# widens that bound, so there Enzyme's interpreter keeps its results from being reported.
 
 # Write the packages into a directory of their own and put it first on the child's load
 # path. The depot is the one this test runs under, so the packages precompile next to the
@@ -253,6 +254,38 @@ const modes_expected = (
                     all(isapprox(parse(Float64, s), e; atol = 1.0e-12) for (s, e) in zip(fields, expected))
             end
         end
+    end
+end
+
+const PLAIN_AND_NESTED = """
+module EnzymePrecompilePlainAndNested
+using Enzyme
+
+@noinline callee(x) = x^3
+f(v) = sum(callee, v)
+gradient_of(g, x) = Enzyme.gradient(Reverse, g, x)[1]
+inner(x) = Enzyme.gradient(Reverse, f, x)[1]
+hessian_vector(x, v) = Enzyme.autodiff(Forward, inner, Duplicated(x, v))[1]
+
+const PRECOMPILED = (gradient_of(f, [1.0, 2.0, 3.0]), hessian_vector([1.0, 2.0, 3.0], [1.0, 0.0, 0.0]))
+end
+"""
+
+@testset "a package that takes a plain and a nested derivative of one function" begin
+    # The inner derivative of a nested one holds the address of what it calls. On Julia 1.10
+    # the code of that call used to reach the image as the native code of `gradient`, for
+    # every later session to jump to. Only the nested derivative goes through that code, so
+    # the plain one is what crashed.
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymePrecompilePlainAndNested.jl"), PLAIN_AND_NESTED)
+        code = """
+        using Enzyme, EnzymePrecompilePlainAndNested
+        const P = EnzymePrecompilePlainAndNested
+        print(join(P.gradient_of(P.f, [0.5, 1.5, 2.5, 3.5]), " "))
+        """
+        ok, fields = run_child(load_path, code)
+        @test ok
+        ok && @test parse.(Float64, fields) ≈ 3 .* [0.5, 1.5, 2.5, 3.5] .^ 2
     end
 end
 
