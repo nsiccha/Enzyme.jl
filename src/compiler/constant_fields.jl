@@ -1292,11 +1292,13 @@ function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
         end
     end
     if !isempty(edges)
-        builder = LLVM.IRBuilder()
         for (pred, succ) in edges
+            # A builder of its own: it stamps the location it was last positioned at on
+            # what it inserts, which must not come from another function.
+            builder = LLVM.IRBuilder()
             split_edge!(builder, pred, succ)
+            dispose(builder)
         end
-        dispose(builder)
         todo = constant_merges(mod, cf)
     end
     for merge in todo

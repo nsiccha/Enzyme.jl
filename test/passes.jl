@@ -1789,3 +1789,80 @@ end
         end
     end
 end
+
+# Two functions whose merges each need a block of their own on an edge into them.
+function merge_edges_debug_ir(typed::Bool)
+    obj = typed ? "{} addrspace(10)*" : "ptr addrspace(10)"
+    data = typed ? "double addrspace(13)*" : "ptr addrspace(13)"
+    slot = typed ? "double addrspace(13)* addrspace(11)*" : "ptr addrspace(11)"
+    body(dbg) = """
+    top:
+      %f = call $obj @fresh(), !dbg $dbg
+      %fs = addrspacecast $obj %f to $slot, !dbg $dbg
+      %fd = load $data, $slot %fs, align 8, !dbg $dbg
+      %as = addrspacecast $obj %a to $slot, !dbg $dbg
+      %ad = load $data, $slot %as, align 8, !dbg $dbg
+      br i1 %c, label %merge, label %right, !dbg $dbg
+
+    right:
+      br i1 %d, label %merge, label %other, !dbg $dbg
+
+    other:
+      ret double 0.0, !dbg $dbg
+
+    merge:
+      %p = phi $data [ %fd, %top ], [ %ad, %right ], !dbg $dbg
+      %v = load double, $data %p, align 8, !dbg $dbg
+      ret double %v, !dbg $dbg
+    """
+    return """
+    source_filename = "start"
+    target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+    target triple = "x86_64-linux-gnu"
+
+    declare noalias nonnull $obj @fresh()
+
+    define double @first(i1 %c, i1 %d, $obj %a) !dbg !5 {
+    $(body("!7"))
+    }
+
+    define double @second(i1 %c, i1 %d, $obj %a) !dbg !6 {
+    $(body("!8"))
+    }
+
+    define double @both(i1 %c, i1 %d, $obj %a) {
+    top:
+      %x = call double @first(i1 %c, i1 %d, $obj %a)
+      %y = call double @second(i1 %c, i1 %d, $obj %a)
+      %r = fadd double %x, %y
+      ret double %r
+    }
+
+    !llvm.dbg.cu = !{!0}
+    !llvm.module.flags = !{!1}
+    !0 = distinct !DICompileUnit(language: DW_LANG_Julia, file: !2, producer: "julia", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, nameTableKind: None)
+    !1 = !{i32 2, !"Debug Info Version", i32 3}
+    !2 = !DIFile(filename: "merges.jl", directory: ".")
+    !3 = !DISubroutineType(types: !4)
+    !4 = !{}
+    !5 = distinct !DISubprogram(name: "first", linkageName: "first", scope: null, file: !2, line: 1, type: !3, scopeLine: 1, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0, retainedNodes: !4)
+    !6 = distinct !DISubprogram(name: "second", linkageName: "second", scope: null, file: !2, line: 2, type: !3, scopeLine: 2, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0, retainedNodes: !4)
+    !7 = !DILocation(line: 1, scope: !5)
+    !8 = !DILocation(line: 2, scope: !6)
+    """
+end
+
+@testset "Splitting edges keeps each function's debug locations" begin
+    LLVM.Context() do ctx
+        mod = parse(LLVM.Module, merge_edges_debug_ir(LLVM.supports_typed_pointers(ctx)))
+        @test LLVM.verify(mod) === nothing
+        both = functions(mod)["both"]
+        Enzyme.Compiler.split_constant_merges!(mod, Enzyme.Compiler.ConstantFields(both, Set{LLVM.Value}()))
+        @test LLVM.verify(mod) === nothing
+        for name in ("first", "second")
+            f = functions(mod)[name]
+            @test pointer_phi_addrspaces(f) == Int[]
+            @test count(bb -> startswith(LLVM.name(bb), "unsink.edge"), blocks(f)) == 2
+        end
+    end
+end
