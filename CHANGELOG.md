@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Do not recompute a call on a path the forward pass skipped (dogfood
+  libEnzyme build `045d93e1`). When the reverse pass recomputes a value that
+  three paths merge, one of which skips a call while the other two branch on
+  its result, it evaluated that branch condition on all three paths, from
+  values the skipping path never computed. A recomputed `sqrt` then threw a
+  `DomainError` the primal never raised, for example in a loop over
+  `x <= 0 ? 1.0 : (r = sqrt(x); r >= 2 ? exp(r) : r)`. The condition is now
+  computed only on the two paths that ran it, unless it is safe to speculate.
 - Avoid saving reader inputs for every term when results are written into a
   fresh output array that the reader cannot access (dogfood libEnzyme build
   `08f0e8d9`). The cache analysis now proves that private output storage stays
