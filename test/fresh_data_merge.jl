@@ -261,9 +261,9 @@ fdm_runtime_gradient(a, fargs) = fdm_gradient(set_runtime_activity(Reverse), far
         @test fdm_split(f, a, args...) ≈ got
         hv = fdm_central(Base.Fix2(fdm_runtime_gradient, (f, args)), a, h .* v) ./ h
         @test fdm_fwd_rev(f, a, v, args...) ≈ hv rtol = 1.0e-5 atol = 1.0e-4
-        # libEnzyme overflows the stack compiling this one, in some processes and with
-        # or without the split (Enzyme todo `0j9uvcj`).
-        if f !== fdm_active_stored_late || VERSION < v"1.12-"
+        # libEnzyme overflows the stack compiling these, in some processes and with or
+        # without the split (Enzyme todo `0j9uvcj`).
+        if !(f in (fdm_active_stored, fdm_active_stored_late)) || VERSION < v"1.12-"
             @test fdm_rev_fwd(f, a, v, args...) ≈ hv rtol = 1.0e-5 atol = 1.0e-4
         end
         @test base == [1.0, 2.0, 3.0, 4.0]
