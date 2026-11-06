@@ -256,6 +256,53 @@ const modes_expected = (
     end
 end
 
+@testset "Enzyme's image holds the passes that act on branches" begin
+    # The first derivative of a function with branches or selects runs passes that the
+    # workload's `x^2` never reaches, such as `simplify_conditioned_selects!`. The workload
+    # also differentiates `cos` so that Enzyme's image holds their code, and their helpers
+    # are compiled once for every LLVM value type, so that code is all a later function
+    # needs. Without both, the first Reverse gradient of a function calling `cos` or `log`
+    # took 8-11 s on Julia 1.10, against about 2 s with registered Enzyme.
+    precompile_test_harness() do load_path
+        code = """
+        using Enzyme
+        function precompiled_specializations(f)
+            world = Base.get_world_counter()
+            n = 0
+            for m in methods(f), mi in Base.specializations(m)
+                mi isa Core.MethodInstance && isdefined(mi, :cache) || continue
+                ci = mi.cache
+                while true
+                    if ci.min_world <= world <= ci.max_world && ci.invoke != C_NULL
+                        n += 1
+                        break
+                    end
+                    isdefined(ci, :next) || break
+                    ci = ci.next
+                end
+            end
+            return n
+        end
+        specializations(f) = sum(m -> Base.count(mi -> mi isa Core.MethodInstance, Base.specializations(m)), methods(f))
+        f = Enzyme.Compiler.specialize_conditioned_select!
+        native = precompiled_specializations(f)
+        before = specializations(f)
+        branchy(x) = x > 1.0 ? log(x) : exp(-x)
+        grad = Enzyme.autodiff(Reverse, branchy, Active(2.0))[1][1]
+        print(native, " ", before, " ", specializations(f), " ", grad)
+        """
+        ok, fields = run_child(load_path, code)
+        @test ok
+        if ok
+            native, before, after, grad = fields
+            @test parse(Int, native) > 0
+            # Nothing of it was compiled again for this function.
+            @test parse(Int, after) == parse(Int, before)
+            @test parse(Float64, grad) ≈ 0.5
+        end
+    end
+end
+
 @testset "Enzyme's own precompilation" begin
     precompile_test_harness() do load_path
         # Enzyme differentiates in its `@compile_workload`, and the caches that fills are
@@ -304,6 +351,56 @@ end
             @test_skip ok
         else
             @test ok
+        end
+    end
+end
+
+# How many specializations of three functions every derivative is compiled through hold native
+# code that is valid in the current world, read before anything is differentiated. On Julia
+# 1.10 and 1.12 alike, loading StaticArrays left none of these three with any, and the
+# extension's image gives each back what Enzyme's own image has, in either load order. Not
+# every compiler function is restored that completely (`thunk_generator` is not, on 1.12).
+const PRECOMPILED_COMPILER = """
+function precompiled_specializations(f)
+    world = Base.get_world_counter()
+    n = 0
+    for m in methods(f), mi in Base.specializations(m)
+        mi isa Core.MethodInstance && isdefined(mi, :cache) || continue
+        ci = mi.cache
+        while true
+            if ci.min_world <= world <= ci.max_world && ci.invoke != C_NULL
+                n += 1
+                break
+            end
+            isdefined(ci, :next) || break
+            ci = ci.next
+        end
+    end
+    return n
+end
+C = Enzyme.Compiler
+for f in (C.handle_compiled, C.lower_convention, C.check_ir!)
+    print(precompiled_specializations(f), " ")
+end
+print(Enzyme.autodiff(Reverse, x -> x * x, Active(4.0))[1][1])
+"""
+
+@testset "StaticArrays leaves Enzyme's compiler precompiled" begin
+    # StaticArrays' `Base.cconvert(::Type{Ptr{T}}, ...)` methods match the `cconvert` calls
+    # Enzyme's compiler makes with an argument inferred as `Any`, so loading it discards the
+    # native code Enzyme's image holds for that compiler, in either load order, and the first
+    # derivative compiled it all again. `EnzymeStaticArraysExt` runs Enzyme's workload once
+    # more so that its own image holds the compiler as it stands with both packages loaded.
+    # Enzyme alone is the control: what its image holds is what the other two must keep.
+    precompile_test_harness() do load_path
+        for packages in ("Enzyme", "StaticArrays, Enzyme", "Enzyme, StaticArrays")
+            ok, fields = run_child(load_path, "using $packages\n" * PRECOMPILED_COMPILER)
+            @test ok
+            if ok
+                @test length(fields) == 4
+                @test all(n -> parse(Int, n) > 0, fields[1:3])
+                @test parse(Float64, fields[4]) ≈ 8.0
+            end
         end
     end
 end
