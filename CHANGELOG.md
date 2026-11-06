@@ -7,6 +7,12 @@
   `08f0e8d9`). The cache analysis now proves that private output storage stays
   inaccessible to the reader, including across loop iterations. Passing or
   publishing that storage to the reader still retains the required caches.
+- Fix a segfault on Julia 1.13 (LLVM 20) while compiling a Reverse derivative
+  (dogfood libEnzyme build `2cc9b459`). Deciding whether a split reverse pass
+  replays a loop only once asked scalar evolution for the loop's trip count
+  after Enzyme had inserted placeholder phis without incoming values, and
+  LLVM 20's loop guards read the first incoming block of such a phi. The
+  decision now takes the loop limit Enzyme already computed for that loop.
 - Decide which arm of a branch a loop iteration took from the recomputed
   branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
   When four or more paths met in one block inside a loop, as in
