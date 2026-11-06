@@ -958,6 +958,8 @@ end
 # on each way is cloned too only if the loads cannot move out of it.
 function merge_behind_branches(cf::ConstantFields, merge::LLVM.Instruction)::Bool
     isa(merge, LLVM.PHIInst) && !merge_predecessors_branch(merge) && return false
+    # One load through a select is split as it is, wherever the load sits.
+    isa(merge, LLVM.SelectInst) && constant_select_load(merge) !== nothing && return false
     found = merge_load_tree(cf, merge)
     found === nothing && return false
     tree, _, dead = found
@@ -971,9 +973,7 @@ function merge_behind_branches(cf::ConstantFields, merge::LLVM.Instruction)::Boo
     chain = copy(dead)
     if length(in_block) == 1 && haskey(in_block, bb) && isempty(dead)
         if sel !== nothing
-            # One load right after a select needs no clone. Several can be split once
-            # the select is a phi.
-            constant_select_load(sel) === nothing || return false
+            # Several loads right after a select can be split once it is a phi.
             unsink_order(bb, tree, sel) === nothing || return true
         elseif unsink_order(bb, tree) !== nothing
             return false
