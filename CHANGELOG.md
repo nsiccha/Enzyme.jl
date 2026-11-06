@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Recompute a value of an outer loop iteration once per entry of an inner
+  loop's reverse, not again in each of its arms on every inner iteration
+  (dogfood libEnzyme build `7f23cb72`). Julia arrays make that value a chain of
+  dependent loads (`idx.data`, `idx[j]`, `idx[j].data`), which the same loop in
+  a function of its own gets as arguments. This was the remaining 6 to 7% of
+  Reverse of a ragged nest over that outlined spelling on Julia 1.12 and 1.13.
 - Do not recompute a call on a path the forward pass skipped (dogfood
   libEnzyme build `045d93e1`). When the reverse pass recomputes a value that
   three paths merge, one of which skips a call while the other two branch on
