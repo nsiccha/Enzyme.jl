@@ -9307,10 +9307,34 @@ mutable struct LazySplitThunks
     end
 end
 
+"""
+    in_calling_world(f, args...)
+
+`f(args...)` as a dynamic call in the world the calling task runs in: inference does not look
+through it, so the caller's code holds no edge on `f` or on anything `f` calls.
+
+This is what keeps a derivative from depending on Enzyme's compiler. The code `thunk`'s generator
+returns holds the [`LazyThunk`](@ref) that holds the derivative an image kept, and a direct call
+into the compiler from that code would make it depend on every method the compiler can reach.
+A package that invalidates any one of those would then cost the derivative, whether it loads
+before or after the image, although nothing the derivative depends on has changed. Which packages
+do depends on the Julia version: a generic `cconvert` on 1.10, a generic `convert` of a `Real` on
+1.12 and 1.13, and Distributions' dependencies through methods of their own.
+
+What the derivative does depend on stays an edge of that code (see
+[`retained_derivatives!`](@ref)), and the compiler a later call runs is the current one.
+"""
+@inline in_calling_world(f::F, args...) where {F} = Core._call_in_world(GPUCompiler.tls_world_age(), f, args...)
+
+# Out of line: a dynamic call in `lazy_thunk` itself would give the code of every later call a GC
+# frame, which those calls would pay for on each gradient.
+@noinline first_call_of_thunk(@nospecialize(cell::LazyThunk)) = in_calling_world(compile_lazy_thunk!, cell)::Ptr{Cvoid}
+@noinline first_call_of_thunk(cell::LazySplitThunks) = in_calling_world(compile_lazy_thunk!, cell)::Tuple{Any, Any}
+
 @inline function lazy_thunk(cell::LazyThunk{T}) where {T}
     compiled = @atomic :acquire cell.compiled
     if compiled === nothing || !lazy_valid(compiled)
-        return T(compile_lazy_thunk!(cell))
+        return T(first_call_of_thunk(cell))
     end
     return T(compiled.value)
 end
@@ -9318,7 +9342,7 @@ end
 @inline function lazy_split_thunks(cell::LazySplitThunks)::Tuple{Any, Any}
     compiled = @atomic :acquire cell.compiled
     if compiled === nothing || !lazy_valid(compiled)
-        return compile_lazy_thunk!(cell)
+        return first_call_of_thunk(cell)
     end
     return compiled.value
 end
@@ -9353,7 +9377,9 @@ end
 # Both kinds of cell compile one at a time, so that two first calls compile once.
 const LAZY_THUNK_LOCK = ReentrantLock()
 
-@noinline function compile_lazy_thunk!(cell::LazyThunk)::Ptr{Cvoid}
+# The type of the thunk does not matter here, and a specialization for each would be compiled in
+# the session that needs it.
+@noinline function compile_lazy_thunk!(@nospecialize(cell::LazyThunk))::Ptr{Cvoid}
     # NOTE: no use of lock(::Function)/@lock to keep stack traces clean
     lock(LAZY_THUNK_LOCK)
     try
@@ -9361,7 +9387,7 @@ const LAZY_THUNK_LOCK = ReentrantLock()
         if compiled !== nothing && lazy_valid(compiled)
             return compiled.value
         end
-        compile_result, validity = lazy_compilation(cell.job, compiled === nothing ? cell.retained : nothing)
+        compile_result, validity = lazy_compilation(cell.job, compiled === nothing ? retained_of_cell(cell.retained) : nothing)
         adjoint = compile_result.adjoint::Ptr{Cvoid}
         if validity !== nothing
             @atomic :release cell.compiled = LazyCompiled{Ptr{Cvoid}}(adjoint, validity)
@@ -9379,7 +9405,7 @@ end
         if compiled !== nothing && lazy_valid(compiled)
             return compiled.value
         end
-        compile_result, validity = lazy_compilation(cell.job, compiled === nothing ? cell.retained : nothing)
+        compile_result, validity = lazy_compilation(cell.job, compiled === nothing ? retained_of_cell(cell.retained) : nothing)
         thunks = split_thunks(compile_result, cell.run_enzyme, cell.FA, cell.RT, cell.TT, cell.width, cell.ReturnPrimal)
         if validity !== nothing
             @atomic :release cell.compiled = LazyCompiled{Any}(thunks, validity)
@@ -9404,7 +9430,10 @@ compiled may be kept (an address in this process's JIT means nothing to the sess
 loads the image), and when the result was invalidated before it could be tracked.
 
 `retained` is what the image the cell comes from keeps of the derivative. When it fits this
-process, it is linked in place of compiling (see [`retained_result`](@ref)).
+process, it is linked in place of compiling (see [`retained_result`](@ref)). Compiling is a
+dynamic call (see [`in_calling_world`](@ref)) so that linking does not depend on the compiler:
+when something invalidated the compiler, Julia would first compile the parts of it that this
+code calls directly, for a call that may only need to link.
 """
 function lazy_compilation(job::CompilerJob, retained::Union{Nothing, RetainedDerivatives} = nothing)
     world = GPUCompiler.tls_world_age()
@@ -9417,6 +9446,10 @@ function lazy_compilation(job::CompilerJob, retained::Union{Nothing, RetainedDer
             (validity !== nothing || generating_output()) && return compile_result, validity
         end
     end
+    return in_calling_world(compile_in_world, job, world)::Tuple{CompileResult, Union{Nothing, Core.CodeInstance}}
+end
+
+function compile_in_world(@nospecialize(job::CompilerJob), world::UInt)
     job = CompilerJob(job.source, job.config, world)
     ts_ctx = JuliaContext()
     ctx = context(ts_ctx)

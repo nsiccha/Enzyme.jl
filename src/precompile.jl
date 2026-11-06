@@ -53,6 +53,9 @@ end
     precompile(Compiler.retained_result, (Compiler.RetainedDerivatives, Compiler.CompilerJob))
     precompile(Compiler.materialize_retained, (Compiler.RetainedDerivative,))
     precompile(Compiler.track_retained_validity, (Vector{Any},))
+    precompile(Compiler.first_call_of_thunk, (Compiler.LazyThunk,))
+    precompile(Compiler.first_call_of_thunk, (Compiler.LazySplitThunks,))
+    precompile(Compiler.compile_lazy_thunk!, (Compiler.LazyThunk,))
     precompile(Compiler.compile_lazy_thunk!, (Compiler.LazySplitThunks,))
     precompile(Compiler.lazy_compilation, (Compiler.CompilerJob, Compiler.RetainedDerivatives))
 end
