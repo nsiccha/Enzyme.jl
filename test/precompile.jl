@@ -220,3 +220,49 @@ end
         end
     end
 end
+
+# How many specializations of the functions every derivative is compiled through hold native
+# code from a package image that is still valid, read before anything is differentiated.
+const PRECOMPILED_COMPILER = """
+function precompiled_specializations(f)
+    world = Base.get_world_counter()
+    n = 0
+    for m in methods(f), mi in Base.specializations(m)
+        mi isa Core.MethodInstance && isdefined(mi, :cache) || continue
+        ci = mi.cache
+        while true
+            if ci.min_world <= world <= ci.max_world && ci.invoke != C_NULL
+                n += 1
+                break
+            end
+            isdefined(ci, :next) || break
+            ci = ci.next
+        end
+    end
+    return n
+end
+C = Enzyme.Compiler
+print(precompiled_specializations(C.thunk_generator), " ", precompiled_specializations(C.enzyme!), " ",
+      precompiled_specializations(C._link), " ", Enzyme.autodiff(Reverse, x -> x * x, Active(4.0))[1][1])
+"""
+
+@testset "StaticArrays leaves Enzyme's compiler precompiled" begin
+    # StaticArrays' `Base.cconvert(::Type{Ptr{T}}, ...)` methods match the `cconvert` calls
+    # Enzyme's compiler makes with an argument inferred as `Any`, so loading it discards the
+    # native code Enzyme's image holds for that compiler, in either load order, and the first
+    # derivative compiled it all again. `EnzymeStaticArraysExt` runs Enzyme's workload once
+    # more so that its own image holds the compiler as it stands with both packages loaded.
+    precompile_test_harness() do load_path
+        for packages in ("StaticArrays, Enzyme", "Enzyme, StaticArrays")
+            ok, fields = run_child(load_path, "using $packages\n" * PRECOMPILED_COMPILER)
+            @test ok
+            if ok
+                n_thunk_generator, n_enzyme, n_link, grad = fields
+                @test parse(Int, n_thunk_generator) > 0
+                @test parse(Int, n_enzyme) > 0
+                @test parse(Int, n_link) > 0
+                @test parse(Float64, grad) ≈ 8.0
+            end
+        end
+    end
+end
