@@ -85,11 +85,24 @@ function central_difference(gradient, u, v, h)
     return (gradient(u .+ h .* v) .- gradient(u .- h .* v)) ./ (2h)
 end
 
+function central_gradient(f, u, h)
+    return [(f(u .+ h .* (eachindex(u) .== i)) - f(u .- h .* (eachindex(u) .== i))) / (2h) for i in eachindex(u)]
+end
+
 @testset "Forward over Reverse rebuilds a tape returned through an sret" begin
     u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
     h = 1.0e-6
-    @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
+    # On Julia 1.13 (LLVM 20), compiling this plain Reverse pass segfaulted in LLVM's
+    # ScalarEvolution loop guards before dogfood libEnzyme f6cb9e61 (Enzyme todo 0e58pgu).
+    @test stick_gradient(u) ≈ central_gradient(stick_objective, u, h) rtol = 1.0e-7
+    # On Julia 1.13 the outer Forward pass raises EnzymeRuntimeActivityError in the
+    # dynamic call that builds CartesianIndices, with every libEnzyme (Enzyme todo 0k6qyml).
+    if VERSION >= v"1.13-"
+        @test_broken only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
+    else
+        @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
+    end
 end
 
 # The same computation with the offsets taken from the size and an early return. The
@@ -122,5 +135,10 @@ end
     u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
     h = 1.0e-6
-    @test only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
+    @test simplex_gradient(u) ≈ central_gradient(simplex_objective, u, h) rtol = 1.0e-7
+    if VERSION >= v"1.13-"
+        @test_broken only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
+    else
+        @test only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
+    end
 end
