@@ -46,13 +46,8 @@ end
     g, hv = tape_closed_form(x, v)
     @test tape_objective(x) ≈ sum(sum(abs2, max.(x .- c, 0.0))^2 for c in TAPE_SHIFTS)
     # On Julia 1.12 and later, Reverse through a filter! that drops an element puts
-    # derivatives on the wrong entries (Enzyme todo 063gmv7). On Julia 1.13, compiling
-    # this Reverse pass also segfaults in LLVM's ScalarEvolution (Enzyme todo 0e58pgu),
-    # which @test_broken cannot catch.
-    if VERSION >= v"1.13-"
-        @test_skip tape_gradient(x) ≈ g
-        @test_skip only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
-    elseif VERSION >= v"1.12-"
+    # derivatives on the wrong entries (Enzyme todo 063gmv7).
+    if VERSION >= v"1.12-"
         @test_broken tape_gradient(x) ≈ g
         @test_broken only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
     else
@@ -94,12 +89,7 @@ end
     u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
     h = 1.0e-6
-    # On Julia 1.13, compiling this Reverse pass segfaults too (Enzyme todo 0e58pgu).
-    if VERSION >= v"1.13-"
-        @test_skip only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
-    else
-        @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
-    end
+    @test only(autodiff(Forward, stick_gradient, Duplicated(u, v))) ≈ central_difference(stick_gradient, u, v, h) rtol = 1.0e-7
 end
 
 # The same computation with the offsets taken from the size and an early return. The
@@ -132,9 +122,5 @@ end
     u = [0.3, -0.2, 0.5, 0.1, -0.4, 0.2]
     v = [1.0, 0.5, -1.0, 2.0, 0.25, -0.5]
     h = 1.0e-6
-    if VERSION >= v"1.13-"
-        @test_skip only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
-    else
-        @test only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
-    end
+    @test only(autodiff(Forward, simplex_gradient, Duplicated(u, v))) ≈ central_difference(simplex_gradient, u, v, h) rtol = 1.0e-7
 end
