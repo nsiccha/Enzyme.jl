@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Differentiate a read that picks each element from data the function made
+  itself or from active data, `iszero(s) ? c[i] : active[s]` with `c` computed
+  from a `Const` argument, under static activity. LLVM folds the two loads into
+  one load through a merge of the two pointers, usually behind the bounds check
+  of the destination, and reaching it raised `EnzymeRuntimeActivityError` on the
+  path that takes `c`. Such loads are now made on each side, whichever side turns
+  out to hold derivatives, by cloning the blocks up to the load where they sit
+  behind a branch, and no copy of `c` is made. This also removes the copy of a
+  `Const` array that remained on Julia 1.12 under `--check-bounds=yes`. An array
+  a call returns as new memory, such as a `copy`, now gets a zero shadow where
+  the merged array itself reaches a call, as an array the function allocates did.
 - Decide which arm of a branch a loop iteration took from the recomputed
   branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
   When four or more paths met in one block inside a loop, as in
