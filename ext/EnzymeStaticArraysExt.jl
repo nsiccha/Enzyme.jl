@@ -93,8 +93,8 @@ end
 # 20 to 23 s instead of 2.8 s on Julia 1.10, 19 to 37 s instead of 5.4 to 6 s on 1.12). This
 # image is written with both packages loaded, so `@compiler_workload`, the workload of Enzyme's
 # own image (`src/precompile.jl`), run again here, caches that compiler as it stands with
-# StaticArrays. It does not give back everything Julia drops: about 8 s remain on Julia 1.10
-# when StaticArrays loads first, and about 7 s on 1.12 when it loads second.
+# StaticArrays. It does not give back everything Julia drops: several seconds remain on Julia
+# 1.10 when StaticArrays loads first, and on 1.12 when it loads second.
 Enzyme.@compiler_workload
 
 end

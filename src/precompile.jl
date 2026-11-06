@@ -18,10 +18,14 @@ macro compiler_workload()
                 g(x) = cos(x)
                 end
 
+                # This workload is for Enzyme's compiler, and has no use for these derivatives
+                # afterwards.
+                $Enzyme.Compiler.RetainDerivatives[] = false
                 $PrecompileTools.@compile_workload begin
                     $Enzyme.autodiff($Enzyme.Reverse, precompile_module.f, $Enzyme.Active(2.0))
                     $Enzyme.autodiff($Enzyme.Reverse, precompile_module.g, $Enzyme.Active(2.0))
                 end
+                $Enzyme.Compiler.RetainDerivatives[] = true
 
                 # Everything the workload cached belongs to this process: thunks are held as JIT
                 # addresses, the rule and activity memos are keyed on worlds that mean nothing
@@ -41,3 +45,14 @@ end
 end
 
 @compiler_workload
+
+# A derivative taken from a package image spends its first call on nothing but this, so have it
+# compiled.
+@setup_workload begin
+    precompile(Compiler.retention_conditions, ())
+    precompile(Compiler.retained_result, (Compiler.RetainedDerivatives, Compiler.CompilerJob))
+    precompile(Compiler.materialize_retained, (Compiler.RetainedDerivative,))
+    precompile(Compiler.track_retained_validity, (Vector{Any},))
+    precompile(Compiler.compile_lazy_thunk!, (Compiler.LazySplitThunks,))
+    precompile(Compiler.lazy_compilation, (Compiler.CompilerJob, Compiler.RetainedDerivatives))
+end
