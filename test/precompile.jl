@@ -360,6 +360,11 @@ end
 # 1.10 and 1.12 alike, loading StaticArrays left none of these three with any, and the
 # extension's image gives each back what Enzyme's own image has, in either load order. Not
 # every compiler function is restored that completely (`thunk_generator` is not, on 1.12).
+#
+# `specialize_conditioned_select!` is reached only by a function with branches, so it is here
+# for the part of the workload that has them. On Julia 1.10 loading StaticArrays discards it
+# too, and an extension differentiating only `x^2` left it with none in either load order. On
+# Julia 1.12 StaticArrays leaves it alone, so there this count cannot tell the two apart.
 const PRECOMPILED_COMPILER = """
 function precompiled_specializations(f)
     world = Base.get_world_counter()
@@ -379,7 +384,7 @@ function precompiled_specializations(f)
     return n
 end
 C = Enzyme.Compiler
-for f in (C.handle_compiled, C.lower_convention, C.check_ir!)
+for f in (C.handle_compiled, C.lower_convention, C.check_ir!, C.specialize_conditioned_select!)
     print(precompiled_specializations(f), " ")
 end
 print(Enzyme.autodiff(Reverse, x -> x * x, Active(4.0))[1][1])
@@ -389,17 +394,18 @@ print(Enzyme.autodiff(Reverse, x -> x * x, Active(4.0))[1][1])
     # StaticArrays' `Base.cconvert(::Type{Ptr{T}}, ...)` methods match the `cconvert` calls
     # Enzyme's compiler makes with an argument inferred as `Any`, so loading it discards the
     # native code Enzyme's image holds for that compiler, in either load order, and the first
-    # derivative compiled it all again. `EnzymeStaticArraysExt` runs Enzyme's workload once
-    # more so that its own image holds the compiler as it stands with both packages loaded.
+    # derivative compiled it all again. `EnzymeStaticArraysExt` runs `@compiler_workload`, as
+    # Enzyme's own image does, so that its image holds the compiler as it stands with both
+    # packages loaded.
     # Enzyme alone is the control: what its image holds is what the other two must keep.
     precompile_test_harness() do load_path
         for packages in ("Enzyme", "StaticArrays, Enzyme", "Enzyme, StaticArrays")
             ok, fields = run_child(load_path, "using $packages\n" * PRECOMPILED_COMPILER)
             @test ok
             if ok
-                @test length(fields) == 4
-                @test all(n -> parse(Int, n) > 0, fields[1:3])
-                @test parse(Float64, fields[4]) ≈ 8.0
+                @test length(fields) == 5
+                @test all(n -> parse(Int, n) > 0, fields[1:4])
+                @test parse(Float64, fields[5]) ≈ 8.0
             end
         end
     end
