@@ -4,10 +4,15 @@
 
 - Recompute a value of an outer loop iteration once per entry of an inner
   loop's reverse, not again in each of its arms on every inner iteration
-  (dogfood libEnzyme build `43f24e32`). Julia arrays make that value a chain of
+  (dogfood libEnzyme build `1d4764e2`). Julia arrays make that value a chain of
   dependent loads (`idx.data`, `idx[j]`, `idx[j].data`), which the same loop in
   a function of its own gets as arguments. This was the remaining 6 to 7% of
   Reverse of a ragged nest over that outlined spelling on Julia 1.12 and 1.13.
+- Avoid saving reader inputs for every term when results are written into a
+  fresh output array that the reader cannot access (dogfood libEnzyme build
+  `08f0e8d9`). The cache analysis now proves that private output storage stays
+  inaccessible to the reader, including across loop iterations. Passing or
+  publishing that storage to the reader still retains the required caches.
 - Decide which arm of a branch a loop iteration took from the recomputed
   branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
   When four or more paths met in one block inside a loop, as in
