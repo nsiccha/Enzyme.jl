@@ -101,9 +101,12 @@ end
         f(x) = x^2
     end
 
+    # As in `src/precompile.jl`: the workload is for the compiler, not for its derivatives.
+    Enzyme.Compiler.RetainDerivatives[] = false
     @compile_workload begin
         Enzyme.autodiff(Reverse, precompile_module.f, Active(2.0))
     end
+    Enzyme.Compiler.RetainDerivatives[] = true
 
     # As in `src/precompile.jl`: what the workload cached belongs to this process.
     Enzyme.Compiler.clear_caches!()
