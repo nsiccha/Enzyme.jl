@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Avoid saving reader inputs for every term when results are written into a
+  fresh output array that the reader cannot access (dogfood libEnzyme build
+  `08f0e8d9`). The cache analysis now proves that private output storage stays
+  inaccessible to the reader, including across loop iterations. Passing or
+  publishing that storage to the reader still retains the required caches.
 - Decide which arm of a branch a loop iteration took from the recomputed
   branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
   When four or more paths met in one block inside a loop, as in
