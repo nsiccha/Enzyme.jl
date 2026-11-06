@@ -9264,8 +9264,10 @@ end
 The split-mode counterpart of [`LazyThunk`](@ref), for `runtime_thunk`: the augmented
 forward and adjoint thunks of a derivative, compiled the first time they are asked for.
 Their type carries the tape type, which only compiling finds, so the code holding one of
-these gets them untyped. Only Enzyme's run-time rules ask for them, which use the thunks
-through dynamic dispatch anyway.
+these gets them untyped. Enzyme's run-time rules ask for them, which use the thunks
+through dynamic dispatch anyway, and so does split-mode code generated while a package
+image is written, which types them with what its generator compiled (see
+[`image_split_thunks`](@ref)).
 """
 mutable struct LazySplitThunks
     @atomic compiled::Union{Nothing, LazyCompiled{Any}}
@@ -9303,6 +9305,33 @@ end
         return compile_lazy_thunk!(cell)
     end
     return compiled.value
+end
+
+"""
+    image_split_thunks(cell, AugT, AdjT)
+
+The split-mode thunks of `cell`, typed `AugT` and `AdjT`: what `thunk`'s generator returns
+for split mode while a package image is written (see [`keeps_split_thunks_lazy`](@ref)).
+
+The generator compiled the derivative to learn those types, which carry the tape type, but
+the addresses it got belong to the process writing the image. So the code it returns asks
+`cell` instead, which compiles in the process that runs it and keeps nothing while
+precompiling, exactly as for `runtime_thunk`.
+"""
+@inline function image_split_thunks(cell::LazySplitThunks, ::Type{AugT}, ::Type{AdjT}) where {AugT, AdjT}
+    aug, adj = lazy_split_thunks(cell)
+    aug isa AugT || throw_image_split_mismatch(AugT, typeof(aug))
+    adj isa AdjT || throw_image_split_mismatch(AdjT, typeof(adj))
+    return (aug, adj)
+end
+
+@noinline function throw_image_split_mismatch(@nospecialize(expected::Type), @nospecialize(got::Type))
+    throw(
+        AssertionError(
+            "Enzyme recompiled a split-mode derivative held in a package image to type $got, " *
+                "but the code that holds it expects $expected. Precompile the package again.",
+        ),
+    )
 end
 
 # Both kinds of cell compile one at a time, so that two first calls compile once.
@@ -9539,6 +9568,28 @@ function compiles_lazily(Mode::API.CDerivativeMode, @nospecialize(ABI::Type), un
     return !Interpreter.in_enzyme_inference()
 end
 
+"""
+    keeps_split_thunks_lazy(Mode, ABI)
+
+Say if the generator of `thunk`, which compiles a split-mode derivative while its call is
+inferred, must return code that fetches the thunks at run time (see
+[`image_split_thunks`](@ref)) rather than the thunks themselves.
+
+That is while a package image is written: the code of the call may be saved in it, and the
+thunks hold addresses the JIT of the process writing it gave out, which mean nothing to a
+process that loads it. Only the FFI ABI holds the derivative by its address in generated
+code. Inference by an `EnzymeInterpreter` still compiles in place, because an outer
+derivative needs the inner one's address as a constant (see [`compiles_lazily`](@ref));
+`thunk_codeinfo` keeps such code out of the image instead, by making it valid only in the
+world it was inferred in.
+"""
+function keeps_split_thunks_lazy(Mode::API.CDerivativeMode, @nospecialize(ABI::Type))
+    Mode == API.DEM_ReverseModePrimal || Mode == API.DEM_ReverseModeGradient || return false
+    ABI <: FFIABI || return false
+    generating_output() || return false
+    return !Interpreter.in_enzyme_inference()
+end
+
 function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
     @nospecialize
     return thunk_codeinfo(thunk, false, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero, AtomicAdd)
@@ -9575,6 +9626,8 @@ function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, sou
     edges = Any[]
     add_edge!(edges, mi)
 
+    # Whether the code returned holds the compiled derivative by its address.
+    holds_address = false
     code = if compiles_lazily(Mode, ABI, untyped_split)
         job, rt2, run_enzyme = thunk_job(
             mi,
@@ -9601,6 +9654,44 @@ function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, sou
             Expr(:call, GlobalRef(Compiler, :lazy_thunk), LazyThunk{ThunkT}(job))
         end
         Any[call, Core.Compiler.ReturnNode(Core.SSAValue(1))]
+    elseif keeps_split_thunks_lazy(Mode, ABI)
+        job, rt2, run_enzyme = thunk_job(
+            mi,
+            world,
+            FA,
+            A,
+            TT,
+            Mode,
+            Width,
+            ModifiedBetween,
+            ReturnPrimal,
+            ShadowInit,
+            ABI,
+            ErrIfFuncWritten,
+            RuntimeActivity,
+            StrongZero,
+            AtomicAdd,
+        )
+        # Compile here all the same: the thunks' types carry the tape type, which only
+        # compiling finds, and the code returned must be typed with them.
+        ts_ctx = JuliaContext()
+        ctx = context(ts_ctx)
+        activate(ctx)
+        compile_result = try
+            cached_compilation(job, #=may_wait=# false)
+        finally
+            deactivate(ctx)
+            dispose(ts_ctx)
+        end
+        for e in compile_result.edges
+            push!(edges, e)
+        end
+        aug, adj = split_thunks(compile_result, run_enzyme, FA, rt2, TT, Width, ReturnPrimal)
+        cell = LazySplitThunks(job, run_enzyme, FA, rt2, TT, Width, ReturnPrimal)
+        Any[
+            Expr(:call, GlobalRef(Compiler, :image_split_thunks), cell, typeof(aug), typeof(adj)),
+            Core.Compiler.ReturnNode(Core.SSAValue(1)),
+        ]
     else
         ts_ctx = JuliaContext()
         ctx = context(ts_ctx)
@@ -9629,9 +9720,18 @@ function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, sou
             deactivate(ctx)
             dispose(ts_ctx)
         end
+        holds_address = true
         Any[Core.Compiler.ReturnNode(result)]
     end
     ci = create_fresh_codeinfo(fn, source, world, slotnames, code)
+    if holds_address && generating_output()
+        # The address means nothing outside this process, so the code must not be written
+        # into the image being generated. That leaves the inner derivative of a nested one,
+        # which an outer derivative needs as a constant, and ABIs other than the FFI one.
+        # Julia writes into an image only code valid in every later world; this code is
+        # valid in this world only, and inferred again when a later one asks for it.
+        ci.max_world = world
+    end
 
 
 
