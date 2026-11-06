@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Recompute a value of an outer loop iteration once per entry of an inner
+  loop's reverse, not again in each of its arms on every inner iteration
+  (dogfood libEnzyme build `43f24e32`). Julia arrays make that value a chain of
+  dependent loads (`idx.data`, `idx[j]`, `idx[j].data`), which the same loop in
+  a function of its own gets as arguments. This was the remaining 6 to 7% of
+  Reverse of a ragged nest over that outlined spelling on Julia 1.12 and 1.13.
 - Decide which arm of a branch a loop iteration took from the recomputed
   branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
   When four or more paths met in one block inside a loop, as in
