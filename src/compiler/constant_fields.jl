@@ -516,6 +516,13 @@ function constant_field_unsink_tree(cf::ConstantFields, phi::LLVM.PHIInst)
     return ordered, leaves
 end
 
+# Whether `inst` only computes an integer from integers, which cannot trap.
+speculatable_offset(@nospecialize(inst::LLVM.Instruction))::Bool =
+    isa(inst, LLVM.AddInst) || isa(inst, LLVM.SubInst) || isa(inst, LLVM.MulInst) ||
+    isa(inst, LLVM.ShlInst) || isa(inst, LLVM.LShrInst) || isa(inst, LLVM.AShrInst) ||
+    isa(inst, LLVM.AndInst) || isa(inst, LLVM.OrInst) || isa(inst, LLVM.XorInst) ||
+    isa(inst, LLVM.SExtInst) || isa(inst, LLVM.ZExtInst) || isa(inst, LLVM.TruncInst)
+
 # Whether each predecessor of the block of `phi` ends in a branch with one edge to it.
 function merge_predecessors_branch(phi::LLVM.PHIInst)::Bool
     bb = LLVM.parent(phi)
@@ -572,15 +579,22 @@ end
 # of `bb` instead: every other operand is available there, and nothing before them
 # in `bb` may write. With `sel`, a select in `bb` that will become a branch, `bb` is
 # what follows it.
-function unsink_order(bb::LLVM.BasicBlock, tree, sel::Union{Nothing, LLVM.SelectInst} = nothing)
+function unsink_order(bb::LLVM.BasicBlock, loads, sel::Union{Nothing, LLVM.SelectInst} = nothing)
     insts = collect(instructions(bb))
     if sel !== nothing
         insts = insts[(findfirst(Base.Fix2(==, sel), insts)::Int + 1):end]
     end
-    for inst in tree, op in operands(inst)
-        op in tree && continue
-        if isa(op, LLVM.Instruction) && !isa(op, LLVM.PHIInst) && op in insts
-            return nothing
+    tree = Set{LLVM.Instruction}(loads)
+    work = collect(tree)
+    while !isempty(work)
+        for op in operands(pop!(work))
+            op in tree && continue
+            if isa(op, LLVM.Instruction) && !isa(op, LLVM.PHIInst) && op in insts
+                # An offset computed in `bb` moves along.
+                speculatable_offset(op) || return nothing
+                push!(tree, op)
+                push!(work, op)
+            end
         end
     end
     ordered = LLVM.Instruction[]
@@ -1117,6 +1131,7 @@ function branch_on_select!(sel::LLVM.SelectInst)
     br!(builder, join)
     push!(LLVM.incoming(merged), (p, onp))
     push!(LLVM.incoming(merged), (q, onq))
+    haskey(metadata(sel), "enzyme_type") && (metadata(merged)["enzyme_type"] = metadata(sel)["enzyme_type"])
     replace_uses!(sel, merged)
     LLVM.erase!(sel)
     dispose(builder)

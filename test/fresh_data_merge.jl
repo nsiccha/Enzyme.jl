@@ -88,6 +88,58 @@ end
 # The merged array reaches a call, so there is nothing to split and it needs a shadow.
 @inline fdm_pick_sum(c, active, slots) = sum(abs2, iszero(slots[1]) ? c : active)
 
+# Read after the loop: the merge of the last iteration reaches the block behind it.
+@inline function fdm_pick_last(c, active, slots)
+    v = active
+    for i in eachindex(slots)
+        v = iszero(slots[i]) ? c : active
+    end
+    return v[1] * v[2]
+end
+
+# Three sides.
+@inline function fdm_mix_three(c, d, active, slots)
+    result = Vector{Float64}(undef, length(slots))
+    for i in eachindex(c, slots)
+        s = slots[i]
+        result[i] = iszero(s) ? c[i] : isone(s) ? d[i] : active[s]
+    end
+    return result
+end
+
+# The side is an element of an array of arrays the function made.
+@inline function fdm_mix_nested(cs, active, slots)
+    result = Vector{Float64}(undef, length(slots))
+    for i in eachindex(slots)
+        s = slots[i]
+        result[i] = iszero(s) ? cs[1][i] : active[s]
+    end
+    return result
+end
+
+# Reads of a merged array around a write it may reach.
+@inline function fdm_pick_written(c, active, slots)
+    t = 0.0
+    for i in eachindex(slots)
+        v = iszero(slots[i]) ? c : active
+        x = v[i]
+        c[i] = 3.0
+        t += x * v[i]
+    end
+    return t
+end
+
+# Which array of a tuple to read.
+@inline function fdm_mix_tuple(c, active, slots)
+    arrays = (c, active)
+    result = Vector{Float64}(undef, length(slots))
+    for i in eachindex(slots)
+        s = slots[i]
+        result[i] = arrays[iszero(s) ? 1 : 2][iszero(s) ? i : s]
+    end
+    return result
+end
+
 fdm_sumsq(x) = (t = 0.0; for v in x; t += v * v; end; t)
 @noinline fdm_gather(base, rows) = base[rows]
 @noinline fdm_same(x) = x
@@ -115,6 +167,11 @@ fdm_pick_copy(a, b, s, r) = fdm_pick(copy(b), a, s)
 fdm_pick_gather(a, b, s, r) = fdm_pick(b[r], a, s)
 fdm_pick_sum_copy(a, b, s, r) = fdm_pick_sum(copy(b), a, s)
 fdm_pick_sum_gather(a, b, s, r) = fdm_pick_sum(b[r], a, s)
+fdm_last(a, b, s, r) = fdm_pick_last(copy(b), a, s)
+fdm_three(a, b, s, r) = fdm_sumsq(fdm_mix_three(copy(b), b[r], a, s))
+fdm_nested(a, b, s, r) = fdm_sumsq(fdm_mix_nested([copy(b)], a, s))
+fdm_written_pick(a, b, s, r) = fdm_pick_written(copy(b), a, s)
+fdm_tuple(a, b, s, r) = fdm_sumsq(fdm_mix_tuple(copy(b), a, s))
 
 # What the function made holds derivatives: a side that was split must keep them.
 fdm_active_fresh(a, b, s, r) = fdm_sumsq(fdm_mix(2 .* a, a, s))
@@ -129,7 +186,8 @@ fdm_active_pick_sum(a, b, s, r) = fdm_pick_sum(2 .* a, a, s)
 const FDM_SHAPES = (
     fdm_gathered, fdm_copied, fdm_broadcast, fdm_zeros, fdm_helper, fdm_filled_loop,
     fdm_outlined, fdm_inbounds, fdm_matrix, fdm_two, fdm_written_late, fdm_pick_copy,
-    fdm_pick_gather, fdm_pick_sum_copy, fdm_pick_sum_gather, fdm_active_fresh,
+    fdm_pick_gather, fdm_pick_sum_copy, fdm_pick_sum_gather, fdm_last, fdm_three, fdm_nested,
+    fdm_written_pick, fdm_tuple, fdm_active_fresh,
     fdm_active_copy, fdm_active_other_side, fdm_active_call, fdm_active_stored,
     fdm_active_stored_late, fdm_active_pick, fdm_active_pick_sum,
 )
