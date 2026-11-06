@@ -784,14 +784,17 @@ function constant_field_merge(cf::ConstantFields, merge::LLVM.Instruction)::Symb
     return nconst == 0 ? :active : :mixed
 end
 
-# The one load through `sel`, a select of pointers, right in its block: not
-# volatile or atomic, and of a value that is not a pointer.
+# The one load through `sel`, a select of pointers: not volatile or atomic, and of a
+# value that is not a pointer. It need not be in the select's block. LICM moves such a
+# select out of a loop whose load must stay, as in the reverse of a loop that computes
+# the pointers on entry, and the select dominates the load, so its condition and
+# pointers can be used at the load.
 function constant_select_load(sel::LLVM.SelectInst)::Union{Nothing, LLVM.LoadInst}
     isa(value_type(sel), LLVM.PointerType) || return nothing
     uses = collect(LLVM.uses(sel))
     length(uses) == 1 || return nothing
     ld = LLVM.user(only(uses))
-    (isa(ld, LLVM.LoadInst) && LLVM.parent(ld) == LLVM.parent(sel)) || return nothing
+    isa(ld, LLVM.LoadInst) || return nothing
     (Bool(LLVM.API.LLVMGetVolatile(ld)) || LLVM.is_atomic(ld)) && return nothing
     isa(value_type(ld), LLVM.PointerType) && return nothing
     return ld
