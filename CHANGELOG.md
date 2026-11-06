@@ -4,9 +4,15 @@
 
 - Avoid saving reader inputs for every term when results are written into a
   fresh output array that the reader cannot access (dogfood libEnzyme build
-  `90af5b23`). The cache analysis now proves that private output storage stays
+  `08f0e8d9`). The cache analysis now proves that private output storage stays
   inaccessible to the reader, including across loop iterations. Passing or
   publishing that storage to the reader still retains the required caches.
+- Differentiate Forward over Reverse through `append!` or `copyto!` from a
+  `SubArray` on Julia 1.10. The augmented primal of `copyto!` reads a field of
+  `unalias(dest, src)` through a pointer phi of the `src` argument and a copy of
+  it; a nested derivative could not keep that phi rooted and threw "Enzyme could
+  not determine how to keep a pointer phi in this function rooted" when it was
+  reached. Such loads are now made in the phi's predecessors.
 - Support literal constant objects captured beside active data, including a
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,

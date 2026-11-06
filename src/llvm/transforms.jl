@@ -1093,6 +1093,206 @@ function nodecayed_all_args(inst::LLVM.PHIInst)::Bool
     return true
 end
 
+"""
+    unfold_argument_phi_loads!(f::LLVM.Function) -> Bool
+
+Turn a load through an addrspace(11) phi that merges an addrspace(11) argument with a
+pointer into an object back into a phi of loads.
+
+`nodecayed_phis!` gives an addrspace(11) phi a phi of addrspace(10) parent objects and
+a phi of offsets. An addrspace(11) argument has no parent in the function (its caller
+roots it), so a phi that merges one with a pointer into an object cannot be rewritten:
+`nodecayed_getparent` fails on the argument, and reaching the phi throws "Enzyme could
+not determine how to keep a pointer phi in this function rooted". Unless every incoming
+value is an argument (`nodecayed_all_args`), which leaves the phi alone.
+
+LLVM's instcombine makes such phis out of a phi of loads: it folds
+`phi [load (gep %obj, k)], [load (gep %arg, k)]` into `load (gep (phi [%obj, %arg]), k)`.
+Enzyme's augmented primal of Base's `copyto!(dest, doffs, src::SubArray, soffs, n)` is
+one: `unalias(dest, src)` is either `src`, the argument, or `unaliascopy(src)`, held in
+a stack slot that Enzyme moved to the heap, and the loop reads one field of whichever it
+is. First-order Reverse never runs `nodecayed_phis!` on an augmented primal, but a
+nested derivative (Forward over Reverse of `append!(v, @view w[i:end])`) imports it and
+runs the pre-AD pipeline on it again.
+
+Only rewrite what is certainly equivalent: a phi in address space 11 with an argument
+among the roots of its incoming values and another root besides, whose users are all
+non-volatile, non-atomic or unordered loads from it, directly or through bitcasts and
+GEPs with constant indices, in its own block, that no memory write there precedes. Each
+load is re-created, with its address, before the terminator of every predecessor, and
+the loaded values are merged by a phi. An edge whose predecessor also branches elsewhere
+is split first, so no load becomes speculative. Any other such phi still throws when
+reached.
+"""
+function unfold_argument_phi_loads!(f::LLVM.Function)::Bool
+    # Splitting an edge rebuilds the phis of the block it leads to, so the candidates
+    # are collected again afterwards.
+    edges = Tuple{LLVM.BasicBlock, LLVM.BasicBlock}[]
+    any_candidate = false
+    for bb in blocks(f)
+        for phi in instructions(bb)
+            isa(phi, LLVM.PHIInst) || break
+            argument_phi_loads(phi) === nothing && continue
+            any_candidate = true
+            for (_, pred) in LLVM.incoming(phi)
+                length(collect(successors(terminator(pred)))) == 1 && continue
+                (pred, bb) in edges || push!(edges, (pred, bb))
+            end
+        end
+    end
+    any_candidate || return false
+    changed = false
+    builder = IRBuilder()
+    for (pred, succ) in edges
+        split_edge!(builder, pred, succ)
+    end
+    for bb in blocks(f)
+        phis = LLVM.PHIInst[]
+        for phi in instructions(bb)
+            isa(phi, LLVM.PHIInst) || break
+            push!(phis, phi)
+        end
+        for phi in phis
+            loads = argument_phi_loads(phi)
+            loads === nothing && continue
+            single = true
+            for (_, pred) in LLVM.incoming(phi)
+                single &= length(collect(successors(terminator(pred)))) == 1
+            end
+            single || continue
+            unfold_argument_phi_loads!(builder, phi, loads)
+            changed = true
+        end
+    end
+    dispose(builder)
+    return changed
+end
+
+# Whether the addrspace(11) phi `phi` merges a value derived from an addrspace(11)
+# argument with one that is not, so that `nodecayed_phis!` has no parent to give it.
+function nodecayed_mixed_argument_phi(phi::LLVM.PHIInst)::Bool
+    ty = value_type(phi)
+    (isa(ty, LLVM.PointerType) && addrspace(ty) == Derived) || return false
+    for (v, _) in LLVM.incoming(phi)
+        base = nodecayed_root(v)
+        if isa(base, LLVM.Argument) && addrspace(value_type(base)) == Derived
+            return !nodecayed_all_args(phi)
+        end
+    end
+    return false
+end
+
+# Whether `ld` is a load that may be moved to the end of a predecessor of its block.
+function unfoldable_phi_load(ld::LLVM.LoadInst)::Bool
+    Bool(LLVM.API.LLVMGetVolatile(ld)) && return false
+    ord = LLVM.API.LLVMGetOrdering(ld)
+    return ord == LLVM.API.LLVMAtomicOrderingNotAtomic ||
+        ord == LLVM.API.LLVMAtomicOrderingUnordered
+end
+
+# The loads that `unfold_argument_phi_loads!` moves out of the block of `phi`, each with
+# the bitcasts and constant GEPs that compute its address from `phi` (innermost first),
+# or `nothing`.
+function argument_phi_loads(phi::LLVM.PHIInst)::Union{Nothing, Vector{Tuple{LLVM.LoadInst, Vector{LLVM.Instruction}}}}
+    nodecayed_mixed_argument_phi(phi) || return nothing
+    bb = LLVM.parent(phi)
+    for (_, pred) in LLVM.incoming(phi)
+        term = terminator(pred)
+        (isa(term, LLVM.BrInst) || isa(term, LLVM.SwitchInst)) || return nothing
+        count(Base.Fix2(==, bb), successors(term)) == 1 || return nothing
+    end
+    loads = Tuple{LLVM.LoadInst, Vector{LLVM.Instruction}}[]
+    todo = Tuple{LLVM.Value, Vector{LLVM.Instruction}}[(phi, LLVM.Instruction[])]
+    while !isempty(todo)
+        addr, chain = pop!(todo)
+        for u in LLVM.uses(addr)
+            user = LLVM.user(u)
+            (isa(user, LLVM.Instruction) && LLVM.parent(user) == bb) || return nothing
+            if isa(user, LLVM.LoadInst)
+                unfoldable_phi_load(user) || return nothing
+                push!(loads, (user, chain))
+            elseif isa(user, LLVM.BitCastInst)
+                push!(todo, (user, LLVM.Instruction[chain..., user]))
+            elseif isa(user, LLVM.GetElementPtrInst) && operands(user)[1] == addr
+                for op in operands(user)[2:end]
+                    isa(op, LLVM.ConstantInt) || return nothing
+                end
+                push!(todo, (user, LLVM.Instruction[chain..., user]))
+            else
+                return nothing
+            end
+        end
+    end
+    isempty(loads) && return nothing
+    # A write before one of the loads could change what it reads.
+    remaining = length(loads)
+    for inst in instructions(bb)
+        isa(inst, LLVM.PHIInst) && continue
+        if isa(inst, LLVM.LoadInst) && any(Base.Fix2(==, inst) ∘ first, loads)
+            remaining -= 1
+            remaining == 0 && break
+        elseif root_path_may_write(inst)
+            return nothing
+        end
+    end
+    return loads
+end
+
+# Clone `inst` before the builder's position, with `ptr` as its pointer operand.
+function clone_with_pointer!(builder::LLVM.IRBuilder, inst::LLVM.Instruction, @nospecialize(ptr::LLVM.Value))::LLVM.Instruction
+    clone = LLVM.Instruction(LLVM.API.LLVMInstructionClone(inst))
+    LLVM.API.LLVMSetOperand(clone, 0, ptr)
+    LLVM.API.LLVMInsertIntoBuilderWithName(builder, clone, LLVM.name(inst))
+    return clone
+end
+
+function unfold_argument_phi_loads!(builder::LLVM.IRBuilder, phi::LLVM.PHIInst, loads::Vector{Tuple{LLVM.LoadInst, Vector{LLVM.Instruction}}})
+    # The address computations shared by several loads are cloned once per predecessor.
+    clones = Dict{Tuple{LLVM.Instruction, LLVM.BasicBlock}, LLVM.Instruction}()
+    for (ld, chain) in loads
+        position!(builder, phi)
+        merged = phi!(builder, value_type(ld), LLVM.name(ld))
+        for (v, pred) in LLVM.incoming(phi)
+            position!(builder, terminator(pred))
+            addr = v
+            for inst in chain
+                key = (inst, pred)
+                if !haskey(clones, key)
+                    clones[key] = clone_with_pointer!(builder, inst, addr)
+                end
+                addr = clones[key]
+            end
+            push!(LLVM.incoming(merged), (clone_with_pointer!(builder, ld, addr), pred))
+        end
+        # Memory metadata such as `!tbaa` is not allowed on a phi.
+        for k in ("enzyme_type", "enzyme_inactive", "enzyme_active")
+            haskey(metadata(ld), k) && (metadata(merged)[k] = metadata(ld)[k])
+        end
+        replace_uses!(ld, merged)
+        LLVM.erase!(ld)
+    end
+    # The address computations, now unused, users before definitions.
+    dead = LLVM.Instruction[]
+    for (_, chain) in loads, inst in chain
+        inst in dead || push!(dead, inst)
+    end
+    while !isempty(dead)
+        remaining = LLVM.Instruction[]
+        for inst in dead
+            if isempty(LLVM.uses(inst))
+                LLVM.erase!(inst)
+            else
+                push!(remaining, inst)
+            end
+        end
+        @assert length(remaining) < length(dead)
+        dead = remaining
+    end
+    @assert isempty(LLVM.uses(phi))
+    LLVM.erase!(phi)
+    return
+end
+
 # If there is a phi node of a decayed value, Enzyme may need to cache it
 # Here we force all decayed pointer phis to first addrspace from 10
 # State shared by every level of the `nodecayed_getparent` recursion below. It used to be
@@ -2091,6 +2291,10 @@ function nodecayed_phis!(mod::LLVM.Module)
 
         offty = LLVM.IntType(8 * sizeof(Int))
         i8 = LLVM.IntType(8)
+
+        # A phi that merges an addrspace(11) argument with a pointer into an object has
+        # no parent to give it below; load through it in its predecessors instead.
+        unfold_argument_phi_loads!(f)
 
         for addr in (11, 13)
 
