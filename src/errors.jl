@@ -1169,10 +1169,13 @@ else
 end
 
 # Whether `call` is declared to return memory nothing else can reach, such as
-# `copy`'s `jl_array_copy` or a function LLVM found returns what it allocates.
+# `copy`'s `jl_array_copy` or a function LLVM found returns what it allocates. An
+# object allocated in place may be an Array header over memory that is not new, which
+# `array_wrapper_owns_fresh_memory` decides.
 function returns_new_memory(call::LLVM.CallInst)::Bool
     fn = LLVM.called_operand(call)
     isa(fn, LLVM.Function) || return false
+    LLVM.name(fn) in GC_OBJECT_ALLOCATORS && return false
     noalias = LLVM.kind(LLVM.EnumAttribute("noalias"))
     for attr in collect(LLVM.return_attributes(fn))
         isa(attr, LLVM.EnumAttribute) && LLVM.kind(attr) == noalias && return true

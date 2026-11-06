@@ -140,7 +140,11 @@ end
     return result
 end
 
-fdm_sumsq(x) = (t = 0.0; for v in x; t += v * v; end; t)
+fdm_sumsq(x) = (
+    t = 0.0; for v in x
+        t += v * v
+    end; t
+)
 @noinline fdm_gather(base, rows) = base[rows]
 @noinline fdm_same(x) = x
 @noinline function fdm_filled(base)
