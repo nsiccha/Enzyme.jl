@@ -505,8 +505,8 @@ function constant_field_unsink_tree(cf::ConstantFields, phi::LLVM.PHIInst)
     merge_predecessors_branch(phi) || return nothing
     found = merge_load_tree(cf, phi)
     found === nothing && return nothing
-    tree, leaves, dead_use = found
-    dead_use && return nothing
+    tree, leaves, dead = found
+    isempty(dead) || return nothing
     bb = LLVM.parent(phi)
     for inst in tree
         LLVM.parent(inst) == bb || return nothing
@@ -536,14 +536,14 @@ end
 
 # Everything computed from `merge`, wherever it sits, if that is casts, GEPs,
 # `julia.gc_loaded` and loads, ending in at least one load of a value that is not a
-# pointer: the instructions, those loads, and whether a block that never returns,
-# which is not differentiated, also uses one of them, as the error of a bounds check
-# uses the array.
+# pointer: the instructions, those loads, and the blocks of those that a block that
+# never returns, which is not differentiated, also uses, as the error of a bounds
+# check uses the array.
 function merge_load_tree(cf::ConstantFields, merge::LLVM.Instruction)
     tree = Set{LLVM.Instruction}()
     leaves = LLVM.LoadInst[]
-    work = LLVM.Value[merge]
-    dead_use = false
+    work = LLVM.Instruction[merge]
+    dead = Set{LLVM.BasicBlock}()
     while !isempty(work)
         v = pop!(work)
         for u in LLVM.uses(v)
@@ -551,7 +551,7 @@ function merge_load_tree(cf::ConstantFields, merge::LLVM.Instruction)
             isa(user, LLVM.Instruction) || return nothing
             user in tree && continue
             if in_unreachable(cf, user)
-                dead_use = true
+                push!(dead, LLVM.parent(v))
                 continue
             end
             if isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst) ||
@@ -572,7 +572,7 @@ function merge_load_tree(cf::ConstantFields, merge::LLVM.Instruction)
         end
     end
     isempty(leaves) && return nothing
-    return tree, leaves, dead_use
+    return tree, leaves, dead
 end
 
 # `tree`, instructions of `bb`, in block order, if they can run in the predecessors
@@ -883,7 +883,8 @@ end
 function tail_use_successor(domtree::LLVM.DomTree, own::Vector{LLVM.BasicBlock}, block::LLVM.BasicBlock)::Union{Nothing, LLVM.BasicBlock}
     term = terminator(block)
     for succ in own
-        LLVM.dominates(domtree, first(instructions(succ)), term) && return succ
+        # An instruction does not dominate itself, as in a block of one instruction.
+        (succ == block || LLVM.dominates(domtree, first(instructions(succ)), term)) && return succ
     end
     return nothing
 end
@@ -928,7 +929,7 @@ function tail_duplicable(bb::LLVM.BasicBlock, tree::Set{LLVM.Instruction}, domtr
             before = inst != sel
             continue
         end
-        n += 1
+        isa(inst, LLVM.PHIInst) || (n += 1)
         n > MERGE_TAIL_MAX_INSTRUCTIONS && return false
         isa(inst, LLVM.AllocaInst) && return false
         for u in LLVM.uses(inst)
@@ -947,29 +948,35 @@ function tail_duplicable(bb::LLVM.BasicBlock, tree::Set{LLVM.Instruction}, domtr
     return true
 end
 
-# Whether the loads of `merge` sit behind branches, or a block that never returns
-# uses it, and cloning the blocks up to them for each predecessor leaves a merge
-# `unsink_constant_field_phi!` can split. Every block of the load tree must be reached
-# from the block of `merge` through blocks with one predecessor. The last block on
-# each way is not cloned, so the loads have to be able to move out of it.
+# Whether cloning blocks for each predecessor of `merge` is what it takes to split it,
+# and can be done: its loads sit behind branches, or cannot leave their block past a
+# write, or a block that never returns uses it. Every block of the load tree must be
+# reached from the block of `merge` through blocks with one predecessor. The last block
+# on each way is cloned too only if the loads cannot move out of it.
 function merge_behind_branches(cf::ConstantFields, merge::LLVM.Instruction)::Bool
     isa(merge, LLVM.PHIInst) && !merge_predecessors_branch(merge) && return false
     found = merge_load_tree(cf, merge)
     found === nothing && return false
-    tree, _, dead_use = found
+    tree, _, dead = found
     bb = LLVM.parent(merge)
+    sel = isa(merge, LLVM.SelectInst) ? merge : nothing
     in_block = Dict{LLVM.BasicBlock, Set{LLVM.Instruction}}()
     for inst in tree
         push!(get!(Set{LLVM.Instruction}, in_block, LLVM.parent(inst)), inst)
     end
-    if length(in_block) == 1 && haskey(in_block, bb) && !dead_use
-        # A phi that can be split as it is, or one load right after a select, needs no
-        # clone. Several loads after a select can be split once it is a phi.
-        isa(merge, LLVM.SelectInst) && constant_select_load(merge) === nothing || return false
-        return unsink_order(bb, tree, merge) !== nothing
+    # A block the merge has to leave, as it cannot stay behind for a use that remains.
+    chain = copy(dead)
+    if length(in_block) == 1 && haskey(in_block, bb) && isempty(dead)
+        if sel !== nothing
+            # One load right after a select needs no clone. Several can be split once
+            # the select is a phi.
+            constant_select_load(sel) === nothing || return false
+            unsink_order(bb, tree, sel) === nothing || return true
+        elseif unsink_order(bb, tree) !== nothing
+            return false
+        end
+        push!(chain, bb)
     end
-    chain = Set{LLVM.BasicBlock}()
-    dead_use && push!(chain, bb)
     for b in keys(in_block)
         depth = 0
         while b != bb
@@ -982,13 +989,11 @@ function merge_behind_branches(cf::ConstantFields, merge::LLVM.Instruction)::Boo
         end
     end
     for (b, insts) in in_block
-        b in chain && continue
-        b == bb && continue
-        unsink_order(b, insts) === nothing && return false
+        (b in chain || b == bb) && continue
+        unsink_order(b, insts) === nothing && push!(chain, b)
     end
     tree_set = Set{LLVM.Instruction}(tree)
     push!(tree_set, merge)
-    sel = isa(merge, LLVM.SelectInst) ? merge : nothing
     domtree = LLVM.DomTree(LLVM.parent(bb))
     ok = true
     for b in chain

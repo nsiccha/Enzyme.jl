@@ -1597,7 +1597,7 @@ function merge_tail_ir(typed::Bool)
       ret double %v
     }
 
-    ; Left alone. A store before the load could write what it reads.
+    ; A store before the load, which it could write: the load stays behind it.
     define double @written(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
     top:
       %f = call $obj @fresh()
@@ -1615,6 +1615,59 @@ function merge_tail_ir(typed::Bool)
     in:
       store i64 0, $lenp %lenp, align 8
       %v = load double, $data %p, align 8
+      br label %done
+
+    done:
+      ret double %v
+    }
+
+    ; Left alone. As @written, but cloning the load's block would clone the return.
+    define double @written_returns(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+    $sides
+    merge:
+      %p = phi $data [ %pl, %left ], [ %pr, %right ]
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %in, label %oob
+
+    oob:
+      call void @throw(i64 %len)
+      unreachable
+
+    in:
+      store i64 0, $lenp %lenp, align 8
+      %v = load double, $data %p, align 8
+      ret double %v
+    }
+
+    ; A value of the load's block is also used by a block that never returns.
+    define double @dead_behind(i1 %c, i64 %i, $lenp %lenp, $obj %a) {
+    top:
+      %f = call $obj @fresh()
+      %m = select i1 %c, $obj %f, $obj %a
+      %len = load i64, $lenp %lenp, align 8
+      %ok = icmp ult i64 %i, %len
+      br i1 %ok, label %in, label %oob
+
+    oob:
+      call void @throw(i64 %len)
+      unreachable
+
+    in:
+      %ms = addrspacecast $obj %m to $slot
+      %md = load $data, $slot %ms, align 8
+      %p = getelementptr inbounds double, $data %md, i64 %i
+      %v = load double, $data %p, align 8
+      %big = fcmp ogt double %v, 1.0
+      br i1 %big, label %fine, label %oob2
+
+    oob2:
+      call void @use($data %p)
+      unreachable
+
+    fine:
       ret double %v
     }
 
@@ -1709,7 +1762,26 @@ end
         @test isa(first(instructions(oob)), LLVM.PHIInst)
         @test !any(isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType) for inst in instructions(in_block))
 
-        for (name, kept) in (("escapes", 13), ("joined", 13), ("written", 13), ("other_pointer", 13), ("arguments", 13))
+        written = merge_tail_split!(mod, "written")
+        @test LLVM.verify(mod) === nothing
+        @test pointer_phi_addrspaces(written) == Int[]
+        for bb in blocks(written)
+            insts = collect(instructions(bb))
+            at = findfirst(inst -> isa(inst, LLVM.LoadInst) && value_type(inst) == LLVM.DoubleType(), insts)
+            at === nothing && continue
+            @test any(isa(inst, LLVM.StoreInst) for inst in insts[1:at])
+        end
+
+        dead_behind = merge_tail_split!(mod, "dead_behind")
+        @test LLVM.verify(mod) === nothing
+        @test !any(isa(inst, LLVM.SelectInst) for bb in blocks(dead_behind) for inst in instructions(bb))
+        live_phis = [
+            inst for bb in blocks(dead_behind) for inst in instructions(bb)
+                if isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType) && LLVM.name(bb) != "oob2" && LLVM.name(bb) != "oob"
+        ]
+        @test isempty(live_phis)
+
+        for (name, kept) in (("escapes", 13), ("joined", 13), ("written_returns", 13), ("other_pointer", 13), ("arguments", 13))
             f = merge_tail_split!(mod, name)
             @test LLVM.verify(mod) === nothing
             @test pointer_phi_addrspaces(f) == [kept]
