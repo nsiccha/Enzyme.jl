@@ -4,10 +4,18 @@
 
 - Recompute a value of an outer loop iteration once per entry of an inner
   loop's reverse, not again in each of its arms on every inner iteration
-  (dogfood libEnzyme build `8c90acb0`). Julia arrays make that value a chain of
+  (dogfood libEnzyme build `7f23cb72`). Julia arrays make that value a chain of
   dependent loads (`idx.data`, `idx[j]`, `idx[j].data`), which the same loop in
   a function of its own gets as arguments. This was the remaining 6 to 7% of
   Reverse of a ragged nest over that outlined spelling on Julia 1.12 and 1.13.
+- Do not recompute a call on a path the forward pass skipped (dogfood
+  libEnzyme build `045d93e1`). When the reverse pass recomputes a value that
+  three paths merge, one of which skips a call while the other two branch on
+  its result, it evaluated that branch condition on all three paths, from
+  values the skipping path never computed. A recomputed `sqrt` then threw a
+  `DomainError` the primal never raised, for example in a loop over
+  `x <= 0 ? 1.0 : (r = sqrt(x); r >= 2 ? exp(r) : r)`. The condition is now
+  computed only on the two paths that ran it, unless it is safe to speculate.
 - Avoid saving reader inputs for every term when results are written into a
   fresh output array that the reader cannot access (dogfood libEnzyme build
   `08f0e8d9`). The cache analysis now proves that private output storage stays
