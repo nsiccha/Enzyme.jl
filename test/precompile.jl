@@ -256,6 +256,53 @@ const modes_expected = (
     end
 end
 
+@testset "Enzyme's image holds the passes that act on branches" begin
+    # The first derivative of a function with branches or selects runs passes that the
+    # workload's `x^2` never reaches, such as `simplify_conditioned_selects!`. The workload
+    # also differentiates `cos` so that Enzyme's image holds their code, and their helpers
+    # are compiled once for every LLVM value type, so that code is all a later function
+    # needs. Without both, the first Reverse gradient of a function calling `cos` or `log`
+    # took 8-11 s on Julia 1.10, against about 2 s with registered Enzyme.
+    precompile_test_harness() do load_path
+        code = """
+        using Enzyme
+        function precompiled_specializations(f)
+            world = Base.get_world_counter()
+            n = 0
+            for m in methods(f), mi in Base.specializations(m)
+                mi isa Core.MethodInstance && isdefined(mi, :cache) || continue
+                ci = mi.cache
+                while true
+                    if ci.min_world <= world <= ci.max_world && ci.invoke != C_NULL
+                        n += 1
+                        break
+                    end
+                    isdefined(ci, :next) || break
+                    ci = ci.next
+                end
+            end
+            return n
+        end
+        specializations(f) = sum(m -> Base.count(mi -> mi isa Core.MethodInstance, Base.specializations(m)), methods(f))
+        f = Enzyme.Compiler.specialize_conditioned_select!
+        native = precompiled_specializations(f)
+        before = specializations(f)
+        branchy(x) = x > 1.0 ? log(x) : exp(-x)
+        grad = Enzyme.autodiff(Reverse, branchy, Active(2.0))[1][1]
+        print(native, " ", before, " ", specializations(f), " ", grad)
+        """
+        ok, fields = run_child(load_path, code)
+        @test ok
+        if ok
+            native, before, after, grad = fields
+            @test parse(Int, native) > 0
+            # Nothing of it was compiled again for this function.
+            @test parse(Int, after) == parse(Int, before)
+            @test parse(Float64, grad) ≈ 0.5
+        end
+    end
+end
+
 @testset "Enzyme's own precompilation" begin
     precompile_test_harness() do load_path
         # Enzyme differentiates in its `@compile_workload`, and the caches that fills are
