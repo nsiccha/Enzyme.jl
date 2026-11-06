@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Recompute a value of an outer loop iteration once per entry of an inner
+  loop's reverse, not again in each of its arms on every inner iteration
+  (dogfood libEnzyme build `7f23cb72`). Julia arrays make that value a chain of
+  dependent loads (`idx.data`, `idx[j]`, `idx[j].data`), which the same loop in
+  a function of its own gets as arguments. This was the remaining 6 to 7% of
+  Reverse of a ragged nest over that outlined spelling on Julia 1.12 and 1.13.
 - Do not recompute a call on a path the forward pass skipped (dogfood
   libEnzyme build `045d93e1`). When the reverse pass recomputes a value that
   three paths merge, one of which skips a call while the other two branch on
@@ -29,6 +35,17 @@
   iteration allocated its own buffer for that tape, which made Reverse of
   such a nest about 1.35 times slower than the same loop with its inner loop
   outlined. Conditions that cannot be recomputed safely keep the cache.
+- Differentiate a read that picks each element from data the function made
+  itself or from active data, `iszero(s) ? c[i] : active[s]` with `c` computed
+  from a `Const` argument, under static activity. LLVM folds the two loads into
+  one load through a merge of the two pointers, usually behind the bounds check
+  of the destination, and reaching it raised `EnzymeRuntimeActivityError` on the
+  path that takes `c`. Such loads are now made on each side, whichever side turns
+  out to hold derivatives, by cloning the blocks up to the load where they sit
+  behind a branch, and no copy of `c` is made. This also removes the copy of a
+  `Const` array that remained on Julia 1.12 under `--check-bounds=yes`. An array
+  a call returns as new memory, such as a `copy`, now gets a zero shadow where
+  the merged array itself reaches a call, as an array the function allocates did.
 - Differentiate Forward over Reverse through `append!` or `copyto!` from a
   `SubArray` on Julia 1.10. The augmented primal of `copyto!` reads a field of
   `unalias(dest, src)` through a pointer phi of the `src` argument and a copy of
