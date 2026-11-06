@@ -413,3 +413,44 @@ end
         LLVM.verify(mod)
     end
 end
+
+# The pass runs on every function it is handed, and the LLVM values it meets come in
+# dozens of Julia types (`LLVM.SelectInst`, `LLVM.ConstantInt`, `LLVM.AllocaInst`, ...).
+# Had its helpers been compiled once per combination of those types, the first derivative
+# of a session would compile hundreds of copies of them: the first Reverse gradient of
+# `x -> cos(x)` spent about 5 s on that on Julia 1.10.
+selects_branchy(x) = x > 1.0 ? log(x) : exp(-x)
+selects_trig(v) = sum(abs2, v) + cos(v[2]) * v[1] + hypot(v[1], v[3])
+function selects_running(x)
+    m = -Inf
+    s = 0.0
+    for i in eachindex(x)
+        m = ifelse(x[i] > m, x[i], m)
+        s += tanh(m)
+    end
+    return s
+end
+
+@testset "Conditioned select helpers compile once for every LLVM value type" begin
+    C = Enzyme.Compiler
+    helpers = (
+        C.specialize_conditioned_select!, C.known_condition_at_use, C.cached_select_condition,
+        C.implied_select_condition, C.evaluate_select_condition, C.select_condition_leaf,
+        C.select_condition_expression, C.finite_select_values, C.available_conditioned_value!,
+        C.record_conditioned_phis!,
+    )
+    x = [0.3, -0.2, 0.1]
+    @test autodiff(Reverse, selects_branchy, Active(2.0))[1][1] ≈ 0.5
+    @test autodiff(Reverse, selects_branchy, Active(0.5))[1][1] ≈ -exp(-0.5)
+    h = hypot(x[1], x[3])
+    @test gradient(Reverse, selects_trig, x)[1] ≈
+        [2x[1] + cos(x[2]) + x[1] / h, 2x[2] - sin(x[2]) * x[1], 2x[3] + x[3] / h]
+    @test gradient(Reverse, selects_running, x)[1] ≈ [1 - tanh(0.3)^2, 0.0, 0.0] .* 3
+    for helper in helpers
+        compiled = sum(m -> Base.count(mi -> mi isa Core.MethodInstance, Base.specializations(m)), methods(helper))
+        # A few for the argument types that are not LLVM values (`tree` may be `nothing`),
+        # and those Julia infers where a caller knows its argument's type; not one per
+        # LLVM value type.
+        @test compiled <= 12
+    end
+end
