@@ -399,7 +399,7 @@ end
 # for the part of the workload that has them. On Julia 1.10 loading StaticArrays discards it
 # too, and an extension differentiating only `x^2` left it with none in either load order. On
 # Julia 1.12 StaticArrays leaves it alone, so there this count cannot tell the two apart.
-const PRECOMPILED_COMPILER = """
+const PRECOMPILED_SPECIALIZATIONS = """
 function precompiled_specializations(f)
     world = Base.get_world_counter()
     n = 0
@@ -417,6 +417,9 @@ function precompiled_specializations(f)
     end
     return n
 end
+"""
+
+const PRECOMPILED_COMPILER = PRECOMPILED_SPECIALIZATIONS * """
 C = Enzyme.Compiler
 for f in (C.handle_compiled, C.lower_convention, C.check_ir!, C.specialize_conditioned_select!)
     print(precompiled_specializations(f), " ")
@@ -548,8 +551,8 @@ end
 
 # Run a session against the packages in `load_path`, and give back what it linked and compiled
 # and whether its gradients are the expected ones.
-function retained_session(load_path, setup, expected; threads = 1)
-    code = "using Enzyme, EnzymeRetained\n$setup\n$RETAINED_CHECK"
+function retained_session(load_path, setup, expected; threads = 1, preload = "")
+    code = "using Enzyme\n$preload\nusing EnzymeRetained\n$setup\n$RETAINED_CHECK"
     exec = `$(child_julia_cmd()) --threads=$threads --project=$(Base.active_project()) --startup-file=no -e $(CHILD_PREAMBLE * code)`
     cmd = addenv(exec, "JULIA_LOAD_PATH" => join([load_path, "@", "@v#.#", "@stdlib"], Sys.iswindows() ? ";" : ":"))
     out = IOBuffer()
@@ -572,6 +575,14 @@ end
 
 # The number of derivatives `RETAINED_CHECK` takes from the image.
 const RETAINED_KINDS = 7
+
+const RETAINED_ANOTHER_TYPE = """
+using Enzyme, EnzymeRetained
+g = EnzymeRetained.gradient_of(EnzymeRetained.through_callee, Float32[1, 2])
+stats = Enzyme.Compiler.retained_derivative_stats()
+reason = get(stats.absent, Enzyme.Compiler.NOT_FROM_AN_IMAGE, 0)
+print(stats.compiled, " ", stats.materialized, " ", reason, " ", join(g, " "))
+"""
 
 @testset "a package image keeps the derivatives it compiled" begin
     precompile_test_harness() do load_path
@@ -636,17 +647,13 @@ const RETAINED_KINDS = 7
         end
 
         @testset "another element type compiles" begin
-            code = """
-            using Enzyme, EnzymeRetained
-            g = EnzymeRetained.gradient_of(EnzymeRetained.through_callee, Float32[1, 2])
-            stats = Enzyme.Compiler.retained_derivative_stats()
-            print(stats.compiled, " ", stats.materialized, " ", join(g, " "))
-            """
-            ok, fields = run_child(load_path, code)
+            ok, fields = run_child(load_path, RETAINED_ANOTHER_TYPE)
             @test ok
             @test parse(Int, fields[1]) == 1
             @test parse(Int, fields[2]) == 0
-            @test parse.(Float32, fields[3:4]) == Float32[3, 12]
+            # A session that compiled says why, and not with empty counts.
+            @test parse(Int, fields[3]) == (retained ? 1 : 0)
+            @test parse.(Float32, fields[4:5]) == Float32[3, 12]
         end
 
         retained && @testset "what the image holds" begin
@@ -691,6 +698,68 @@ const RETAINED_KINDS = 7
             # Neither holds an address that is mapped in this process, or in the one that wrote it.
             @test fields[3] == "true"
             @test fields[4] == "true"
+        end
+    end
+end
+
+# Nothing here is about derivatives: a real number type with generic conversions, each of which
+# matches calls Enzyme's compiler makes with an argument it could not infer. The `convert` methods
+# invalidate the compiler on Julia 1.12 and 1.13, as ReactiveKernelsPPL's `_AbsentNumber` does, and
+# the `cconvert` method does on 1.10, as StaticArrays' does.
+const RETAINED_INVALIDATOR = """
+module EnzymeRetainedInvalidator
+struct Unrelated{T} <: Real end
+Base.convert(::Type{S}, ::Unrelated) where {S <: Number} = zero(S)
+Base.convert(::Type{Unrelated{T}}, x::Unrelated{T}) where {T} = x
+Base.cconvert(::Type{Ptr{T}}, ::Unrelated) where {T} = C_NULL
+end
+"""
+
+@testset "a package that invalidates Enzyme's compiler leaves the derivatives an image keeps" begin
+    # The code that holds a kept derivative used to call the compiler directly, so it depended on
+    # all of the compiler. Julia then invalidated it with the compiler, in either load order, and
+    # the session compiled a derivative nothing had changed.
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymeRetained.jl"), RETAINED)
+        write(joinpath(load_path, "EnzymeRetainedInvalidator.jl"), RETAINED_INVALIDATOR)
+        retained = Enzyme.Compiler.retention_supported()
+        unchanged = retained_expected(; changed = false)
+        load = "using EnzymeRetainedInvalidator"
+
+        @testset "the package does invalidate the compiler" begin
+            check = PRECOMPILED_SPECIALIZATIONS * "print(precompiled_specializations(Enzyme.Compiler.compile_and_publish))"
+            ok, fields = run_child(load_path, "using Enzyme\n" * check)
+            @test ok
+            @test parse(Int, only(fields)) > 0
+            ok, fields = run_child(load_path, "using Enzyme\n$load\n" * check)
+            @test ok
+            @test parse(Int, only(fields)) == 0
+        end
+
+        @testset "loaded before the image" begin
+            s = retained_session(load_path, "", unchanged; preload = load)
+            @test s.close
+            if retained
+                @test s.compiled == 0
+                @test s.linked == RETAINED_KINDS
+                @test s.clean
+            end
+        end
+
+        @testset "loaded after the image" begin
+            s = retained_session(load_path, load, unchanged)
+            @test s.close
+            if retained
+                @test s.compiled == 0
+                @test s.linked == RETAINED_KINDS
+                @test s.clean
+            end
+        end
+
+        @testset "and a method the derivative depends on still reaches it" begin
+            s = retained_session(load_path, "$load\n$RETAINED_CHANGES", retained_expected(; changed = true))
+            @test s.close
+            retained && @test s.linked == 1
         end
     end
 end

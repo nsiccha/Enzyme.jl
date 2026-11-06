@@ -17,7 +17,9 @@
 # generated code carries the derivative's edges, Julia checks those when it loads the image,
 # and an invalidated `CodeInstance` is not used: the code is inferred again, its generator
 # makes a cell with nothing retained, and the derivative compiles at its first call. What
-# Julia cannot know about, the process the object was compiled for, is in `conditions`.
+# Julia cannot know about, the process the object was compiled for, is in `conditions`. The
+# generated code holds an edge on nothing else: it reaches the compiler by a dynamic call (see
+# `in_calling_world`), so that invalidating the compiler does not cost the derivative.
 
 """
     RetainDerivatives
@@ -568,7 +570,8 @@ What this session did with derivatives kept in package images:
 - `materialized`, `seconds`: derivatives taken from an image, and the time it took to link them;
 - `validity_seconds`: the time it took to start tracking what those depend on;
 - `rejected`: why a derivative an image holds could not be used here, with counts;
-- `absent`: why an image holds none for a call that wanted one, with counts.
+- `absent`: why an image holds none for a call that wanted one, with counts. That includes
+  [`NOT_FROM_AN_IMAGE`](@ref), for the code of a call that was not loaded from an image.
 """
 function retained_derivative_stats()
     lock(cache_publish_lock)
@@ -596,6 +599,23 @@ function count_retained!(field::Symbol, reason::String)
         unlock(cache_publish_lock)
     end
     return nothing
+end
+
+"""
+    NOT_FROM_AN_IMAGE
+
+The reason in `retained_derivative_stats().absent` for a derivative whose call was generated in
+this session. No image holds that derivative, or Julia invalidated the code in the image that
+did: Julia then generates the code of the call again, and a session keeps nothing.
+"""
+const NOT_FROM_AN_IMAGE = "the code of this call was generated in this session: no image holds it, or a method it depends on changed"
+
+# What a cell holds for its first call, and the reason if that is nothing.
+function retained_of_cell(retained::Union{Nothing, RetainedDerivatives})::Union{Nothing, RetainedDerivatives}
+    if retained === nothing && retention_supported() && !generating_output()
+        count_retained!(:absent, NOT_FROM_AN_IMAGE)
+    end
+    return retained
 end
 
 # What this process linked, by the name of its entry point: a cell compiled again and a second

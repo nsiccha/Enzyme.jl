@@ -115,3 +115,16 @@ lazy_ruled_tangent(x) = autodiff(Forward, lazy_ruled, Duplicated(x, 1.0))[1]
     end
     @test Base.invokelatest(lazy_ruled_tangent, 1.0) ≈ 2.0
 end
+
+# The first call reaches the compiler by a dynamic call, which must not change the world it
+# compiles in: code running in an older world still sees that world's methods.
+older_world_f(x) = x^2
+const OLDER_WORLD = Base.get_world_counter()
+older_world_f(x::Float64) = x^3
+
+@testset "A first call compiles in the world it runs in" begin
+    older = Base.invoke_in_world(OLDER_WORLD, Enzyme.autodiff, Reverse, older_world_f, Active, Active(3.0))
+    @test older[1][1] == 6.0
+    # A later call reuses the older world's derivative (Enzyme todo `0uqk81k`).
+    @test_broken Enzyme.autodiff(Reverse, older_world_f, Active, Active(3.0))[1][1] == 27.0
+end
