@@ -4,7 +4,7 @@
 
 - Recompute a value of an outer loop iteration once per entry of an inner
   loop's reverse, not again in each of its arms on every inner iteration
-  (dogfood libEnzyme build `1d4764e2`). Julia arrays make that value a chain of
+  (dogfood libEnzyme build `8c90acb0`). Julia arrays make that value a chain of
   dependent loads (`idx.data`, `idx[j]`, `idx[j].data`), which the same loop in
   a function of its own gets as arguments. This was the remaining 6 to 7% of
   Reverse of a ragged nest over that outlined spelling on Julia 1.12 and 1.13.
@@ -13,6 +13,12 @@
   `08f0e8d9`). The cache analysis now proves that private output storage stays
   inaccessible to the reader, including across loop iterations. Passing or
   publishing that storage to the reader still retains the required caches.
+- Fix a segfault on Julia 1.13 (LLVM 20) while compiling a Reverse derivative
+  (dogfood libEnzyme build `2cc9b459`). Deciding whether a split reverse pass
+  replays a loop only once asked scalar evolution for the loop's trip count
+  after Enzyme had inserted placeholder phis without incoming values, and
+  LLVM 20's loop guards read the first incoming block of such a phi. The
+  decision now takes the loop limit Enzyme already computed for that loop.
 - Decide which arm of a branch a loop iteration took from the recomputed
   branch conditions, not from a cache (dogfood libEnzyme build `f57e12db`).
   When four or more paths met in one block inside a loop, as in
