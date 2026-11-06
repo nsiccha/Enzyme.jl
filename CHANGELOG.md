@@ -16,6 +16,18 @@
   it; a nested derivative could not keep that phi rooted and threw "Enzyme could
   not determine how to keep a pointer phi in this function rooted" when it was
   reached. Such loads are now made in the phi's predecessors.
+- Differentiate again, in a later session, what a package differentiated while
+  its image was written: in split mode, in forward-mode `gradient` and
+  `jacobian`, and in nested modes. Split-mode thunks (`autodiff_thunk`,
+  reverse-mode `jacobian`, and the pullbacks of DifferentiationInterface) and
+  the inner derivative of a nested one were compiled while their caller was
+  inferred and kept in its code by their addresses, and the one-hot seeds of
+  forward mode were built by code that named a type and a runtime function by
+  their addresses; an image written with any of them segfaulted in every
+  session that loaded it. While an image is written, split-mode code now
+  fetches its thunks at run time, the seeds are built in plain Julia, and
+  code that still holds an address is valid only in the world it was inferred
+  in, which keeps it out of the image.
 - Support literal constant objects captured beside active data, including a
   dictionary inside a callback that reads active views. Static differentiation
   now gives these objects a separate zero-filled shadow when one is needed,
