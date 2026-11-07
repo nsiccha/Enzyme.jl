@@ -102,12 +102,23 @@ function emit_pointerfromobjref!(B::LLVM.IRBuilder, @nospecialize(T::LLVM.Value)
     return call!(B, fty, func, [T])
 end
 
-declare_writebarrier!(mod::LLVM.Module) =
-    get_function!(mod, "julia.write_barrier") do
+# The attributes Julia's codegen declares `julia.write_barrier` with. Without them alias
+# analysis takes the barrier for a write to any memory, so a store Enzyme gives a barrier
+# (into a stack slot libEnzyme moved to the heap, say) made every load before it look
+# overwritten, and the reverse pass taped the loaded values.
+function declare_writebarrier!(mod::LLVM.Module)
+    inaccessible_attr = if LLVM.version().major <= 15
+        LLVM.EnumAttribute("inaccessiblememonly")
+    else
+        LLVM.EnumAttribute("memory", InaccessibleMemOnlyEffects.data)
+    end
+    attrs = LLVM.Attribute[inaccessible_attr, LLVM.EnumAttribute("norecurse"), LLVM.EnumAttribute("nounwind")]
+    return get_function!(mod, "julia.write_barrier", attrs) do
         T_jlvalue = LLVM.StructType(LLVMType[])
         T_prjlvalue = LLVM.PointerType(T_jlvalue, Tracked)
         LLVM.FunctionType(LLVM.VoidType(), [T_prjlvalue]; vararg = true)
     end
+end
 declare_apply_generic!(mod::LLVM.Module) =
     get_function!(mod, "ijl_apply_generic") do
         T_jlvalue = LLVM.StructType(LLVMType[])
