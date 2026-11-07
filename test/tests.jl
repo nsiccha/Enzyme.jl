@@ -49,11 +49,9 @@ import Enzyme: API
     forward, pullback = Enzyme.Compiler.thunk(Val(0), Const{typeof(mul2)}, Active, Tuple{Duplicated{Vector{Float64}}}, Val(Enzyme.API.DEM_ReverseModeGradient), Val(1), Val((false, true)), Val(false), Val(false), DefaultABI, Val(false), Val(false), Val(false))
     res = forward(Const(mul2), d)
 
-    @static if VERSION < v"1.11-"
-        @test typeof(res[1]) == Tuple{Float64, Float64}
-    else
-        @test typeof(res[1]) == NamedTuple{(Symbol("1"), Symbol("2"), Symbol("3")), Tuple{Any, Float64, Float64}}
-    end
+    # From Julia 1.11 the tape also held the root of the shadow's `MemoryRef`, until the
+    # reverse pass recomputed it with the data pointer (test/memoryref_root.jl).
+    @test typeof(res[1]) == Tuple{Float64, Float64}
 
     pullback(Const(mul2), d, 1.0, res[1])
     @test d.dval[1] ≈ 5.0
