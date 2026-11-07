@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Differentiate Forward over Reverse (a Hessian-vector product) through matrix
+  products that reach BLAS `gemm`, `syrk` or `symm` (dogfood libEnzyme build
+  `3a825a54`). Their reverse rules scale the output's shadow with LAPACK's
+  `lascl`, which had no derivative in any mode, so the outer Forward pass
+  raised `No forward mode derivative found for dlascl_64_`, or, for
+  `A * transpose(B)`, "The original primal code hits this error condition":
+  libEnzyme reported a missing forward derivative only at its first call and
+  left later calls a stub ending in `unreachable`. `lascl` now has Forward and
+  Reverse rules for its matrix (an active scale factor is refused), every call
+  of a function without a forward derivative raises the error, and the Forward
+  rules of `gemm`, `symm` and `syrk` raise their refusal of an active `beta`
+  instead of crashing the compiler. A constant operand still fails in Forward
+  over Reverse (todo `0mcxlsc`).
 - Recompute a value of an outer loop iteration once per entry of an inner
   loop's reverse, not again in each of its arms on every inner iteration
   (dogfood libEnzyme build `7f23cb72`). Julia arrays make that value a chain of
