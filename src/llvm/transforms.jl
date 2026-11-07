@@ -612,12 +612,54 @@ function rewrite_abi_converter_calls!(mod::LLVM.Module)
     return nothing
 end
 
+"""
+    memoryref_root_load(call::LLVM.CallInst)
+
+The root operand of `julia.gc_loaded(root, data)` when both operands are loads of the two
+fields of one `MemoryRef` (`ptr_or_offset`, then `mem`, the next pointer-sized word), and
+`nothing` otherwise.
+
+From Julia 1.11 an element read loads both fields of the array's `MemoryRef` and joins them
+in `julia.gc_loaded`. `force_recompute!` recomputes the data pointer in the reverse pass, and
+libEnzyme then recomputes `julia.gc_loaded` too, so it needs the root there. Left cacheable,
+that root, or its shadow, went on the tape whenever a later write might overwrite the memory
+holding the `MemoryRef`. The two fields are only ever written together, so reloading the
+data pointer already assumes the `mem` field is unchanged as well, and the tape kept a root
+for a pointer it no longer roots. A recursive function's tape is a heap object, so that one
+cached root cost an allocation per recursive call: 48 bytes per node of Base's pairwise
+`mapreduce_impl` over a `SubArray`, on every Reverse call.
+"""
+function memoryref_root_load(call::LLVM.CallInst)
+    ops = operands(call)
+    root = ops[1]
+    data = ops[2]
+    if isa(data, LLVM.BitCastInst)
+        data = operands(data)[1]
+    end
+    isa(root, LLVM.LoadInst) || return nothing
+    isa(data, LLVM.LoadInst) || return nothing
+    root_base, root_offset = get_base_and_offset(operands(root)[1])
+    data_base, data_offset = get_base_and_offset(operands(data)[1])
+    root_base == data_base || return nothing
+    root_offset == data_offset + sizeof(Ptr{Cvoid}) || return nothing
+    return root
+end
+
 function force_recompute!(mod::LLVM.Module)
     for f in functions(mod), bb in blocks(f)
         iter = LLVM.API.LLVMGetFirstInstruction(bb)
         while iter != C_NULL
             inst = LLVM.Instruction(iter)
             iter = LLVM.API.LLVMGetNextInstruction(iter)
+            if isa(inst, LLVM.CallInst)
+                cf = LLVM.called_operand(inst)
+                if isa(cf, LLVM.Function) && LLVM.name(cf) == "julia.gc_loaded"
+                    root = memoryref_root_load(inst)
+                    if root !== nothing
+                        metadata(root)["enzyme_nocache"] = MDNode(LLVM.Metadata[])
+                    end
+                end
+            end
             if isa(inst, LLVM.LoadInst)
                 has_loaded = false
                 for u in LLVM.uses(inst)
