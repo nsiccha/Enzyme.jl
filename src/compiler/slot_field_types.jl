@@ -66,6 +66,18 @@ function slot_field_call!(
                 intr == LLVM.Intrinsic("llvm.lifetime.end").id
             return true
         end
+        # What libEnzyme makes of a slot before differentiating, where
+        # `constant_slot_load` reads it: renamed lifetime markers and, for a slot it moves
+        # to the heap (`enzyme_fromstack`), a write barrier per pointer stored into it,
+        # which writes nothing into it, and a call that zeroes it.
+        nm = LLVM.name(callee)
+        (nm == "llvm.enzyme.lifetime_start" || nm == "llvm.enzyme.lifetime_end") && return true
+        (nm == "julia.write_barrier" && args[1] == ptr) && return true
+        if haskey(metadata(call), "enzyme_zerostack")
+            (args[1] == ptr && isa(args[3], LLVM.ConstantInt)) || return false
+            push!(writes, (offset, convert(Int, args[3]), false))
+            return true
+        end
         if intr == LLVM.Intrinsic("llvm.memset").id
             (args[1] == ptr && args[2] != ptr && isa(args[3], LLVM.ConstantInt)) || return false
             zero = isa(args[2], LLVM.ConstantInt) && convert(Int, args[2]) == 0

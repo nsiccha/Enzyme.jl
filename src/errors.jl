@@ -1258,7 +1258,8 @@ end
 # derivative accumulated into that copy is discarded too, and active data written
 # through the merged value is read back through the same copy. A load of a field
 # that only holds constant data (`mark_constant_fields!`) is such data as well,
-# where it reaches active memory other than such a field.
+# where it reaches active memory other than such a field. So is a value read back
+# from a stack slot that only holds such data (`constant_slot_load`).
 function constant_argument_data(
         gutils::GradientUtils,
         @nospecialize(cur::LLVM.Value),
@@ -1289,9 +1290,15 @@ function constant_argument_data(
     isa(cur, LLVM.Argument) && return is_constant_value(gutils, cur)
     isa(cur, LLVM.LoadInst) || return false
     ptr = operands(cur)[1]
+    # The last load on the way to the root: what it reads is what the root holds.
+    last_load = cur
     while !isa(ptr, LLVM.Argument)
         literal_constant_data(gutils, ptr, enzyme_ctx) && return true
-        if isa(ptr, LLVM.LoadInst) || isa(ptr, LLVM.GetElementPtrInst) ||
+        is_stack_slot(ptr) && return constant_slot_load(gutils, last_load, enzyme_ctx, seen)
+        if isa(ptr, LLVM.LoadInst)
+            last_load = ptr
+            ptr = operands(ptr)[1]
+        elseif isa(ptr, LLVM.GetElementPtrInst) ||
                 isa(ptr, LLVM.BitCastInst) || isa(ptr, LLVM.AddrSpaceCastInst) ||
                 isa(ptr, LLVM.ExtractValueInst)
             ptr = operands(ptr)[1]
@@ -1302,6 +1309,49 @@ function constant_argument_data(
         end
     end
     return is_constant_value(gutils, ptr)
+end
+
+# Whether `ptr` is a stack slot: an `alloca`, or the allocation libEnzyme replaces one
+# with where the reverse pass may need it (`enzyme_fromstack`).
+is_stack_slot(@nospecialize(ptr::LLVM.Value))::Bool =
+    isa(ptr, LLVM.AllocaInst) || (isa(ptr, LLVM.CallInst) && haskey(metadata(ptr), "enzyme_fromstack"))
+
+# Whether `ld`, a load from a stack slot, reads a field that only holds constant data:
+# no code this walk does not see can write into the slot (`slot_field_accesses!`), and
+# every write into the field stores such data or clears it. A vararg method stores its
+# `Const` arguments into a tuple like this and reads them back past its safepoint,
+# whose fences keep GVN from forwarding the stores. Whether the tuple survives depends
+# on the size of the function, so without this the same read gets a copy in a small
+# function and raises `EnzymeRuntimeActivityError` in a large one.
+function constant_slot_load(
+        gutils::GradientUtils,
+        ld::LLVM.LoadInst,
+        enzyme_ctx::Union{EnzymeContext, Nothing},
+        seen::Set{LLVM.Value},
+    )::Bool
+    # Every check is required, so a load already on this walk adds nothing: one that
+    # fails ends the walk, and one still in progress reads back what its field holds.
+    ld in seen && return true
+    push!(seen, ld)
+    slot, offset = constant_field_pointer(operands(ld)[1])
+    is_stack_slot(slot) || return false
+    loads = Tuple{LLVM.LoadInst, Int}[]
+    writes = Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}[]
+    dl = datalayout(LLVM.parent(LLVM.parent(LLVM.parent(slot))))
+    slot_field_accesses!(loads, writes, slot, 0, dl) || return false
+    stored = false
+    for (woff, len, val) in writes
+        (woff < offset + sizeof(Int) && offset < woff + len) || continue
+        if val === false
+            # A zero `memset` or a stored zero constant that covers the field.
+            (woff <= offset && offset + sizeof(Int) <= woff + len) || return false
+            continue
+        end
+        (val isa LLVM.Value && woff == offset && len == sizeof(Int)) || return false
+        constant_argument_data(gutils, val, enzyme_ctx, seen) || return false
+        stored = true
+    end
+    return stored
 end
 
 # The shadow of an empty fresh array whose elements may hold references, called at
@@ -1376,6 +1426,26 @@ function emit_zero_shadows!(
         LLVM.API.LLVMInstructionEraseFromParent(inst)
     end
     resize!(created, start - 1)
+    return nothing
+end
+
+# Forget the shadows that the walk emitted for one incoming edge of a phi, from
+# `created[first]` on. They sit at the end of that edge's block, which another
+# block need not see, so an edge that meets the same value again emits its own. A
+# phi the walk made stays: it sits where the phi it shadows does.
+function forget_edge_shadows!(
+        seen::Dict{LLVM.Value, LLVM.Value},
+        created::Vector{LLVM.Instruction},
+        first::Int,
+    )::Nothing
+    emitted = Set{LLVM.Value}()
+    for i in first:length(created)
+        isa(created[i], LLVM.PHIInst) || push!(emitted, created[i])
+    end
+    isempty(emitted) && return nothing
+    for k in collect(keys(seen))
+        seen[k] in emitted && delete!(seen, k)
+    end
     return nothing
 end
 
@@ -2508,6 +2578,7 @@ end
                 for (v, bb) in LLVM.incoming(cur)
                     B2 = IRBuilder()
                     position!(B2, new_from_original(gutils, last(instructions(bb))))
+                    edge_start = length(created) + 1
                     tmp = make_replacement(v, B2)
                     if illegal
                         changed = true
@@ -2518,6 +2589,7 @@ end
                         changed = true
                     end
                     push!(LLVM.incoming(phi2), (tmp, new_from_original(gutils, bb)))
+                    forget_edge_shadows!(seen, created, edge_start)
                 end
                 if !changed || illegal
                     LLVM.API.LLVMInstructionEraseFromParent(phi2)
