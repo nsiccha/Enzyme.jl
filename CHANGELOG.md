@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Return the primal value from `ReverseWithPrimal` on every path (dogfood
+  libEnzyme build `42a2ee9a`). Combined Reverse may run a call's forward pass
+  inside its reverse pass, and it then moved the store of the return value
+  after that call even when the returned value did not depend on it. A path
+  that skipped the call (such as Base's `_copyto_impl!` behind a slice
+  `u[2:n]` that is empty at run time) returned whatever the return slot held,
+  beside a right gradient. The store now moves only with a returned value that
+  depends on the call, and a call is not combined when what would move with it
+  lies on a path that may skip it.
 - Differentiate a `Const` array read back from a stack slot beside active data
   under static activity. A vararg method stores its `Const` arguments into a
   tuple, and a large function keeps that tuple on the stack, so an overlay of
