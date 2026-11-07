@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Differentiate a `Const` array read back from a stack slot beside active data
+  under static activity. A vararg method stores its `Const` arguments into a
+  tuple, and a large function keeps that tuple on the stack, so an overlay of
+  `Const` and active data is built from a reload of the tuple, not from the
+  argument. Two things raised `EnzymeRuntimeActivityError` there:
+  `view(overlay, rows)` reaches `objectid` of the overlay through Base's default
+  `dataids`, and the constant-field proof read that call as an escape; and the
+  mixed-activity handler did not recognize a reload as `Const`-argument data, so
+  any read the proof does not cover raised in a large function what a small one
+  answers with a zero-filled copy. The proof now knows `objectid` only reads,
+  which needs no copy, and the handler accepts a reload whose field only ever
+  holds such data, whether the slot is on the stack or libEnzyme moved it to the
+  heap. Julia 1.12 reloads the tuple's pointers from a separate slot, which the
+  proof does not reach: there such a read gets a zero-filled copy of the `Const`
+  array per call, and split mode still raises where Base's `unalias` merges a
+  reloaded index vector with its copy.
+- Give each incoming edge of a merged value its own zero-filled shadow. The
+  mixed-activity handler reused the copy it had made at the end of one incoming
+  block on the merge's other edges, which that block need not dominate, and LLVM
+  aborted with `Instruction does not dominate all uses!`.
+- Keep the stores into a stack slot that only `objectid` reads. Enzyme declared
+  the runtime call to read no memory, so LLVM could delete them, and the runtime
+  then followed whatever pointers the uninitialized slot held: a segfault in any
+  mode for `iseven(objectid(p))` as the last read of a struct `p`. A reverse pass
+  also recomputed the call from the slot as the last loop iteration left it, so a
+  derivative that depends on such a hash was silently wrong, with runtime activity
+  too. It no longer assumes it can.
 - Differentiate Forward over Reverse (a Hessian-vector product) through matrix
   products that reach BLAS `gemm`, `syrk` or `symm` (dogfood libEnzyme build
   `3a825a54`). Their reverse rules scale the output's shadow with LAPACK's

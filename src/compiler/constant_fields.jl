@@ -414,6 +414,9 @@ function walk_constant_field_call!(cf::ConstantFields, @nospecialize(base::LLVM.
                 return
             end
         end
+        # `objectid` only hashes the slot (`OBJECT_ID_FUNCTIONS`), and no shadow call
+        # reads a field's shadow.
+        LLVM.name(callee) in OBJECT_ID_FUNCTIONS && return
     end
     if !isa(callee, LLVM.Function) || callee == ptr || !constant_field_callee(cf, callee)
         push!(cf.escaped, base)
@@ -746,6 +749,7 @@ function constant_field_call_safe(cf::ConstantFields, call::LLVM.CallInst, @nosp
     nm = LLVM.name(callee)
     nm == "julia.gc_loaded" && return constant_field_uses_safe(cf, call, visited)
     nm == "julia.write_barrier" && return true
+    nm in OBJECT_ID_FUNCTIONS && return true
     constant_field_callee(cf, callee) || return false
     params = parameters(callee)
     for (i, arg) in enumerate(arguments(call))

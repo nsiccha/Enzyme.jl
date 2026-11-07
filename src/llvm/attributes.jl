@@ -407,6 +407,12 @@ const inactivefns = Set{String}((
 
 const activefns = Set{String}(("jl_",))
 
+# The runtime functions behind `objectid`, which Base's default `dataids` calls when
+# `view` checks its indices for aliasing. They hash what they are given by reference
+# and return the hash, an integer: they write nothing and keep no pointer. They are in
+# `inactivefns`, so no shadow call reads what a shadow holds.
+const OBJECT_ID_FUNCTIONS = ("jl_object_id_", "jl_object_id", "ijl_object_id_", "ijl_object_id")
+
 const inactiveglobs = Set{String}((
     "ijl_boxed_uint8_cache",
     "jl_boxed_uint8_cache",
@@ -538,8 +544,7 @@ function annotate!(mod::LLVM.Module)
         end
     end
 
-    for fname in
-        ("julia.typeof", "jl_object_id_", "jl_object_id", "ijl_object_id_", "ijl_object_id")
+    for fname in ("julia.typeof",)
         if haskey(funcs, fname)
             for fn in funcs[fname]
                 if LLVM.version().major <= 15
@@ -548,6 +553,28 @@ function annotate!(mod::LLVM.Module)
                     push!(function_attributes(fn), EnumAttribute("memory", NoEffects.data))
                 end
                 push!(function_attributes(fn), LLVM.StringAttribute("enzyme_shouldrecompute"))
+            end
+        end
+    end
+    # `objectid` of a struct held on the stack reads the struct through its pointer. If
+    # the call read nothing, LLVM could delete the stores into a slot only it reads, and
+    # the runtime would then follow whatever pointers the uninitialized slot holds. For
+    # the same reason a reverse pass may not assume it can recompute the call: by then
+    # the slot can hold another iteration's struct.
+    for fname in OBJECT_ID_FUNCTIONS
+        if haskey(funcs, fname)
+            for fn in funcs[fname]
+                if LLVM.version().major <= 15
+                    push!(function_attributes(fn), LLVM.EnumAttribute("readonly"))
+                else
+                    push!(function_attributes(fn), EnumAttribute("memory", ReadOnlyEffects.data))
+                end
+                # Julia 1.12 passes the type as an integer.
+                for (i, param) in enumerate(LLVM.parameters(fn))
+                    if isa(value_type(param), LLVM.PointerType)
+                        push!(parameter_attributes(fn, i), LLVM.EnumAttribute("nocapture"))
+                    end
+                end
             end
         end
     end
