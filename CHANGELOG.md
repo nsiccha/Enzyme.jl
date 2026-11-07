@@ -21,6 +21,13 @@
   dependent loads (`idx.data`, `idx[j]`, `idx[j].data`), which the same loop in
   a function of its own gets as arguments. This was the remaining 6 to 7% of
   Reverse of a ragged nest over that outlined spelling on Julia 1.12 and 1.13.
+- Fix an LLVM verifier abort ("Call parameter type does not match function
+  signature!") on Julia 1.10 when a function differentiated as a callee, or in
+  split mode, takes `view` of a `SubArray` of a custom array type it holds on
+  the stack (dogfood libEnzyme build `979b679a`). `view` calls `objectid` of
+  the parent through Base's aliasing check, and Julia passes that stack slot to
+  the runtime as an `i8` pointer. When Enzyme moved the slot to the heap, the
+  call kept the slot's own pointer type; it now gets a bitcast to `i8`.
 - Do not recompute a call on a path the forward pass skipped (dogfood
   libEnzyme build `045d93e1`). When the reverse pass recomputes a value that
   three paths merge, one of which skips a call while the other two branch on
