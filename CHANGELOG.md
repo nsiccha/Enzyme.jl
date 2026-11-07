@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Stop allocating a tape per call, on Julia 1.12 and 1.13, in Reverse of a
+  recursive function Julia does not inline that reads a view or an array, such
+  as Base's pairwise `sum` of a view of 16 or more elements: 48 to 64 bytes per
+  node of the recursion on every warm call. The reverse pass now recomputes the
+  root of a `MemoryRef` read (the array's `Memory`) together with its data
+  pointer instead of taping it, and `julia.write_barrier` is declared with the
+  attributes Julia's codegen gives it, so alias analysis no longer takes it for
+  a write to any memory. Split-mode tapes over arrays lose that root, so
+  `tape_type` on Julia 1.11+ now matches Julia 1.10. On Julia 1.12, Forward
+  over Reverse of such a `sum` over 1,025 or more elements no longer raises
+  `EnzymeNoDerivativeError`.
 - Return the primal value from `ReverseWithPrimal` on every path (dogfood
   libEnzyme build `42a2ee9a`). Combined Reverse may run a call's forward pass
   inside its reverse pass, and it then moved the store of the return value
