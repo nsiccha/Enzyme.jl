@@ -20,11 +20,9 @@ using Enzyme, Test
             ReverseSplitWithPrimal,
             Const{typeof(dot)}, Active, Duplicated{typeof(thunk_A)}
         )
-        @static if VERSION < v"1.11-"
-            @test Tuple{Float64, Float64} === TapeType
-        else
-            @test NamedTuple{(Symbol("1"), Symbol("2"), Symbol("3")), Tuple{Any, Float64, Float64}} === TapeType
-        end
+        # From Julia 1.11 the tape also held the root of `dA`'s `MemoryRef`, until the reverse
+        # pass recomputed it with the data pointer (test/memoryref_root.jl).
+        @test Tuple{Float64, Float64} === TapeType
         Ret = Active
         fwd, rev = Enzyme.autodiff_deferred_thunk(
             ReverseSplitWithPrimal,
