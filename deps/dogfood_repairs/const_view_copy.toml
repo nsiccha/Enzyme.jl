@@ -1,0 +1,1 @@
+summary = "Julia 1.10: copying a view of Const data into memory beside active data no longer uses the Const array as its own derivative storage"

@@ -1,0 +1,2 @@
+summary = "Julia 1.10: fields of a Const struct that a vararg method reads back from its argument tuple get their Julia type, so static Reverse does not raise"
+tests = ["test/const_element_store.jl"]

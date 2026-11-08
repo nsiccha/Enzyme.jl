@@ -1,0 +1,3 @@
+summary = "A reader that stores into an output array allocated before its loop no longer tapes its inputs per term"
+libenzyme_build = "08f0e8d901b45d43af23fc44845d1d16cb004b42"
+tests = ["test/owned_output_cache.jl"]

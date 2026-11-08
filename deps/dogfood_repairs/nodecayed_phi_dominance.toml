@@ -1,0 +1,2 @@
+summary = "The nodecayed phi fold replaces a phi only by a value that dominates it, which forced bounds checking can break"
+tests = ["test/data_pointer_phi.jl"]

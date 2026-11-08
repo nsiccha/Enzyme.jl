@@ -1,0 +1,3 @@
+summary = "A merge of four or more paths inside a loop recomputes its branch decisions instead of taping them per iteration"
+libenzyme_build = "f57e12dba03afd34dd38d4409d56d01747e31284"
+tests = ["test/branch_predicates.jl"]

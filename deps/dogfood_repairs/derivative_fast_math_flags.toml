@@ -1,0 +1,3 @@
+summary = "Derivative arithmetic carries the fast-math flags nsz and contract by default, and Enzyme.API.fast_math_flags! chooses them"
+libenzyme_build = "3cee1409a59f44e94b6b78d89dc6f2383a22520b"
+tests = ["test/floating_point.jl"]

@@ -1,0 +1,2 @@
+summary = "Nested derivatives through a tape's constant members (sort, unique, slices of Const data) no longer raise EnzymeRuntimeActivityError"
+tests = ["test/nested_tape_activity.jl"]

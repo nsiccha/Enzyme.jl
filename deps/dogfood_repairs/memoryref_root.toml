@@ -1,0 +1,2 @@
+summary = "Julia 1.12, 1.13: Reverse of a recursive function over a view no longer allocates a tape per call"
+tests = ["test/memoryref_root.jl"]

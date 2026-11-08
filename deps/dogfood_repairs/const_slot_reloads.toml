@@ -1,0 +1,2 @@
+summary = "Const data a vararg method reads back from its tuple beside active data: objectid counts as a read, and slot reloads count as Const data"
+tests = ["test/const_slot_reloads.jl"]

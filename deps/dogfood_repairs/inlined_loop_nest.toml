@@ -1,0 +1,3 @@
+summary = "Reverse of an inner loop inlined into an outer loop that reads its output costs what the same loop costs in a non-inlined function"
+libenzyme_build = "576e674ad2c5dbeff944ad7929ed567fd06dad73"
+tests = ["test/inlined_loop_nest.jl"]

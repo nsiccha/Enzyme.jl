@@ -1,0 +1,2 @@
+summary = "A top-level autodiff_deferred no longer corrupts the JIT's symbol table (Failed to materialize symbols, segfault or double free)"
+tests = ["test/deferred_trampoline.jl"]

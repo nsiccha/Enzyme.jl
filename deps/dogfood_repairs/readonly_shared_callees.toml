@@ -1,0 +1,2 @@
+summary = "The readonly proof walks a function with several call sites once per set of argument positions receiving the data, and follows data thrown and caught"
+tests = ["test/readonly_argument.jl"]

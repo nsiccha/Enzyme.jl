@@ -1,0 +1,2 @@
+summary = "Forward and Reverse rules for products with the Q of a QR, LQ or Hessenberg factorization (gemqrt!, ormqr!, ormlq! and relatives)"
+tests = ["test/rules/internal_rules/householder_multiply.jl"]

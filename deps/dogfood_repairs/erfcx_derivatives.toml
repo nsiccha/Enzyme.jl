@@ -1,0 +1,2 @@
+summary = "Derivatives of erfcx of a real argument at every order without the cancelling identity"
+tests = ["test/ext/specialfunctions.jl"]

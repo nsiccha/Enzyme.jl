@@ -1,0 +1,2 @@
+summary = "Julia 1.10: Enzyme's inference keeps the argument types of bounded recursive calls, so nested reductions like sum(sum, columns) stay typed"
+tests = ["test/inference_recursion.jl"]

@@ -1,0 +1,2 @@
+summary = "erfcx rules apply seeds with the derivative, so products whose partial leaves Float64's range stay exact"
+tests = ["test/ext/specialfunctions.jl"]

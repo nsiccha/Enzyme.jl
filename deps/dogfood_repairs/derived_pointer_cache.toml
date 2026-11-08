@@ -1,0 +1,3 @@
+summary = "Julia 1.10: Illegal cached pointer from an array element read in a loop: the cache choice moves past the data pointer load"
+libenzyme_build = "fce751916bc9f584b8b9875356860f5212876ff0"
+tests = ["test/derived_pointer_cache.jl"]

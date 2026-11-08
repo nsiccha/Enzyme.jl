@@ -1,0 +1,2 @@
+summary = "A derivative kept in a package image still links after a package that invalidates Enzyme's compiler loads"
+tests = ["test/precompile.jl"]

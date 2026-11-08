@@ -1,0 +1,2 @@
+summary = "The readonly proof checks a dynamic call when it first runs, on the operands that hold the callable's data"
+tests = ["test/readonly_argument.jl"]

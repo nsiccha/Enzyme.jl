@@ -1,0 +1,2 @@
+summary = "Literal constant objects captured beside active views get a separate zero shadow instead of raising EnzymeRuntimeActivityError"
+tests = ["test/literal_constant_capture.jl"]
