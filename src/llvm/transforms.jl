@@ -2152,6 +2152,137 @@ function fold_array_data_phis!(mod::LLVM.Module)
 end
 
 """
+    catches_exceptions(fn::LLVM.Function) -> Bool
+
+Whether `fn` may catch an exception it raised: it enters a handler (`try`), which Julia
+1.10 does with `jl_enter_handler` and a `setjmp`, a `returns_twice` call.
+"""
+function catches_exceptions(fn::LLVM.Function)
+    handlers = (
+        "julia.except_enter", "jl_enter_handler", "ijl_enter_handler", "jl_setjmp",
+        "ijl_setjmp", "__sigsetjmp", "sigsetjmp", "_setjmp", "setjmp",
+    )
+    for bb in blocks(fn), inst in instructions(bb)
+        isa(inst, LLVM.CallInst) || continue
+        callee = LLVM.called_operand(inst)
+        isa(callee, LLVM.Function) || continue
+        LLVM.name(callee) in handlers && return true
+        has_fn_attr(callee, EnumAttribute("returns_twice")) && return true
+    end
+    return false
+end
+
+function never_returns(call::LLVM.CallInst)
+    callee = LLVM.called_operand(call)
+    isa(callee, LLVM.Function) && is_noreturn(callee) && return true
+    noreturn = kind(EnumAttribute("noreturn"))
+    for attr in callsite_function_attributes(call)
+        isa(attr, LLVM.EnumAttribute) && kind(attr) == noreturn && return true
+    end
+    return false
+end
+
+"""
+    fresh_array_length_loads(alloc::LLVM.CallInst, catches::Bool) -> Union{Vector{LLVM.LoadInst}, Nothing}
+
+The loads of the length of the vector `alloc`, a call of `jl_alloc_array_1d(atype, n)`,
+that are certain to read `n`: those of its `length` and `nrows` fields (byte offsets 8
+and 24 of Julia 1.10's `jl_array_t`). Only the runtime's resize functions change those
+fields, and they receive the array. So this answers `nothing` unless every use of the
+array, through casts and constant-offset GEPs, is a load, a comparison, or a write
+barrier or GC preserve, which do not resize it. A store of the array, passing it to any
+other call, a merge with another value and a store into its header all answer `nothing`.
+The loads of its data pointer, and what is stored through that pointer, are not uses of
+the header. A call that never returns, such as the bounds error a checked read throws,
+may also receive the array when the function cannot catch (`catches` is false): no load
+of the function runs after it.
+"""
+function fresh_array_length_loads(alloc::LLVM.CallInst, catches::Bool)
+    lengths = LLVM.LoadInst[]
+    todo = LLVM.Value[alloc]
+    seen = Set{LLVM.Value}()
+    while !isempty(todo)
+        cur = pop!(todo)
+        cur in seen && continue
+        push!(seen, cur)
+        for use in LLVM.uses(cur)
+            user = LLVM.user(use)
+            if isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst)
+                push!(todo, user)
+            elseif isa(user, LLVM.GetElementPtrInst)
+                base, _ = get_base_and_offset(user)
+                base == alloc || return nothing
+                push!(todo, user)
+            elseif isa(user, LLVM.LoadInst)
+                (Bool(LLVM.API.LLVMGetVolatile(user)) || LLVM.is_atomic(user)) && continue
+                value_type(user) == LLVM.IntType(8 * sizeof(Int)) || continue
+                base, off = get_base_and_offset(cur)
+                base == alloc || return nothing
+                off in (8, 24) && push!(lengths, user)
+            elseif isa(user, LLVM.ICmpInst)
+                continue
+            elseif isa(user, LLVM.CallInst)
+                fn = LLVM.called_operand(user)
+                isa(fn, LLVM.Function) || return nothing
+                LLVM.name(fn) in ("julia.write_barrier", "llvm.julia.gc_preserve_begin") &&
+                    continue
+                !catches && never_returns(user) && continue
+                return nothing
+            else
+                return nothing
+            end
+        end
+    end
+    return lengths
+end
+
+"""
+    fold_fresh_array_lengths!(mod::LLVM.Module) -> Bool
+
+Replace each load of the length of a vector that `jl_alloc_array_1d(atype, n)` made in
+the same function by `n`, where `fresh_array_length_loads` shows that nothing can have
+resized it (Julia 1.10; later versions build an array's header with stores that LLVM
+already forwards).
+
+On Julia 1.10 the allocator is opaque, so a loop over `eachindex(out)` after
+`out = similar(r)` reads the bound from `out`. The reverse pass then needs `out` itself
+for that bound. When the allocation is in a loop, Enzyme rebuilds it there (rematerializes
+it, which allocates it again and replays every store into it) only to read its length.
+After the fold the reverse pass reads `n` instead and needs no copy of `out`.
+"""
+function fold_fresh_array_lengths!(mod::LLVM.Module)
+    @static if VERSION >= v"1.11-"
+        return false
+    else
+        changed = false
+        for fn in functions(mod)
+            allocs = LLVM.CallInst[]
+            for bb in blocks(fn), inst in instructions(bb)
+                isa(inst, LLVM.CallInst) || continue
+                callee = LLVM.called_operand(inst)
+                isa(callee, LLVM.Function) || continue
+                LLVM.name(callee) in ("jl_alloc_array_1d", "ijl_alloc_array_1d") || continue
+                push!(allocs, inst)
+            end
+            isempty(allocs) && continue
+            catches = catches_exceptions(fn)
+            for alloc in allocs
+                n = collect(arguments(alloc))[2]
+                lengths = fresh_array_length_loads(alloc, catches)
+                lengths === nothing && continue
+                for ld in lengths
+                    value_type(ld) == value_type(n) || continue
+                    replace_uses!(ld, n)
+                    LLVM.API.LLVMInstructionEraseFromParent(ld)
+                    changed = true
+                end
+            end
+        end
+        return changed
+    end
+end
+
+"""
     unfold_field_phi_loads!(f::LLVM.Function) -> Bool
 
 Turn a load through a phi of field addresses at different offsets back into a phi
