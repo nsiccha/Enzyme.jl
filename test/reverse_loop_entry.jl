@@ -346,3 +346,323 @@ end
         reverse_gradient(Reverse, moved_back, X, IDX, S, C)
     end == reverse_gradient(Reverse, ragged, X, IDX, S, C)
 end
+
+# A value of the outer iteration computed through a branch, read in the inner loop.
+# The reverse pass rebuilds it as a branch on the same condition. One arm reads the
+# result of a call the reverse pass caches, the other recomputes a call.
+@noinline cached_arm(l) = l < 0.1 ? 0.5 - l / 6 : (1 + expm1(-l) / l) / l
+@inline branch_weight(l) = l < 0.1 ? 1 - l * cached_arm(l) : -expm1(-l) / l
+
+function through_branch(x, lambda, idx)
+    total = 0.0
+    for j in eachindex(idx)
+        w = branch_weight(lambda[j])
+        m = cached_arm(lambda[j])
+        ij = idx[j]
+        for k in eachindex(ij)
+            t = x[ij[k]]
+            # arms of the inner loop, each using the merge
+            total += t < 0 ? w * t * t + m : w * exp(t) - m * t
+        end
+    end
+    return total
+end
+
+const LAMBDA = [0.02, 0.5, 0.05, 0.3, 0.2]
+
+function both_gradients(mode, f, x, l, args...)
+    dx = zero(x)
+    dl = zero(l)
+    autodiff(mode, Const(f), Active, Duplicated(x, dx), Duplicated(l, dl), map(Const, args)...)
+    return dx, dl
+end
+
+function check_both(f, x, l, args...; atol = 1.0e-6)
+    fdx = central_differences(y -> f(y, l, args...), x)
+    fdl = central_differences(y -> f(x, y, args...), l)
+    for mode in (Reverse, ReverseWithPrimal)
+        dx, dl = both_gradients(mode, f, x, l, args...)
+        @test dx ≈ fdx atol = atol
+        @test dl ≈ fdl atol = atol
+    end
+    return
+end
+
+@testset "A value through a branch: both arms, empty inner loops" begin
+    check_both(through_branch, X, LAMBDA, IDX)
+    p = [4, 1, 5, 3, 2]
+    check_both(through_branch, X, LAMBDA[p], IDX[p])
+    # Every outer iteration on one arm, then the other.
+    check_both(through_branch, X, fill(0.05, 5), IDX)
+    check_both(through_branch, X, fill(0.5, 5), IDX)
+    # No inner iterations: the merge is not needed, and its adjoint is zero.
+    dx, dl = both_gradients(Reverse, through_branch, X, LAMBDA[1:2], [Int[], Int[]])
+    @test dx == zero(X)
+    @test dl == zero(LAMBDA[1:2])
+end
+
+# An arm that throws when evaluated on the path the primal skipped: the rebuilt
+# merge may only run the arm the forward pass ran.
+function guarded_arms(x, lambda, idx)
+    total = 0.0
+    for j in eachindex(idx)
+        l = lambda[j]
+        w = l > 0 ? sqrt(l) + log(l) : l * l
+        for i in idx[j]
+            total += w * x[i] * x[i]
+        end
+    end
+    return total
+end
+
+@testset "An arm that would throw on the path not taken" begin
+    check_both(guarded_arms, [1.0, 2.0, 3.0], [-1.0, 4.0, -0.5], [[1, 2], [2, 3], [3]])
+end
+
+# Three paths into one merge, and a merge inside an arm of another.
+function three_way_merge(x, lambda, idx)
+    total = 0.0
+    for j in eachindex(idx)
+        l = lambda[j]
+        w = l < 0.1 ? exp(l) : l < 0.3 ? l * l : sin(l) / l
+        for i in idx[j]
+            total += w * x[i] * x[i]
+        end
+    end
+    return total
+end
+
+function nested_merge(x, lambda, idx)
+    total = 0.0
+    for j in eachindex(idx)
+        l = lambda[j]
+        w = if l < 0.3
+            inner = l < 0.1 ? exp(l) : log1p(l)
+            inner * cached_arm(l)
+        else
+            cos(l) / l
+        end
+        for i in idx[j]
+            total += x[i] > 0 ? w * x[i] : x[i] * x[i] / w
+        end
+    end
+    return total
+end
+
+@testset "Three paths, and a merge inside an arm" begin
+    x = [1.1, -2.3, 3.7, 0.4]
+    idx = [[1, 2], [3], Int[], [4, 1, 2], [2, 3]]
+    l = [0.05, 0.2, 0.5, 0.25, 0.08]
+    check_both(three_way_merge, x, l, idx)
+    check_both(nested_merge, x, l, idx)
+end
+
+# Memory an arm reads is overwritten after the inner loop, so the reverse pass
+# cannot recompute it there, and has to read what it held.
+function arm_memory_overwritten(x, s, n)
+    total = 0.0
+    for j in eachindex(s)
+        w = s[j] > 1.0 ? s[j] * s[j] : exp(s[j])
+        for k in 1:n
+            total += w * x[k] * x[k]
+        end
+        s[j] = 0.0
+    end
+    return total
+end
+
+@testset "Memory an arm reads overwritten after the inner loop" begin
+    x = [1.0, 2.0, 3.0]
+    primal_s = [2.0, 0.5, 3.0]
+    s = copy(primal_s)
+    ds = zero(s)
+    dx = zero(x)
+    autodiff(Reverse, Const(arm_memory_overwritten), Active, Duplicated(x, dx), Duplicated(s, ds), Const(3))
+    @test dx ≈ central_differences(y -> arm_memory_overwritten(y, copy(primal_s), 3), x) atol = 1.0e-5
+    @test ds ≈ central_differences(t -> arm_memory_overwritten(x, copy(t), 3), primal_s) atol = 1.0e-5
+    @test s == zeros(3)
+end
+
+# The merge reads an array of the outer iteration the reverse pass rematerializes.
+function arm_rematerialized(x, m)
+    total = 0.0
+    for j in eachindex(x)
+        a = Vector{Float64}(undef, 2)
+        a[1] = x[j]
+        a[2] = 2 * x[j]
+        w = x[j] > 0 ? a[1] * a[2] : a[2]
+        for k in 1:m
+            total += w * x[k]
+        end
+    end
+    return total
+end
+
+@testset "An arm that reads an array the reverse pass rematerializes" begin
+    x = [1.0, -2.0, 3.0]
+    @test reverse_gradient(Reverse, arm_rematerialized, x, 2) ≈
+        central_differences(y -> arm_rematerialized(y, 2), x) atol = 1.0e-6
+end
+
+# A merge of arrays, read element by element in the inner loop.
+function merged_arrays(x, a, b, idx)
+    total = 0.0
+    for j in eachindex(idx)
+        v = isodd(j) ? a : x
+        ij = idx[j]
+        for k in eachindex(ij)
+            total += v[ij[k]] * x[ij[k]] + b[j]
+        end
+    end
+    return total
+end
+
+@testset "A merge of arrays" begin
+    x = [1.5, -0.5, 2.0, 0.25]
+    a = [0.1, 0.2, 0.3, 0.4]
+    b = [1.0, 2.0, 3.0]
+    idx = [[1, 2], [3, 4], [2, 2, 1]]
+    @test reverse_gradient(Reverse, merged_arrays, x, a, b, idx) ≈
+        central_differences(y -> merged_arrays(y, a, b, idx), x) atol = 1.0e-6
+end
+
+# A merge of the last value of a sibling loop, read in a later inner loop.
+function merged_sibling(x, flags, idx)
+    total = 0.0
+    for j in eachindex(idx)
+        last_value = 1.0
+        for i in idx[j]
+            last_value = x[i]
+        end
+        w = flags[j] ? last_value * last_value : exp(x[1])
+        for i in idx[j]
+            total += w * x[i]
+        end
+    end
+    return total
+end
+
+@testset "A merge of a sibling loop's last value" begin
+    x = [1.0, 2.0, 3.0]
+    flags = [true, false, true]
+    idx = [[1, 2], [3], [2, 3, 1]]
+    @test reverse_gradient(Reverse, merged_sibling, x, flags, idx) ≈
+        central_differences(y -> merged_sibling(y, flags, idx), x) atol = 1.0e-6
+end
+
+# A running value is carried from one outer iteration to the next, so it is not
+# rebuilt from its arms, and a merge of it reads that iteration's value.
+function merged_running(x, lambda, idx)
+    total = 0.0
+    r = 1.0
+    for j in eachindex(idx)
+        w = lambda[j] < 0.1 ? r * lambda[j] : r + exp(lambda[j])
+        for i in idx[j]
+            total += w * x[i] * x[i]
+        end
+        r *= lambda[j]
+    end
+    return total
+end
+
+@testset "A merge of a value carried across outer iterations" begin
+    check_both(merged_running, X, LAMBDA, IDX)
+end
+
+@testset "A value through a branch: split mode" begin
+    x = copy(X)
+    l = copy(LAMBDA)
+    args = (Duplicated(x, zero(x)), Duplicated(l, zero(l)), Const(IDX))
+    fwd, rev = autodiff_thunk(
+        ReverseSplitWithPrimal, Const{typeof(through_branch)}, Active, map(typeof, args)...,
+    )
+    tape, primal, _ = fwd(Const(through_branch), args...)
+    rev(Const(through_branch), args..., 1.0, tape)
+    @test primal ≈ through_branch(X, LAMBDA, IDX)
+    @test args[1].dval ≈ central_differences(y -> through_branch(y, LAMBDA, IDX), X) atol = 1.0e-6
+    @test args[2].dval ≈ central_differences(y -> through_branch(X, y, IDX), LAMBDA) atol = 1.0e-6
+end
+
+@testset "A value through a branch: second derivatives" begin
+    v = [1.0, -0.5, 0.25, 2.0]
+    gradient_of(x) = first(both_gradients(Reverse, through_branch, x, LAMBDA, IDX))
+    expected = central_differences(x -> sum(gradient_of(x) .* v), X)
+    forward_over_reverse = only(autodiff(Forward, Const(gradient_of), Duplicated(X, v)))
+    @test forward_over_reverse ≈ expected atol = 1.0e-6
+
+    directional(x) = only(autodiff(Forward, Const(through_branch), Duplicated(x, v), Const(LAMBDA), Const(IDX)))
+    reverse_over_forward = zero(X)
+    autodiff(Reverse, Const(directional), Active, Duplicated(copy(X), reverse_over_forward))
+    @test reverse_over_forward ≈ expected atol = 1.0e-6
+end
+
+function through_branch!(out, x, lambda, idx)
+    out[] = through_branch(x, lambda, idx)
+    return nothing
+end
+
+@testset "A value through a branch: a batch of directions" begin
+    dx1 = zero(X)
+    dx2 = zero(X)
+    autodiff(
+        Reverse, Const(through_branch!), Const,
+        BatchDuplicated(Ref(0.0), (Ref(1.0), Ref(2.0))),
+        BatchDuplicated(copy(X), (dx1, dx2)),
+        Const(LAMBDA), Const(IDX),
+    )
+    fd = central_differences(y -> through_branch(y, LAMBDA, IDX), X)
+    @test dx1 ≈ fd atol = 1.0e-6
+    @test dx2 ≈ 2 .* fd atol = 1.0e-6
+end
+
+function branch_with_collections(x, lambda, n)
+    idx = [collect(1:min(j, length(x))) for j in 1:n]
+    total = 0.0
+    for j in 1:n
+        w = branch_weight(lambda[j])
+        ij = idx[j]
+        for k in eachindex(ij)
+            collect_sometimes(k)
+            total += w * exp(x[ij[k]])
+        end
+    end
+    return total
+end
+
+@testset "A value through a branch: collections during the loop" begin
+    x = [0.1, -0.2, 0.3]
+    l = [0.05, 0.5, 0.02, 0.7]
+    fdx = central_differences(y -> branch_with_collections(y, l, 4), x)
+    fdl = central_differences(y -> branch_with_collections(x, y, 4), l)
+    for _ in 1:20
+        dx, dl = both_gradients(Reverse, branch_with_collections, x, l, 4)
+        @test dx ≈ fdx atol = 1.0e-6
+        @test dl ≈ fdl atol = 1.0e-6
+    end
+end
+
+function with_merges_option(f, enabled)
+    Enzyme.API.EnzymeSetCLBool(:EnzymeReverseLoopEntryMerges, enabled)
+    try
+        return f()
+    finally
+        Enzyme.API.EnzymeSetCLBool(:EnzymeReverseLoopEntryMerges, true)
+    end
+end
+
+@testset "A merge rebuilt once per entry of the inner loop's reverse" begin
+    argtypes = Tuple{Duplicated{Vector{Float64}}, Duplicated{Vector{Float64}}, Const{Vector{Vector{Int}}}}
+    rebuilds(ir) = count(r"_phirc[\w.]*\"?:", ir)
+    once = rebuilds(derivative_ir(through_branch, argtypes))
+    in_each_arm = with_merges_option(false) do
+        rebuilds(derivative_ir(through_branch, argtypes))
+    end
+    @test once < in_each_arm
+
+    # Only where the merge is rebuilt differs, not what it computes. A new method,
+    # since the option acts when a derivative is compiled.
+    moved_back(x, l, idx) = through_branch(x, l, idx)
+    @test with_merges_option(false) do
+        both_gradients(Reverse, moved_back, X, LAMBDA, IDX)
+    end == both_gradients(Reverse, through_branch, X, LAMBDA, IDX)
+end

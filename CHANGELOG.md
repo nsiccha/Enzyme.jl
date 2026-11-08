@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Make Reverse of an inner loop that reads a value computed through a branch
+  cost what the same loop costs in a function Julia does not inline (dogfood
+  libEnzyme build `801e02f7`). In `w = l < 0.1 ? f(l) : g(l)` followed by an
+  inner loop reading `w`, the reverse pass rebuilt `w` on every inner iteration:
+  a branch on the same condition and the taken arm's computation, calls
+  included. It is now rebuilt once per entry of the inner loop's reverse, when
+  its arms and the conditions between them can be read there. An arm may read
+  the result of a call that carries derivatives from its cache.
+  `-enzyme-reverse-loop-entry-merges=0` restores the old placement.
 - Make Reverse of an inner loop inlined into an outer loop cost what the same
   loop costs in a function Julia does not inline (dogfood libEnzyme build
   `576e674a`). An outer loop over paths gathers each path's slice, runs a
