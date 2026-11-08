@@ -27,22 +27,27 @@ struct DogfoodRepairMissing <: Exception
 end
 
 function Base.showerror(io::IO, err::DogfoodRepairMissing)
-    print(io, "DogfoodRepairMissing: ", err.requester, " needs Enzyme dogfood repairs this process lacks:")
+    print(io, "DogfoodRepairMissing: this process lacks Enzyme dogfood repairs that ", err.requester, " requires:")
+    outdated = false
+    library = false
     for (name, reason) in err.absent
         print(io, "\n  - ", name, ": ")
         if reason === :library
+            library = true
             print(io, "it is in the native library, and the libEnzyme that loaded is not the build this source declares")
         else
+            outdated = true
             print(io, "this Enzyme.jl source does not carry it (the source predates the repair, or the name is misspelled)")
         end
     end
     print(io, "\nEnzyme.jl source: ", err.source)
     print(io, "\nlibEnzyme: declared build ", something(err.declared, "none"), ", loaded ", err.loaded)
-    print(
-        io, "\nMove Enzyme to a newer commit of the dogfood line, and load the libEnzyme build its ",
-        "deps/dogfood_libenzyme.toml declares (Enzyme_jll's libEnzyme_path preference). ",
-        "Enzyme.dogfood_repairs() lists the repairs this process carries."
+    outdated && print(io, "\nMove Enzyme to a newer commit of the dogfood line.")
+    library && print(
+        io, "\nLoad the libEnzyme build that deps/dogfood_libenzyme.toml declares: ",
+        "Enzyme_jll's libEnzyme_path and libEnzymeBCLoad_path preferences name its library."
     )
+    print(io, "\nEnzyme.dogfood_repairs() lists the repairs this process carries.")
     return
 end
 

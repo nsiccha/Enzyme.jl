@@ -103,9 +103,18 @@ end
             [(:no_such_repair, :not_in_tree), (:heap_slot_object_id, :library)]
     )
     message = sprint(showerror, err)
-    @test startswith(message, "DogfoodRepairMissing: a test needs Enzyme dogfood repairs this process lacks:")
+    @test startswith(message, "DogfoodRepairMissing: this process lacks Enzyme dogfood repairs that a test requires:")
     @test occursin("no_such_repair: this Enzyme.jl source does not carry it", message)
     @test occursin("loaded " * lib.loaded, message)
     @test occursin(ROOT, message)
+    @test occursin("Move Enzyme to a newer commit of the dogfood line.", message)
     @test occursin("not the build this source declares", message) == !lib.matches
+    @test occursin("Load the libEnzyme build", message) == !lib.matches
+
+    # Advice follows the reasons: a library mismatch alone does not ask for a newer commit.
+    library_only = sprint(
+        showerror, Enzyme.DogfoodRepairMissing("a test", [(:native, :library)], ROOT, lib.declared, "/stock/libEnzyme-15.so")
+    )
+    @test occursin("Load the libEnzyme build", library_only)
+    @test !occursin("newer commit", library_only)
 end
