@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Make Reverse of a loop whose carried value is read from an array on every edge
+  into the loop, such as a loop with its first step peeled (`yp = y[first]; for
+  t in first+1:last; …; yp = y[t]; end`), cost close to what the same loop costs
+  without the peel on Julia 1.10: inlined into an outer loop, 1.02 to 1.05 times
+  it instead of 1.05 to 1.10, and in a function Julia does not inline, under
+  strict derivative arithmetic, 1.04 instead of 1.13 to 1.16. LLVM folds such a
+  carry into a load through a phi of element addresses. `nodecayed_phis!`
+  rewrote that phi into a phi of array objects and offsets, so the reverse pass
+  reloaded the array and its data pointer on every iteration.
+  `unfold_field_phi_loads!` now loads in the predecessors instead, which leaves
+  a phi of the values. `Enzyme.Compiler.UnfoldDataPhiLoads[] = false` restores
+  the old rewrite. `Enzyme.has_dogfood_repair(:data_phi_loads)` reports it.
 - Make Reverse of an inner loop that reads a value computed through a branch
   cost what the same loop costs in a function Julia does not inline (dogfood
   libEnzyme build `10018598`). In `w = l < 0.1 ? f(l) : g(l)` followed by an

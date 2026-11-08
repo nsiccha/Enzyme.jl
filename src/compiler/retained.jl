@@ -131,7 +131,7 @@ function retention_conditions()::String
     print(io, cpu_name(), '|', cpu_features(), '|')
     print(io, unsafe_load(cglobal(:jl_tls_offset, Int)), '|')
     print(io, Enzyme_jll.libEnzyme_path, '|')
-    print(io, RunAttributor[], '|', RunAttributorAfterAD[], '|')
+    print(io, RunAttributor[], '|', RunAttributorAfterAD[], '|', UnfoldDataPhiLoads[], '|')
     handle = Libdl.dlopen(API.libEnzyme)
     for option in RETAINED_LIBENZYME_OPTIONS
         print(io, Int(API.EnzymeGetCLBool(Libdl.dlsym(handle, option))), ',')
