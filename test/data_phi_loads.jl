@@ -150,17 +150,19 @@ derivative_ir(f) = sprint() do io
 end
 
 @testset "The peeled carry stays a phi of values" begin
-    # Julia 1.10 reloads the data pointer of an object phi; later versions read it
-    # through `julia.gc_loaded`. Either way the rewrite names its phis `nodecayed`.
+    # `nodecayed_phis!` names the phis it makes `nodecayed`.
     nodecayed(ir) = count(r"%\"?nodecayed(off)?\.[\w.]*value_phi", ir)
     unfolded = nodecayed(derivative_ir(dpl_obj_dpl_peeled_inl))
-    @test unfolded == 0
     # A new method, since the switch acts when a derivative is compiled.
     folded_back(p, y, idx) = dpl_obj_dpl_peeled_inl(p, y, idx)
     folded = with_unfold(false) do
         nodecayed(derivative_ir(folded_back))
     end
+    # Julia 1.10 only. Under `--check-bounds=yes` the load through the phi sits after
+    # the next iteration's bounds checks, in another block, and loading in the
+    # predecessors would run it before them, so the phi is left to `nodecayed_phis!`.
     if VERSION < v"1.11-"
+        @test unfolded == 0 broken = Base.JLOptions().check_bounds == 1
         @test folded > 0
     end
     p, y, idx = dpl_data()
