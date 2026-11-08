@@ -1332,9 +1332,11 @@ cancels. Only arithmetic libEnzyme emits for derivatives is affected, not the pr
 code it differentiates. Set this before compiling a derivative; changing it does not
 invalidate already compiled derivatives. Needs the dogfood libEnzyme build.
 """
-function fast_math_flags!(; reassoc::Bool = false, nnan::Bool = false, ninf::Bool = false,
-                          nsz::Bool = false, arcp::Bool = false, contract::Bool = false,
-                          afn::Bool = false)
+function fast_math_flags!(;
+        reassoc::Bool = false, nnan::Bool = false, ninf::Bool = false,
+        nsz::Bool = false, arcp::Bool = false, contract::Bool = false,
+        afn::Bool = false
+    )
     mask = Int64(reassoc) | Int64(nnan) << 1 | Int64(ninf) << 2 | Int64(nsz) << 3 |
         Int64(arcp) << 4 | Int64(contract) << 5 | Int64(afn) << 6
     ptr = cglobal((:EnzymeFastMathFlags, libEnzyme))
