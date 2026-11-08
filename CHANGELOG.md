@@ -4,13 +4,24 @@
 
 - Make Reverse of an inner loop that reads a value computed through a branch
   cost what the same loop costs in a function Julia does not inline (dogfood
-  libEnzyme build `801e02f7`). In `w = l < 0.1 ? f(l) : g(l)` followed by an
+  libEnzyme build `10018598`). In `w = l < 0.1 ? f(l) : g(l)` followed by an
   inner loop reading `w`, the reverse pass rebuilt `w` on every inner iteration:
   a branch on the same condition and the taken arm's computation, calls
   included. It is now rebuilt once per entry of the inner loop's reverse, when
   its arms and the conditions between them can be read there. An arm may read
   the result of a call that carries derivatives from its cache.
   `-enzyme-reverse-loop-entry-merges=0` restores the old placement.
+- Give dogfood derivative arithmetic the fast-math flags `nsz` and `contract` by
+  default (dogfood libEnzyme build `3cee1409`). Fully strict arithmetic, the default
+  since build `df199913`, kept an adjoint's `+ 0.0` (strict IEEE arithmetic does not
+  fold it, since `-0.0 + 0.0` is `+0.0`) and every separately rounded multiply and
+  add. On Julia 1.10 that made the Reverse gradient of a plain Normal log-density loop
+  2.1 times as slow as registered Enzyme, and a quadratic reduction 2.8 times as slow
+  as fast math. Neither flag regroups an expression or assumes anything about NaN or
+  infinity, so a representable derivative such as that of `exp(log(t * 1e-190))` still
+  does not underflow. The new `Enzyme.API.fast_math_flags!` chooses the flags, and
+  `fast_math_flags!()` restores fully strict arithmetic; `fast_math!(true)` still
+  allows every flag.
 - Make Reverse of an inner loop inlined into an outer loop cost what the same
   loop costs in a function Julia does not inline (dogfood libEnzyme build
   `576e674a`). An outer loop over paths gathers each path's slice, runs a

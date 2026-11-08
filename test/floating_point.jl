@@ -50,3 +50,49 @@ end
     @test autodiff(Forward, quotient, Duplicated(1.0e-300, 0.0), Duplicated(1.0e100, 1.0e300))[1] ≈ -1.0e-200 rtol = 1.0e-15
     @test autodiff(Forward, quotient, Duplicated(1.0e-300, 0.0), Duplicated(1.0e10, 1.0e160))[1] ≈ -1.0e-160 rtol = 1.0e-15
 end
+
+function sum_of_squares(x)
+    s = 0.0
+    @inbounds for i in eachindex(x)
+        s += x[i] * x[i]
+    end
+    return s
+end
+
+# Each compilation below needs its own function: a derivative already compiled keeps
+# the flags it was compiled with.
+negzero_times_default(x) = -0.0 * x
+negzero_times_strict(x) = -0.0 * x
+
+@testset "Fast-math flags of derivative arithmetic" begin
+    derivative_ir() = sprint() do io
+        Enzyme.Compiler.enzyme_code_llvm(io, sum_of_squares, Active, Tuple{Duplicated{Vector{Float64}}})
+    end
+    plain_zero_add = r"fadd double [^,]+, 0\.000000e\+00"
+    x = [0.1 * i for i in 1:100]
+
+    # By default derivative arithmetic may ignore the sign of a zero and fuse a multiply
+    # and an add, but never regroups an expression or assumes away NaN or infinity.
+    ir = derivative_ir()
+    @test occursin("nsz contract", ir)
+    @test !occursin("reassoc", ir)
+    @test !occursin(" fast ", ir)
+    # So an adjoint's `+ 0.0` folds away, and the reverse loop vectorizes without
+    # reassociation.
+    @test !occursin(plain_zero_add, ir)
+    @test occursin("vector.body", ir)
+    @test gradient(Reverse, sum_of_squares, x)[1] ≈ 2 .* x
+    @test signbit(gradient(Reverse, negzero_times_default, 1.0)[1])
+
+    try
+        # Fully strict: `0.0 + -0.0` is `+0.0`, so the adjoint's `+ 0.0` stays.
+        Enzyme.API.fast_math_flags!()
+        ir = derivative_ir()
+        @test !occursin("nsz", ir)
+        @test !occursin(" contract ", ir)
+        @test occursin(plain_zero_add, ir)
+        @test !signbit(gradient(Reverse, negzero_times_strict, 1.0)[1])
+    finally
+        Enzyme.API.fast_math_flags!(nsz = true, contract = true)
+    end
+end
