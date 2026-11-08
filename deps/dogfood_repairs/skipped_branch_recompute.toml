@@ -1,0 +1,3 @@
+summary = "Inside a loop, Reverse computes a merge's second condition only on the paths that ran it"
+libenzyme_build = "045d93e105b473eb4b95c7752ddf14ecbf22d5c1"
+tests = ["test/skipped_branch_recompute.jl"]

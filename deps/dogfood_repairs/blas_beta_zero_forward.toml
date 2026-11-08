@@ -1,0 +1,3 @@
+summary = "Forward rules of BLAS calls that overwrite their output (beta == 0) write a zero tangent instead of 0 * the incoming tangent, which could be NaN"
+libenzyme_build = "4be29b192be9fcb9ffd85dcb2f6c28b341515b6d"
+tests = ["test/blas.jl"]

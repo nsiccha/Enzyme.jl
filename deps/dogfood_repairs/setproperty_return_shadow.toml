@@ -1,0 +1,3 @@
+summary = "A custom rule may cache a primal input or its shadow, so a used dynamic setproperty! return no longer aborts the compiler"
+libenzyme_build = "ef75bdc7affe21de66ad3d67294adc21053fd8f5"
+tests = ["test/typeunstable.jl"]

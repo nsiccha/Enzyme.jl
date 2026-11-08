@@ -1,0 +1,3 @@
+summary = "The Forward rule of a division never squares the divisor, so nested derivatives through a tiny or huge divisor stay finite"
+libenzyme_build = "2b1f1cfe2931e1a88c305732698a53631ac3f35c"
+tests = ["test/ext/specialfunctions.jl"]

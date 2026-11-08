@@ -1,0 +1,1 @@
+summary = "Runtime-activity tapes initialize their pointer fields atomically, so a collection right after allocation does not see garbage (Julia 1.12, 1.13)"

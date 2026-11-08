@@ -1,0 +1,2 @@
+summary = "The readonly proof accepts calls to a function with a custom derivative rule that has more than one call site"
+tests = ["test/readonly_argument.jl"]

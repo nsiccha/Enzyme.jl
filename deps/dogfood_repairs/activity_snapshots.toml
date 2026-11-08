@@ -1,0 +1,2 @@
+summary = "Activity analysis hypotheses share their parent's sets instead of copying them, cutting the first gradient of a large function"
+libenzyme_build = "c9796794088cf37789b1f19f1a62ff332d86c7b3"

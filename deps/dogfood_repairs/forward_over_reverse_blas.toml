@@ -1,0 +1,3 @@
+summary = "Forward over Reverse through a BLAS matrix product works: lascl has Forward and Reverse rules"
+libenzyme_build = "3a825a54e3ed955cb1ad31639fbcfa7a26b05453"
+tests = ["test/forward_over_reverse_blas.jl"]

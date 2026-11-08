@@ -1,0 +1,3 @@
+summary = "The fresh-buffer saving also holds when later non-inlined calls write only arrays they allocate (broadcasts, similar, sum with dims)"
+libenzyme_build = "a557503c0eda565ec312ccf62cff738cabc0be33"
+tests = ["test/fresh_buffer_cache.jl"]

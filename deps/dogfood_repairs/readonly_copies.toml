@@ -1,0 +1,2 @@
+summary = "The readonly proof accepts writes into a copy of held data whose elements hold no references"
+tests = ["test/readonly_argument.jl"]

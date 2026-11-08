@@ -1,0 +1,2 @@
+summary = "Derivatives taken while a package image is written work in later sessions: split mode, jacobian, one-hot seeds and nested derivatives"
+tests = ["test/precompile.jl"]

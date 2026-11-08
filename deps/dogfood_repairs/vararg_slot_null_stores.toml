@@ -1,0 +1,2 @@
+summary = "Julia 1.10: a stored null clears a slot field as a zero memset does, for wide vararg tuples a large function zeroes field by field"
+tests = ["test/const_element_store.jl"]

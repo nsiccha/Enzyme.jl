@@ -11,6 +11,20 @@
   its arms and the conditions between them can be read there. An arm may read
   the result of a call that carries derivatives from its cache.
   `-enzyme-reverse-loop-entry-merges=0` restores the old placement.
+- Let a package check, before it compiles a derivative, that this dogfood
+  commit carries the repairs it needs. Every dogfood commit reports the same
+  version number as a registered release, so a `[compat]` entry cannot tell
+  dogfood commits apart, and a repair in libEnzyme only counts when the library
+  that loaded is the build `deps/dogfood_libenzyme.toml` declares.
+  `deps/dogfood_repairs/` now holds one file per repair the dogfood line
+  carries, named after the repair. `Enzyme.dogfood_repairs()` lists the repairs
+  this process carries, `Enzyme.has_dogfood_repair(name)` asks for one, and
+  `Enzyme.require_dogfood_repairs(names...; requester)` throws
+  `Enzyme.DogfoodRepairMissing`, naming each missing repair and why: this
+  source predates it, or the loaded libEnzyme is not the declared build.
+  `Enzyme.dogfood_libenzyme()` returns the declared build, the loaded library,
+  and whether they match. Dogfood commits before this one lack these
+  functions, so check `isdefined(Enzyme, :require_dogfood_repairs)` first.
 - Give dogfood derivative arithmetic the fast-math flags `nsz` and `contract` by
   default (dogfood libEnzyme build `3cee1409`). Fully strict arithmetic, the default
   since build `df199913`, kept an adjoint's `+ 0.0` (strict IEEE arithmetic does not

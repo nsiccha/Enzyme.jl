@@ -1,0 +1,2 @@
+summary = "The readonly proof for an unannotated callable accepts stores into by-value argument copies, data passed on to callees, and float data read from held arrays"
+tests = ["test/readonly_argument.jl"]

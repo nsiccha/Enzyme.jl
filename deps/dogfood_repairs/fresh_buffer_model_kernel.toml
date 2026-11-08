@@ -1,0 +1,3 @@
+summary = "The fresh-buffer saving also holds when the result is reshaped and the inputs arrive in a structured argument"
+libenzyme_build = "bc09f6cb3020ca17bf0688f32337b34cedf8c34f"
+tests = ["test/fresh_buffer_cache.jl"]

@@ -1,0 +1,3 @@
+summary = "Julia 1.10: Reverse keeps a fresh array a non-inlined call fills instead of rebuilding it uninitialized, so its gradient is not lost"
+libenzyme_build = "48fe7ef5c953e861b0b8179b39785648a802e2be"
+tests = ["test/readonly_owned_storage.jl"]

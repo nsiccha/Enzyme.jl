@@ -1,0 +1,2 @@
+summary = "Julia 1.10: runtime-activity Reverse of an array allocated per iteration and read with only no longer hits an unreachable rematerialized switch"
+libenzyme_build = "927daeeb90d547e268dc7aaca54784941e112df2"

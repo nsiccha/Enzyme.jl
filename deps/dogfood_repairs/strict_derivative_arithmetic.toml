@@ -1,0 +1,3 @@
+summary = "Derivative arithmetic no longer reassociates, so a representable gradient such as that of exp(log(t * 1e-190)) does not underflow"
+libenzyme_build = "df1999139c1d98aa59307ba13acaaee4f2b392b4"
+tests = ["test/floating_point.jl"]

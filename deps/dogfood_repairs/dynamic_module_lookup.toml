@@ -1,0 +1,2 @@
+summary = "Differentiating a call through a non-constant global module binding (jl_f_getglobal) works in every mode"
+tests = ["test/module_lookup.jl"]

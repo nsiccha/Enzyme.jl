@@ -1,0 +1,3 @@
+summary = "Ordinary Reverse keeps the shadows of storage a call initializes and returns (indexed copies, nested wrappers, tuples)"
+libenzyme_build = "33709d12d36d39bad556863058a2a0ce2912d35c"
+tests = ["test/returned_memory.jl"]

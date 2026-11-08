@@ -1,0 +1,2 @@
+summary = "make_zero, make_zero! and remake_zero! write @atomic fields atomically and share Tasks and bindings, so locks, Channels and GlobalRefs get shadows"
+tests = ["test/make_zero.jl", "test/locks.jl"]

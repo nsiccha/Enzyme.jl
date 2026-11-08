@@ -1,0 +1,3 @@
+summary = "Repeated Forward over Reverse calls free the loop-trip-count caches of the inner reverse pass"
+libenzyme_build = "c1743bf9ac66c1c7513e221f94d88be2b025b5ab"
+tests = ["test/forward_over_reverse_memory.jl"]
