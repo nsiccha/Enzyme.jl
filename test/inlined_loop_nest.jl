@@ -215,12 +215,17 @@ const ILNEST_CASES = (
         shadows = map(zero, args_of(P))
         warm(f) = (grad!(f, P, shadows); grad!(f, P, shadows); @allocated grad!(f, P, shadows))
 
+        # From Julia 1.11 the gather is inlined too, and the reverse pass rebuilds the
+        # gathered slice and the output of each path instead of keeping them, while the
+        # callee form tapes its fresh input at every step (Enzyme todo `1nw1luu`).
+        later_julia = VERSION >= v"1.11-"
+
         # The gather's index tape and the rebuilt output were Julia allocations, one of
         # each per path (Julia 1.10).
         @testset "Julia allocations" begin
             bytes_noinl = warm(f_noinl)
             bytes_inl = warm(f_inl)
-            @test bytes_inl <= bytes_noinl
+            @test bytes_inl <= bytes_noinl broken = later_julia
         end
 
         # The inner loop's carried state is one native tape entry per step per carried
@@ -241,7 +246,7 @@ const ILNEST_CASES = (
                 if get(ENV, "ILNEST_REPORT", "") == "1"
                     println(stderr, "ILNEST native $name: noinl=$(live_noinl / step_bytes) inl=$(live_inl / step_bytes) entries per step")
                 end
-                @test live_noinl < (carried + 0.5) * step_bytes
+                @test live_noinl < (carried + 0.5) * step_bytes broken = later_julia
                 @test live_inl < (carried + 0.5) * step_bytes
             end
         else
