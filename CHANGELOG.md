@@ -13,6 +13,18 @@
   does not underflow. The new `Enzyme.API.fast_math_flags!` chooses the flags, and
   `fast_math_flags!()` restores fully strict arithmetic; `fast_math!(true)` still
   allows every flag.
+- Keep the elements of a fresh array that a function Julia does not inline
+  fills, on Julia 1.10 (dogfood libEnzyme build `48fe7ef5`). Such a function
+  receives the array's header, which it only reads: it loads the data pointer
+  from the header and writes the elements through it, so LLVM marks the header
+  operand `readonly`. libEnzyme took that to mean nothing wrote the array,
+  recreated it uninitialized in the reverse pass, and the reverse of a later
+  reader of the array read that memory. The gradient of everything upstream of
+  the array came back as whatever the allocator handed out, beside a right
+  primal, as for an RKPPL MvNormal slice prior whose `Matrix{Float64}(undef, k,
+  G)` a non-inlined forward substitution fills. Such a call now counts as
+  writing the array unless the callee's body shows it writes no storage the
+  array owns, so the reverse pass keeps the filled array.
 - Stop allocating a tape per call, on Julia 1.12 and 1.13, in Reverse of a
   recursive function Julia does not inline that reads a view or an array, such
   as Base's pairwise `sum` of a view of 16 or more elements: 48 to 64 bytes per
