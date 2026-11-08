@@ -8,9 +8,10 @@ using LLVM
 # through that responsibility, and a release build of LLVM then reads and writes past the
 # end of the dylib's symbol table: the process segfaults (`JIT session error: Failed to
 # materialize symbols`, then `unknown function (ip: (nil))`), or its heap is corrupted and it
-# aborts later (`double free or corruption`). Julia 1.10 gives a derivative module such a
-# symbol for every `ccall` whose library is a run-time value (`libname_<function>_<n>`), so
-# `JIT.export_only!` gives every definition but the target internal linkage.
+# aborts later (`double free or corruption`). Julia 1.10 and 1.12 give a derivative module
+# such a symbol for every `ccall` whose library is a run-time value
+# (`libname_<function>_<n>`), so `JIT.export_only!` gives every definition but the target
+# internal linkage.
 
 const DT_JIT = Enzyme.Compiler.JIT
 

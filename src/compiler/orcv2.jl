@@ -239,9 +239,9 @@ the other global symbols an object defines (`AutoClaimObjectSymbols` is off), ye
 every one of them through that responsibility, and a release build of LLVM looks the
 unclaimed ones up in the dylib's symbol table without checking that they are there: it reads
 and writes past the end of the table. A derivative module carries such definitions, for
-example the `libname_<function>_<n>` global Julia 1.10 keeps for each `ccall` whose library
-is a run-time value (SpecialFunctions' `erfcx` reaches one), and they are only ever used
-inside the module.
+example the `libname_<function>_<n>` global Julia 1.10 and 1.12 keep for each `ccall` whose
+library is a run-time value (SpecialFunctions' `erfcx` reaches one), and they are only ever
+used inside the module.
 """
 function export_only!(mod::LLVM.Module, name::String)
     for gv in LLVM.globals(mod)
