@@ -2296,11 +2296,25 @@ phi of the two objects and a phi of the offsets, and Enzyme's type analysis merg
 the layouts of a `Memory` and an `Array` (`IllegalTypeAnalysisException`). Loading
 in the predecessors keeps the objects apart, as they were before the fold.
 
+The same fold makes a phi of addresses into array data (address space 13) out of a
+loop-carried value that is read from an array on every edge into the loop, such as
+`prev` in `prev = x[first]; for i in first+1:last; ...; prev = x[i]; end`, the shape
+of a loop whose first iteration is peeled. On Julia 1.10, `nodecayed_phis!` rewrites
+that phi into a phi of the array objects and a phi of byte offsets, and reloads the
+data pointer from the object on every iteration. The reverse pass then reloads the
+object and its data pointer on every iteration of the loop's reverse: an `i8` GEP of
+the offset makes instcombine retype those loads, which drops the `!invariant.group`
+Enzyme gave them, so nothing hoists them past the stores into the shadow. Loading in
+the predecessors leaves a phi of the values, as in the loop that is not peeled.
+`UnfoldDataPhiLoads[] = false` before a derivative compiles leaves such phis to
+`nodecayed_phis!`.
+
 Only rewrite what is certainly equivalent: a phi in address space 11 whose incoming
-values are not all at the same constant offset from their base, and whose users
-are all non-volatile loads from it in its own block that no memory write precedes.
-Each load is re-created before the terminator of every predecessor. An edge whose
-predecessor also branches elsewhere is split first, so no load becomes speculative.
+values are not all at the same constant offset from their base, or a phi in address
+space 13, whose users are all non-volatile loads from it in its own block that no
+memory write precedes (in address space 13 also non-atomic or unordered). Each load is
+re-created before the terminator of every predecessor. An edge whose predecessor also
+branches elsewhere is split first, so no load becomes speculative.
 """
 function unfold_field_phi_loads!(f::LLVM.Function)::Bool
     # Splitting an edge rebuilds the phis of the block it leads to, so the
@@ -2343,25 +2357,37 @@ function unfold_field_phi_loads!(f::LLVM.Function)::Bool
     return changed
 end
 
+# Whether `unfold_field_phi_loads!` also turns loads through a phi of addresses into
+# array data (address space 13) into a phi of loads (see its docstring).
+const UnfoldDataPhiLoads = Ref(true)
+
 # The loads `unfold_field_phi_loads!` moves out of `phi`'s block, or `nothing`.
 function field_phi_loads(phi::LLVM.PHIInst)::Union{Nothing, Vector{LLVM.LoadInst}}
     ty = value_type(phi)
-    (isa(ty, LLVM.PointerType) && addrspace(ty) == Derived) || return nothing
+    isa(ty, LLVM.PointerType) || return nothing
+    data = addrspace(ty) == 13
+    if data
+        UnfoldDataPhiLoads[] || return nothing
+    elseif addrspace(ty) != Derived
+        return nothing
+    end
     bb = LLVM.parent(phi)
     offset = nothing
     same = true
     for (v, pred) in LLVM.incoming(phi)
         count(Base.Fix2(==, bb), successors(terminator(pred))) == 1 || return nothing
+        data && continue
         _, off = get_base_and_offset(v)
         offset === nothing || offset == off || (same = false)
         offset = off
     end
-    same && return nothing
+    same && !data && return nothing
     loads = LLVM.LoadInst[]
     for u in LLVM.uses(phi)
         ld = LLVM.user(u)
         (isa(ld, LLVM.LoadInst) && LLVM.parent(ld) == bb) || return nothing
         Bool(LLVM.API.LLVMGetVolatile(ld)) && return nothing
+        data && !unfoldable_phi_load(ld) && return nothing
         ld in loads || push!(loads, ld)
     end
     isempty(loads) && return nothing

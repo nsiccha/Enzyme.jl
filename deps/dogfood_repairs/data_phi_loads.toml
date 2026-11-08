@@ -1,0 +1,2 @@
+summary = "A loop-carried value read from an array on every edge into the loop (a peeled first step) stays a phi of values, so its loop's reverse does not reload the array per iteration"
+tests = ["test/data_phi_loads.jl"]
