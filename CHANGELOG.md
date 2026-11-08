@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Give dogfood derivative arithmetic the fast-math flags `nsz` and `contract` by
-  default (dogfood libEnzyme build `d38d7916`). Fully strict arithmetic, the default
+  default (dogfood libEnzyme build `3cee1409`). Fully strict arithmetic, the default
   since build `df199913`, kept an adjoint's `+ 0.0` (strict IEEE arithmetic does not
   fold it, since `-0.0 + 0.0` is `+0.0`) and every separately rounded multiply and
   add. On Julia 1.10 that made the Reverse gradient of a plain Normal log-density loop
