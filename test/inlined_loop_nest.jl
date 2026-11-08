@@ -317,10 +317,10 @@ end
     x = [0.3, -1.1, 0.8, 1.7, -0.4]
     w = [cos(0.9i) for i in 1:(length(x) + 1)]
     n = length(x)
-    # On Julia 1.10, Reverse loses the gradient of the elements written before a `push!`
-    # with every build, without the fold too (Enzyme todo `0mtt8gj`). The primal checks
-    # the fold.
-    pushed_broken = VERSION < v"1.11-"
+    # On Julia 1.10 under default bounds checking, Reverse loses the gradient of the
+    # elements written before a `push!` with every build, without the fold too (Enzyme
+    # todo `0mtt8gj`). The primal checks the fold.
+    pushed_broken = VERSION < v"1.11-" && Base.JLOptions().check_bounds != 1
     for (f, value, grad, broken) in (
             (ilnest_pushed, sum(w[1:n] .* x .^ 2) + w[n + 1] * x[1], 2 .* w[1:n] .* x .+ [w[n + 1]; zeros(n - 1)], pushed_broken),
             (ilnest_shrunk, sum(w[1:(n - 1)] .* x[1:(n - 1)] .^ 2), [2 .* w[1:(n - 1)] .* x[1:(n - 1)]; 0.0], false),

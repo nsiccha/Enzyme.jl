@@ -1866,3 +1866,94 @@ end
         end
     end
 end
+
+# Julia 1.10's `jl_alloc_array_1d(atype, n)` is opaque to LLVM, so a load of the length of
+# the vector it returns is folded to `n` (`fold_fresh_array_lengths!`) only where nothing
+# can have resized it. Each function returns that length.
+@static if VERSION < v"1.11-"
+    function fresh_length_ir(body::String)
+        return """
+        source_filename = "start"
+        target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+        target triple = "x86_64-linux-gnu"
+
+        declare noalias nonnull {} addrspace(10)* @ijl_alloc_array_1d({} addrspace(10)*, i64)
+        declare void @ijl_bounds_error_ints({} addrspace(12)*, i64*, i64) #0
+        declare i32 @__sigsetjmp(i8*, i32) #1
+        declare void @other({} addrspace(10)*)
+
+        define i64 @f({} addrspace(10)* %ty, i64 %n, i64 %i, i8* %buf) {
+        top:
+          %a = call noalias nonnull {} addrspace(10)* @ijl_alloc_array_1d({} addrspace(10)* %ty, i64 %n)
+          %h = addrspacecast {} addrspace(10)* %a to { i8 addrspace(13)*, i64, i16, i16, i32 } addrspace(11)*
+          %lp = getelementptr inbounds { i8 addrspace(13)*, i64, i16, i16, i32 }, { i8 addrspace(13)*, i64, i16, i16, i32 } addrspace(11)* %h, i64 0, i32 1
+        $body
+        }
+
+        attributes #0 = { noreturn }
+        attributes #1 = { returns_twice }
+        """
+    end
+
+    # Whether `@f` returns its argument `%n` once the pass ran.
+    function fresh_length_folded(body::String)
+        return LLVM.Context() do ctx
+            mod = parse(LLVM.Module, fresh_length_ir(body))
+            Enzyme.Compiler.fold_fresh_array_lengths!(mod)
+            LLVM.verify(mod)
+            f = functions(mod)["f"]
+            for bb in blocks(f), inst in instructions(bb)
+                if isa(inst, LLVM.RetInst)
+                    return operands(inst)[1] == parameters(f)[2]
+                end
+            end
+            return false
+        end
+    end
+
+    @testset "fold_fresh_array_lengths!" begin
+        plain = """
+          %len = load i64, i64 addrspace(11)* %lp, align 8
+          ret i64 %len
+        """
+        @test fresh_length_folded(plain)
+
+        # A checked read: the bounds error receives the array but never returns.
+        checked = """
+          %len = load i64, i64 addrspace(11)* %lp, align 8
+          %ok = icmp ult i64 %i, %len
+          br i1 %ok, label %pass, label %fail
+        fail:
+          %box = alloca i64, align 8
+          store i64 %i, i64* %box, align 8
+          %e = addrspacecast {} addrspace(10)* %a to {} addrspace(12)*
+          call void @ijl_bounds_error_ints({} addrspace(12)* %e, i64* %box, i64 1) #0
+          unreachable
+        pass:
+          %len2 = load i64, i64 addrspace(11)* %lp, align 8
+          ret i64 %len2
+        """
+        @test fresh_length_folded(checked)
+
+        # The same read in a function that can catch: a handler could resize the array
+        # the error carries and return here.
+        caught = replace(checked, "%len = load" => "%j = call i32 @__sigsetjmp(i8* %buf, i32 0) #1\n  %len = load")
+        @test !fresh_length_folded(caught)
+
+        # A call that may resize the array.
+        handed = """
+          call void @other({} addrspace(10)* %a)
+          %len = load i64, i64 addrspace(11)* %lp, align 8
+          ret i64 %len
+        """
+        @test !fresh_length_folded(handed)
+
+        # A store into the header.
+        stored = """
+          store i64 0, i64 addrspace(11)* %lp, align 8
+          %len = load i64, i64 addrspace(11)* %lp, align 8
+          ret i64 %len
+        """
+        @test !fresh_length_folded(stored)
+    end
+end
