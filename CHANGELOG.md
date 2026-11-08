@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Give dogfood derivative arithmetic the fast-math flags `nsz` and `contract` by
+  default (dogfood libEnzyme build `7d5a3281`). Fully strict arithmetic, the default
+  since build `df199913`, kept an adjoint's `+ 0.0` (strict IEEE arithmetic does not
+  fold it, since `-0.0 + 0.0` is `+0.0`) and every separately rounded multiply and
+  add. On Julia 1.10 that made the Reverse gradient of a plain Normal log-density loop
+  2.1 times as slow as registered Enzyme, and a quadratic reduction 2.8 times as slow
+  as fast math. Neither flag regroups an expression or assumes anything about NaN or
+  infinity, so a representable derivative such as that of `exp(log(t * 1e-190))` still
+  does not underflow. The new `Enzyme.API.fast_math_flags!` chooses the flags, and
+  `fast_math_flags!()` restores fully strict arithmetic; `fast_math!(true)` still
+  allows every flag.
 - Stop allocating a tape per call, on Julia 1.12 and 1.13, in Reverse of a
   recursive function Julia does not inline that reads a view or an array, such
   as Base's pairwise `sum` of a view of 16 or more elements: 48 to 64 bytes per

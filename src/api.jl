@@ -1303,15 +1303,43 @@ end
 """
     fast_math!(val::Bool)
 
-Whether generated derivatives may use fast-math transformations. Off by default
-in the dogfood compiler. Setting `true` permits reassociation and assumptions about
-nonfinite values and signed zero; these can change results, including underflowing
-an otherwise representable derivative. Set this before compiling a derivative;
-changing it does not invalidate already compiled derivatives.
+Whether generated derivatives may use every fast-math transformation. Off by
+default in the dogfood compiler, where derivative arithmetic carries only the flags
+[`fast_math_flags!`](@ref) chooses (`nsz` and `contract` by default). Setting `true`
+also permits reassociation, reciprocals and assumptions about nonfinite values; these
+can change results, including underflowing an otherwise representable derivative.
+Set this before compiling a derivative; changing it does not invalidate already
+compiled derivatives.
 """
 function fast_math!(val)
     ptr = cglobal((:EnzymeFastMath, libEnzyme))
     ccall((:EnzymeSetCLInteger, libEnzyme), Cvoid, (Ptr{Cvoid}, UInt8), ptr, val)
+end
+
+"""
+    fast_math_flags!(; reassoc=false, nnan=false, ninf=false, nsz=false, arcp=false,
+                     contract=false, afn=false)
+
+Choose the LLVM fast-math flags that derivative arithmetic carries while
+[`fast_math!`](@ref) is off; every flag not passed as `true` is cleared. The dogfood
+compiler's default is `fast_math_flags!(nsz = true, contract = true)`: LLVM may ignore
+the sign of a zero (so an adjoint's `+ 0.0` folds away) and fuse a multiply and an
+add into one rounding, but it never regroups an expression and assumes nothing about
+NaN or infinity. `fast_math_flags!()` makes derivative arithmetic fully strict.
+`reassoc` can underflow a representable derivative (the Reverse derivative of
+`exp(log(t * 1e-190))` becomes `0.0`), and `arcp` loses digits where a division
+cancels. Only arithmetic libEnzyme emits for derivatives is affected, not the primal
+code it differentiates. Set this before compiling a derivative; changing it does not
+invalidate already compiled derivatives. Needs the dogfood libEnzyme build.
+"""
+function fast_math_flags!(; reassoc::Bool = false, nnan::Bool = false, ninf::Bool = false,
+                          nsz::Bool = false, arcp::Bool = false, contract::Bool = false,
+                          afn::Bool = false)
+    mask = Int64(reassoc) | Int64(nnan) << 1 | Int64(ninf) << 2 | Int64(nsz) << 3 |
+        Int64(arcp) << 4 | Int64(contract) << 5 | Int64(afn) << 6
+    ptr = cglobal((:EnzymeFastMathFlags, libEnzyme))
+    ccall((:EnzymeSetCLInteger, libEnzyme), Cvoid, (Ptr{Cvoid}, Int64), ptr, mask)
+    return nothing
 end
 
 """
