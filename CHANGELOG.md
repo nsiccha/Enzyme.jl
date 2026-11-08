@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Make Reverse of an inner loop inlined into an outer loop cost what the same
+  loop costs in a function Julia does not inline (dogfood libEnzyme build
+  `576e674a`). An outer loop over paths gathers each path's slice, runs a
+  recurrence over it into a fresh vector and reads that vector back, as
+  ReactiveKernels lowers a scan inside a plate cell. Inlined, its gradient took
+  up to twice as long on Julia 1.10, with one more trajectory-sized allocation
+  per path. Three repairs remove the difference:
+  - A later call that writes only memory it creates, such as the next path's
+    gather, no longer makes an earlier load uncacheable, so the gathered
+    elements and constant weights are reloaded rather than taped at every step.
+  - Numbers read back from a fresh array no longer make it look exposed to a
+    call, so storing into the output does not make the gather tape its indices.
+  - On Julia 1.10, a load of the length of a vector made by
+    `jl_alloc_array_1d(atype, n)` that nothing can resize reads `n`. The reverse
+    pass then needs neither the vector nor a rebuilt copy of it (replaying the
+    whole recurrence) to bound the loop that reads it.
 - Give a guarded division its derivative where the guard is false, in Reverse
   mode (dogfood libEnzyme build `0a3566d8`). LLVM speculates guarded code into
   a select: `x > t ? 1 / x : 0.0` becomes `select(x > t, 1 / x, 0.0)`, with the
