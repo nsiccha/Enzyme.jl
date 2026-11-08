@@ -1,0 +1,2 @@
+summary = "Reverse replays a while loop over inactive data once instead of taping its exit test per iteration, inside calls differentiated with a tape"
+libenzyme_build = "330c9fdc82e554f8fbdd38832a6a51c359bd807f"

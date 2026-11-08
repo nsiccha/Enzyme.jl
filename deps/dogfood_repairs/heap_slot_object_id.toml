@@ -1,0 +1,3 @@
+summary = "Julia 1.10: a stack slot moved to the heap keeps its call argument typed, so view of a SubArray held on the stack passes LLVM's verifier"
+libenzyme_build = "979b679afd12d0f7d829f3925ba2d3c453b9d385"
+tests = ["test/heap_slot_object_id.jl"]

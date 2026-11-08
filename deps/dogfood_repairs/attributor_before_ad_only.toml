@@ -1,0 +1,2 @@
+summary = "Julia 1.10: LLVM's Attributor no longer runs on differentiated code, so wide batched derivatives compile in time linear in the width"
+tests = ["test/attributor_stages.jl"]

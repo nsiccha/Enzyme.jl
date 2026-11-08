@@ -1,0 +1,2 @@
+summary = "Combined and forward derivatives compile at their first call instead of inside the caller's inference, so other threads do not wait on the codegen lock"
+tests = ["test/lazy_thunk.jl"]

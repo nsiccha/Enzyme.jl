@@ -1,0 +1,3 @@
+summary = "Julia 1.10: a value that does not change in a loop is cached once per loop entry, not once per iteration"
+libenzyme_build = "f392eba587eb8cab3acf895071d9d14f529f462b"
+tests = ["test/loop_invariant_cache.jl"]

@@ -1,0 +1,2 @@
+summary = "Julia 1.10: type analysis no longer traps on an integer division whose known values include a zero divisor (DivideError while compiling)"
+libenzyme_build = "2063db124abf50c83d2ecae92c7411d65f3fc1dc"

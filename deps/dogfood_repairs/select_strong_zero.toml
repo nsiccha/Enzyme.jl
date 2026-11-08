@@ -1,0 +1,3 @@
+summary = "Reverse gives a guarded division a zero derivative where the guard is false, instead of NaN from a speculated select"
+libenzyme_build = "0a3566d873e9f4054e5dfc4e47fd48c22391a65d"
+tests = ["test/select_strong_zero.jl"]

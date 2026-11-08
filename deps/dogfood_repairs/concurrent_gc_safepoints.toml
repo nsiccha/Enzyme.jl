@@ -1,0 +1,2 @@
+summary = "Reverse gradients stay memory-safe while other threads allocate: functions that reach a GC safepoint keep its memory effects before GC lowering"
+tests = ["test/gc_safepoints.jl"]

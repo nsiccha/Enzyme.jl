@@ -1,0 +1,2 @@
+summary = "First calls of derivatives on several threads at once no longer deadlock between Enzyme's compile lock and Julia's codegen or inference lock"
+tests = ["test/concurrent_compile.jl"]

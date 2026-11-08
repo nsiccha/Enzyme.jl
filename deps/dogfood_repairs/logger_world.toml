@@ -1,0 +1,2 @@
+summary = "A logger defined after Enzyme no longer breaks derivatives compiled in generated functions"
+tests = ["test/logger_world.jl"]

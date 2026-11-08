@@ -1,0 +1,3 @@
+summary = "Enzyme.WithGradient supplies a function's gradient, and opaque native calls keep their activity and report a missing derivative"
+libenzyme_build = "7f957e67cc6c7876e64367be0efcbf7adaa82731"
+tests = ["test/foreign_call.jl", "test/rules/provided_gradient.jl"]

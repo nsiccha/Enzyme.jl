@@ -1,0 +1,2 @@
+summary = "A type whose parameters do not apply, formed on a path that never runs, no longer raises its error while compiling the derivative"
+tests = ["test/absint.jl"]

@@ -1,0 +1,2 @@
+summary = "Static Reverse of a read that picks active data or data the function made no longer raises EnzymeRuntimeActivityError"
+tests = ["test/fresh_data_merge.jl"]

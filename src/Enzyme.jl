@@ -247,6 +247,7 @@ include("internal_rules/bigfloat.jl")
 include("internal_rules/rand.jl")
 include("internal_rules/math.jl")
 include("rules/provided_gradient.jl")
+include("dogfood_repairs.jl")
 
 import .Compiler: CompilationException
 

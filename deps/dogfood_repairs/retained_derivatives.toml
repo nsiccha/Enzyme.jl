@@ -1,0 +1,2 @@
+summary = "A package image keeps the derivatives its precompile workload computes, so a later session links them instead of compiling (x86-64 Linux)"
+tests = ["test/precompile.jl"]

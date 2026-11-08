@@ -1,0 +1,3 @@
+summary = "The fresh-buffer saving holds across a whole kernel: stack-slot stores, allocating callees, BLAS products and write barriers are bounded"
+libenzyme_build = "bb79f6361a86c021c23aa66199cfb7f76919a87b"
+tests = ["test/fresh_buffer_cache.jl"]

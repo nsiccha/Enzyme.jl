@@ -1,0 +1,2 @@
+summary = "Julia 1.11+: the readonly proof accepts float stores into a fresh array inside a loop that reads a captured array"
+tests = ["test/readonly_argument.jl"]

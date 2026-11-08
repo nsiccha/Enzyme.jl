@@ -1,0 +1,2 @@
+summary = "Julia 1.10: stack slots that hold only one float type are typed as floats, so a runtime-indexed tuple merged with its reload has a type"
+tests = ["test/float_stack_slot.jl"]

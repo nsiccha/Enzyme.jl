@@ -1,0 +1,1 @@
+summary = "Julia 1.11+: the reverse rules of sort! and partialsort! survive a later in-place resize of the same vector"

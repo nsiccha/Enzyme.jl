@@ -1,0 +1,2 @@
+summary = "Loading StaticArrays no longer makes the first derivative of a session compile Enzyme's compiler again"
+tests = ["test/precompile.jl"]

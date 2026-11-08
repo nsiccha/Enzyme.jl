@@ -1,0 +1,2 @@
+summary = "Julia 1.10: the constant-field proof keeps a slot that one method receives at two places"
+tests = ["test/const_element_store.jl"]

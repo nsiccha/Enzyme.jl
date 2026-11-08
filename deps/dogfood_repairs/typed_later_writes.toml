@@ -1,0 +1,3 @@
+summary = "A later store of a pointer, such as a Ref store-back after a BLAS product, no longer makes the call copy the numbers it read"
+libenzyme_build = "ece5ac541d09f3402d903423388789d8d54779f2"
+tests = ["test/typed_later_writes.jl"]

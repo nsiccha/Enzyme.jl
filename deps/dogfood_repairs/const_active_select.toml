@@ -1,0 +1,1 @@
+summary = "Static Reverse of a read that picks Const or active data: loads through a merged pointer are split, and constant struct fields read through need no copy"

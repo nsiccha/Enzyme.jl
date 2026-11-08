@@ -1,0 +1,3 @@
+summary = "Julia 1.10: Reverse of an unused array's stores no longer fails with Illegal replace ficticious phi"
+libenzyme_build = "0dd21172873364a892c385312c8c41584be1c562"
+tests = ["test/rematerialized_store.jl"]

@@ -1,0 +1,2 @@
+summary = "Julia 1.10: Illegal cached pointer from a loop that reads Const data around a call that may throw: redundant nodecayed phis are folded"
+tests = ["test/data_pointer_phi.jl"]

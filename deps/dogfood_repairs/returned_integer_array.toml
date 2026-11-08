@@ -1,0 +1,1 @@
+summary = "An integer array a non-inlined call returns, stored beside active data, is its own shadow instead of raising EnzymeRuntimeActivityError"
