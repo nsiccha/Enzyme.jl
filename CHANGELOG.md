@@ -4,9 +4,11 @@
 
 - Make Reverse of a loop whose carried value is read from an array on every edge
   into the loop, such as a loop with its first step peeled
-  (`yp = y[first]; for t in first+1:last; …; yp = y[t]; end`), cost what the same
-  loop costs without the peel on Julia 1.10. LLVM folds such a carry into a load
-  through a phi of element addresses. `nodecayed_phis!` rewrote that phi into a
+  (`yp = y[first]; for t in first+1:last; …; yp = y[t]; end`), cost close to what
+  the same loop costs without the peel on Julia 1.10: inlined into an outer loop,
+  1.02 to 1.05 times it instead of 1.05 to 1.10, and in a function Julia does not
+  inline, under strict derivative arithmetic, 1.04 instead of 1.13 to 1.16. LLVM
+  folds such a carry into a load through a phi of element addresses. `nodecayed_phis!` rewrote that phi into a
   phi of array objects and offsets, so the reverse pass reloaded the array and its
   data pointer on every iteration. `unfold_field_phi_loads!` now loads in the
   predecessors instead, which leaves a phi of the values.
