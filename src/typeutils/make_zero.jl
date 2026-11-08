@@ -29,6 +29,110 @@ else
     end
 end
 
+# `make_zero(x)` and `make_zero!(x)` without a `seen` table, for a tuple or named
+# tuple (nested to any depth) of floating-point numbers, integers, and Arrays and
+# `Ref`s of floating-point numbers, or for such a `Ref` itself: the active point a
+# gradient of several arguments takes. Only Base types qualify, so no package can
+# give a part of such a value a `make_zero` method of its own.
+#
+# The table costs more than such a shadow: `IdDict()` is two allocations and 336
+# bytes, and each lookup and insertion is a hash-table call. A copy needs it here
+# only to give two references to one Array or `Ref` one shadow, so
+# `make_zero_aliased` checks that instead. An in-place zeroing never needs it:
+# zeroing one array twice is harmless, and nothing in such a value can reach
+# itself. Any other value keeps the general path below.
+const MakeZeroFloat = Union{Base.IEEEFloat, Complex{Float16}, Complex{Float32}, Complex{Float64}}
+const MakeZeroInactive = Union{Base.BitInteger, Bool, Nothing}
+
+# The most Arrays and `Ref`s a copy compares pairwise instead of using a table
+# (at 32 `Ref`s of one type the 496 comparisons cost less than half of what the
+# table does), and the most fields of one tuple the fast paths take.
+const MAKE_ZERO_FLAT_LEAVES = 32
+const MAKE_ZERO_FLAT_FIELDS = 32
+
+# The number of Arrays and `Ref`s in a value of type `T` built only from the types
+# above, or -1 when `T` is any other type. With `scalars = false` (zeroing in
+# place) a floating-point number is excluded too: no tuple field can be zeroed in
+# place, so the general path raises its error for it.
+Base.@assume_effects :foldable function make_zero_flat_leaves(
+        @nospecialize(T::Type), scalars::Bool,
+    )::Int
+    Base.isconcretetype(T) || return -1
+    if T <: MakeZeroFloat
+        return scalars ? 0 : -1
+    elseif T <: MakeZeroInactive
+        return 0
+    elseif T <: Array || T <: Base.RefValue
+        FT = eltype(T)
+        return Base.isconcretetype(FT) && FT <: MakeZeroFloat ? 1 : -1
+    elseif T <: Tuple || T <: NamedTuple
+        nf = fieldcount(T)
+        nf <= MAKE_ZERO_FLAT_FIELDS || return -1
+        n = 0
+        for i in 1:nf
+            k = make_zero_flat_leaves(fieldtype(T, i), scalars)
+            k < 0 && return -1
+            n += k
+        end
+        return n
+    end
+    return -1
+end
+
+# The shadow of a value `make_zero_flat_leaves` accepts, as the general path makes it.
+@inline make_zero_flat(x::MakeZeroFloat) = zero(x)
+@inline make_zero_flat(x::MakeZeroInactive) = x
+@inline make_zero_flat(x::Array) = Base.zero(x)
+@inline make_zero_flat(::Base.RefValue{T}) where {T} = Base.RefValue{T}(zero(T))
+@inline make_zero_flat(x::Tuple) = ntuple(MakeZeroFlatField(x), Val(length(x)))
+@inline make_zero_flat(x::NamedTuple{A}) where {A} = NamedTuple{A}(make_zero_flat(values(x)))
+
+# Field `i` of such a tuple, zeroed: `ntuple` with a callable unrolls at every
+# length the fast path takes, where Base's `map` stops at 32 fields.
+struct MakeZeroFlatField{P}
+    prev::P
+end
+@inline (f::MakeZeroFlatField)(i::Int) = make_zero_flat(getfield(f.prev, i))
+
+# The Arrays and `Ref`s of such a value, as a tuple.
+@inline make_zero_flat_refs(x::Union{Array, Base.RefValue}) = (x,)
+@inline make_zero_flat_refs(::Union{MakeZeroFloat, MakeZeroInactive}) = ()
+@inline make_zero_flat_refs(x::NamedTuple) = make_zero_flat_refs(values(x))
+@inline make_zero_flat_refs(::Tuple{}) = ()
+@inline function make_zero_flat_refs(x::Tuple)
+    return (make_zero_flat_refs(first(x))..., make_zero_flat_refs(Base.tail(x))...)
+end
+
+# Whether two elements of `x` are one object. `===` of two values of different
+# types folds to `false`, so only elements of one type are compared at run time.
+@inline make_zero_aliased(::Tuple{}) = false
+@inline function make_zero_aliased(x::Tuple)
+    return make_zero_aliases(first(x), Base.tail(x)) || make_zero_aliased(Base.tail(x))
+end
+@inline make_zero_aliases(x, ::Tuple{}) = false
+@inline make_zero_aliases(x, ys::Tuple) = x === first(ys) || make_zero_aliases(x, Base.tail(ys))
+
+@inline function EnzymeCore.make_zero(
+        prev::T, ::Val{false} = Val(false),
+    )::T where {T <: Union{Tuple, NamedTuple, Base.RefValue}}
+    n = make_zero_flat_leaves(T, true)
+    if 0 <= n <= MAKE_ZERO_FLAT_LEAVES && !make_zero_aliased(make_zero_flat_refs(prev))
+        return make_zero_flat(prev)
+    end
+    return EnzymeCore.make_zero(T, IdDict(), prev, Val(false))
+end
+
+# Zero in place a value `make_zero_flat_leaves(T, false)` accepts.
+@inline make_zero_flat!(x::Array{T}) where {T} = (fill!(x, zero(T)); nothing)
+@inline make_zero_flat!(x::Base.RefValue{T}) where {T} = (x[] = zero(T); nothing)
+@inline make_zero_flat!(::MakeZeroInactive) = nothing
+@inline make_zero_flat!(x::NamedTuple) = make_zero_flat!(values(x))
+@inline make_zero_flat!(::Tuple{}) = nothing
+@inline function make_zero_flat!(x::Tuple)
+    make_zero_flat!(first(x))
+    return make_zero_flat!(Base.tail(x))
+end
+
 
 @inline function EnzymeCore.make_zero(
 	::Type{Array{Union{}, N}},
@@ -203,16 +307,45 @@ else
     end
 end
 
+# Field `i` of a tuple of type `RT`, zeroed. A callable struct rather than a closure,
+# so that `fieldtype(RT, i)` folds for each constant `i`, and each field's
+# `make_zero` dispatches statically.
+struct MakeZeroTupleField{RT, copy_if_inactive, S, P}
+    seen::S
+    prev::P
+end
+
+@inline function MakeZeroTupleField{RT, copy_if_inactive}(
+        seen::S, prev::P,
+    ) where {RT, copy_if_inactive, S, P}
+    return MakeZeroTupleField{RT, copy_if_inactive, S, P}(seen, prev)
+end
+
+@inline function (f::MakeZeroTupleField{RT, copy_if_inactive})(
+        i::Int,
+    ) where {RT, copy_if_inactive}
+    return EnzymeCore.make_zero(
+        fieldtype(RT, i), f.seen, getfield(f.prev, i), Val(copy_if_inactive)
+    )
+end
+
 @inline function EnzymeCore.make_zero(
         ::Type{RT},
         seen::IdDict,
         prev::RT,
         ::Val{copy_if_inactive} = Val(false),
     )::RT where {copy_if_inactive, RT <: Tuple}
-    return ntuple(length(prev)) do i
-        Base.@_inline_meta
-        EnzymeCore.make_zero(RT.parameters[i], seen, prev[i], Val(copy_if_inactive))
+    if !Base.isconcretetype(RT)
+        # A tuple type with an abstract or `Vararg` field: zero the tuple as the
+        # concrete type it has.
+        return EnzymeCore.make_zero(Core.Typeof(prev), seen, prev, Val(copy_if_inactive))
     end
+    f = MakeZeroTupleField{RT, copy_if_inactive}(seen, prev)
+    N = fieldcount(RT)
+    # Unrolled up to `MAKE_ZERO_FLAT_FIELDS` fields, as Base's `map` over a tuple is;
+    # a longer tuple loops, and its `make_zero` calls still dispatch statically
+    # when all its fields have one type.
+    return N <= MAKE_ZERO_FLAT_FIELDS ? ntuple(f, Val(N)) : ntuple(f, N)
 end
 
 @inline function EnzymeCore.make_zero(
@@ -683,6 +816,16 @@ macro register_make_zero_inplace(sym)
         end
 
         @inline $sym(prev) = $sym(prev, Base.IdSet())
+
+        # A tuple or named tuple of Arrays and `Ref`s of floating-point numbers
+        # (and integers) needs no `seen` set (`make_zero_flat_leaves`).
+        @inline function $sym(prev::T)::Nothing where {T <: Union{Tuple, NamedTuple}}
+            if make_zero_flat_leaves(T, false) >= 0
+                return make_zero_flat!(prev)
+            end
+            $sym(prev, Base.IdSet())
+            return nothing
+        end
     end
 end
 
