@@ -8,9 +8,9 @@
   the same loop costs without the peel on Julia 1.10: inlined into an outer loop,
   1.02 to 1.05 times it instead of 1.05 to 1.10, and in a function Julia does not
   inline, under strict derivative arithmetic, 1.04 instead of 1.13 to 1.16. LLVM
-  folds such a carry into a load through a phi of element addresses. `nodecayed_phis!` rewrote that phi into a
-  phi of array objects and offsets, so the reverse pass reloaded the array and its
-  data pointer on every iteration. `unfold_field_phi_loads!` now loads in the
+  folds such a carry into a load through a phi of element addresses.
+  `nodecayed_phis!` rewrote that phi into a phi of array objects and offsets, so
+  the reverse pass reloaded the array and its data pointer on every iteration. `unfold_field_phi_loads!` now loads in the
   predecessors instead, which leaves a phi of the values.
   `Enzyme.Compiler.UnfoldDataPhiLoads[] = false` restores the old rewrite.
   `Enzyme.has_dogfood_repair(:data_phi_loads)` reports it.
