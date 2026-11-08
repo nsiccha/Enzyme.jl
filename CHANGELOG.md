@@ -11,6 +11,7 @@
   its arms and the conditions between them can be read there. An arm may read
   the result of a call that carries derivatives from its cache.
   `-enzyme-reverse-loop-entry-merges=0` restores the old placement.
+  `Enzyme.has_dogfood_repair(:reverse_loop_entry_merges)` reports it.
 - Let a package check, before it compiles a derivative, that this dogfood
   commit carries the repairs it needs. Every dogfood commit reports the same
   version number as a registered release, so a `[compat]` entry cannot tell
