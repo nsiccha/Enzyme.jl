@@ -2310,8 +2310,8 @@ the predecessors leaves a phi of the values, as in the loop that is not peeled.
 `nodecayed_phis!`.
 
 Only rewrite what is certainly equivalent: a phi in address space 11 whose incoming
-values are not all at the same constant offset from their base, or a phi in address
-space 13, whose users are all non-volatile loads from it in its own block that no
+values are not all at the same constant offset from their base, or on Julia 1.10 a phi
+in address space 13, whose users are all non-volatile loads from it in its own block that no
 memory write precedes (in address space 13 also non-atomic or unordered). Each load is
 re-created before the terminator of every predecessor. An edge whose predecessor also
 branches elsewhere is split first, so no load becomes speculative.
@@ -2365,7 +2365,9 @@ const UnfoldDataPhiLoads = Ref(true)
 function field_phi_loads(phi::LLVM.PHIInst)::Union{Nothing, Vector{LLVM.LoadInst}}
     ty = value_type(phi)
     isa(ty, LLVM.PointerType) || return nothing
-    data = addrspace(ty) == 13
+    # Later versions read the data pointer through `julia.gc_loaded`, and their phis of
+    # data addresses are left to `nodecayed_phis!` as before.
+    data = VERSION < v"1.11-" && addrspace(ty) == 13
     if data
         UnfoldDataPhiLoads[] || return nothing
     elseif addrspace(ty) != Derived

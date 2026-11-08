@@ -198,7 +198,8 @@ function data_phi_fixture(; write_first = false, other_use = false, atomic = fal
     )
 end
 
-@testset "Data address phis are unfolded into phis of loads" begin
+# Julia 1.10 only: later versions leave phis of data addresses to `nodecayed_phis!`.
+VERSION < v"1.11-" && @testset "Data address phis are unfolded into phis of loads" begin
     LLVM.Context() do ctx
         mod = data_phi_fixture()
         fn = LLVM.functions(mod)["test"]
