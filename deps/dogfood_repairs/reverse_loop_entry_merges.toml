@@ -1,0 +1,3 @@
+summary = "A value of the outer iteration computed through a branch and read in an inner loop is rebuilt once per entry of the inner loop's reverse"
+libenzyme_build = "10018598600593e88b99090bb231755ad3ce5d53"
+tests = ["test/reverse_loop_entry.jl"]
