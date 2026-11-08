@@ -211,6 +211,61 @@ function prepare!(mod)
     end
 end
 
+"""
+    exported_linkage(linkage)
+
+Whether a definition with `linkage` becomes a global symbol of the object file it is emitted
+into. `available_externally` emits no code, and `appending` belongs to the `llvm.*` globals.
+"""
+exported_linkage(linkage::LLVM.API.LLVMLinkage) = linkage in (
+    LLVM.API.LLVMExternalLinkage,
+    LLVM.API.LLVMLinkOnceAnyLinkage,
+    LLVM.API.LLVMLinkOnceODRLinkage,
+    LLVM.API.LLVMWeakAnyLinkage,
+    LLVM.API.LLVMWeakODRLinkage,
+    LLVM.API.LLVMCommonLinkage,
+    LLVM.API.LLVMDLLExportLinkage,
+)
+
+"""
+    export_only!(mod, name)
+
+Give every definition in `mod` other than the function `name` internal linkage, so that the
+object emitted from `mod` defines no global symbol but `name`.
+
+A trampoline's materializer emits its module through `IRCompileLayer` against a
+materialization responsibility that covers `name` alone. Julia's object layer does not claim
+the other global symbols an object defines (`AutoClaimObjectSymbols` is off), yet it resolves
+every one of them through that responsibility, and a release build of LLVM looks the
+unclaimed ones up in the dylib's symbol table without checking that they are there: it reads
+and writes past the end of the table. A derivative module carries such definitions, for
+example the `libname_<function>_<n>` global Julia 1.10 and 1.12 keep for each `ccall` whose
+library is a run-time value (SpecialFunctions' `erfcx` reaches one), and they are only ever
+used inside the module.
+"""
+function export_only!(mod::LLVM.Module, name::String)
+    for gv in LLVM.globals(mod)
+        LLVM.isdeclaration(gv) && continue
+        startswith(LLVM.name(gv), "llvm.") && continue
+        exported_linkage(LLVM.linkage(gv)) || continue
+        LLVM.linkage!(gv, LLVM.API.LLVMInternalLinkage)
+    end
+    for fn in LLVM.functions(mod)
+        LLVM.isdeclaration(fn) && continue
+        LLVM.name(fn) == name && continue
+        exported_linkage(LLVM.linkage(fn)) || continue
+        LLVM.linkage!(fn, LLVM.API.LLVMInternalLinkage)
+    end
+    alias = LLVM.API.LLVMGetFirstGlobalAlias(mod)
+    while alias != C_NULL
+        if exported_linkage(LLVM.API.LLVMGetLinkage(alias))
+            LLVM.API.LLVMSetLinkage(alias, LLVM.API.LLVMInternalLinkage)
+        end
+        alias = LLVM.API.LLVMGetNextGlobalAlias(alias)
+    end
+    return nothing
+end
+
 function get_trampoline(job)
     compiler = jit[]
     lljit = compiler.jit
@@ -254,8 +309,10 @@ function get_trampoline(job)
                 other_func = functions(mod)[other_name]
                 Compiler.eraseInst(mod, other_func)
             end
+            # The materialization responsibility covers `sym` alone.
+            export_only!(mod, sym)
 
-	    prepare!(mod)
+            prepare!(mod)
             tsm = move_to_threadsafe(mod)
 
             il = LLVM.IRCompileLayer(lljit)

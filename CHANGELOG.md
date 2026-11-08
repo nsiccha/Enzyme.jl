@@ -13,6 +13,18 @@
   `tape_type` on Julia 1.11+ now matches Julia 1.10. On Julia 1.12, Forward
   over Reverse of such a `sum` over 1,025 or more elements no longer raises
   `EnzymeNoDerivativeError`.
+- Stop corrupting the JIT's symbol table, on Julia 1.10 and 1.12, when
+  `autodiff_deferred` is called outside of a differentiated function. That call
+  jumps through a lazy trampoline whose module was emitted against a
+  materialization responsibility for the trampoline's target alone, while the
+  module also defined other global symbols, such as the `libname_<function>_<n>`
+  cache Julia 1.10 and 1.12 keep for a `ccall` whose library is a run-time value
+  (SpecialFunctions' `erfcx` has one). Julia's object layer resolves such symbols without claiming
+  them, and LLVM then read and wrote past the end of the dylib's symbol table:
+  the first call segfaulted ("JIT session error: Failed to materialize
+  symbols", then `unknown function (ip: (nil))`), or the process aborted later
+  with "double free or corruption". The trampoline's module now exports its
+  target only.
 - Return the primal value from `ReverseWithPrimal` on every path (dogfood
   libEnzyme build `42a2ee9a`). Combined Reverse may run a call's forward pass
   inside its reverse pass, and it then moved the store of the return value
