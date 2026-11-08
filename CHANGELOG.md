@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Give a guarded division its derivative where the guard is false, in Reverse
+  mode (dogfood libEnzyme build `0a3566d8`). LLVM speculates guarded code into
+  a select: `x > t ? 1 / x : 0.0` becomes `select(x > t, 1 / x, 0.0)`, with the
+  division running on every path, and a repeated guard
+  (`x > t ? 1 / (x > t ? x : 1.0) : 0.0`) or a guarded operand
+  (`1 / (x > t ? x : Inf)`) compiles to the same select. Where the guard is
+  false the reverse pass gives the division a zero adjoint, and its rule then
+  computed `0 / 0` and `0 * Inf` at `x = 0`: the Reverse derivative was NaN.
+  An unused output of the same function made the whole gradient NaN, as the
+  posterior moments do that a Kalman update returns beside its log predictive
+  density when its pseudo-inverse guards a zero eigenvalue. The reverse rules of
+  a value that reaches the result only through select arms, and is a division,
+  a remainder or a call or is computed from one, now treat a zero adjoint as
+  exactly zero, as `set_strong_zero` does everywhere. Other rules are
+  unchanged; libEnzyme's `-enzyme-select-strong-zero=0` restores the previous
+  ones.
 - Keep the elements of a fresh array that a function Julia does not inline
   fills, on Julia 1.10 (dogfood libEnzyme build `48fe7ef5`). Such a function
   receives the array's header, which it only reads: it loads the data pointer
