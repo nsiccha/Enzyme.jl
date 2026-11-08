@@ -27,7 +27,7 @@ struct DogfoodRepairMissing <: Exception
 end
 
 function Base.showerror(io::IO, err::DogfoodRepairMissing)
-    print(io, "DogfoodRepairMissing: this process lacks Enzyme dogfood repairs that ", err.requester, " requires:")
+    print(io, "DogfoodRepairMissing: this process lacks Enzyme dogfood repairs required by ", err.requester, ":")
     outdated = false
     library = false
     for (name, reason) in err.absent

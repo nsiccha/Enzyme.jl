@@ -103,7 +103,7 @@ end
             [(:no_such_repair, :not_in_tree), (:heap_slot_object_id, :library)]
     )
     message = sprint(showerror, err)
-    @test startswith(message, "DogfoodRepairMissing: this process lacks Enzyme dogfood repairs that a test requires:")
+    @test startswith(message, "DogfoodRepairMissing: this process lacks Enzyme dogfood repairs required by a test:")
     @test occursin("no_such_repair: this Enzyme.jl source does not carry it", message)
     @test occursin("loaded " * lib.loaded, message)
     @test occursin(ROOT, message)
