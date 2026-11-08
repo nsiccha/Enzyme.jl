@@ -87,6 +87,60 @@ function owned_dirty_allocator(n)
     return nothing
 end
 
+# The smallest shape: one vector, filled and summed by functions Julia does not
+# inline, beside a loop that allocates and fills one per iteration.
+@noinline function owned_fill_scaled!(z::Vector{Float64}, x::Vector{Float64}, k::Int)
+    @inbounds for i in eachindex(z, x)
+        z[i] = x[i] * k
+    end
+    return z
+end
+
+@noinline function owned_vector_sum_squares(z::Vector{Float64})
+    s = 0.0
+    @inbounds for i in eachindex(z)
+        s += z[i] * z[i]
+    end
+    return s
+end
+
+@noinline owned_filled_vector(x::Vector{Float64}) =
+    owned_vector_sum_squares(owned_fill_scaled!(Vector{Float64}(undef, length(x)), x, 3))
+
+owned_vector_through_call(x::Vector{Float64}) =
+    owned_scale(owned_filled_vector(x), x)
+
+function owned_vector_loop(x::Vector{Float64}, n::Int)
+    t = 0.0
+    for k in 1:n
+        z = Vector{Float64}(undef, length(x))
+        owned_fill_scaled!(z, x, k)
+        t += owned_vector_sum_squares(z)
+    end
+    return t
+end
+
+@testset "Readonly operands that write a fresh vector's storage" begin
+    for m in (1, 4, 16)
+        x = [0.1 * i + 0.05 for i in 1:m]
+        value = 9 * sum(abs2, x)
+        expected = 18 .* x .* x[end]
+        expected[end] += value
+        for _ in 1:3
+            owned_dirty_allocator(m)
+            dx = zero(x)
+            autodiff(Reverse, owned_vector_through_call, Active, Duplicated(copy(x), dx))
+            @test dx ≈ expected rtol = 1.0e-12
+        end
+        for n in (1, 3)
+            owned_dirty_allocator(m)
+            dx = zero(x)
+            autodiff(Reverse, owned_vector_loop, Active, Duplicated(copy(x), dx), Const(n))
+            @test dx ≈ 2 * sum(k^2 for k in 1:n) .* x rtol = 1.0e-12
+        end
+    end
+end
+
 @testset "Readonly operands that write a fresh array's storage" begin
     F = [1.0 0.0; 0.5 sqrt(1.75)]
     for n in (1, 2, 5), f in (owned_through_call, owned_through_branch)
