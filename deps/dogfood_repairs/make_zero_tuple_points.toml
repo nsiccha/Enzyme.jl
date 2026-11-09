@@ -1,0 +1,2 @@
+summary = "make_zero and make_zero! of a tuple, named tuple or Ref of floating-point numbers, integers, and arrays or Refs of floating-point numbers make no seen table, and the Tuple method dispatches each of up to 32 fields statically"
+tests = ["test/make_zero.jl"]

@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Make `Enzyme.make_zero(x)` and `Enzyme.make_zero!(x)` of a point that is a
+  tuple, named tuple or `Ref` of floating-point numbers, integers, and arrays or
+  `Ref`s of floating-point numbers cost what building its shadow by hand costs.
+  `Enzyme.gradient` calls `make_zero` on each such argument at every call. On
+  Julia 1.10.12, `make_zero` of `([0.1, 0.2, 0.3], Ref(0.5), Ref(0.7))` took 66
+  to 68 ns and 448 bytes, against 15 to 17 ns and 112 bytes by hand; it now takes
+  15 to 16 ns and 112 bytes, and its `make_zero!` 2.2 ns instead of 83 to 86 ns
+  and 400 bytes. With a vector and 11 `Ref`s, `make_zero` took 1.25 to 1.32 µs
+  and now takes 34 to 36 ns. Two causes:
+  - `make_zero` built an `IdDict` at every call, and `make_zero!` an `IdSet`, so
+    that two references to one array get one shadow. Such a value holds no
+    references among its parts, so a copy now compares its arrays and `Ref`s with
+    `===` instead (up to 32 of them; `===` of values of two different types
+    folds away), and zeroing it in place needs no set at all. Any other value
+    keeps the table.
+  - The `Tuple` method of `make_zero` read each field's type as
+    `RT.parameters[i]`, which does not infer when Julia loops over a tuple of
+    more than 10 fields, so each field dispatched dynamically. It now unrolls up
+    to 32 fields with `fieldtype`. A tuple type with an abstract field, passed to
+    the four-argument `make_zero`, now zeroes the tuple as its concrete type
+    instead of raising an `AssertionError`.
+
+  `Enzyme.has_dogfood_repair(:make_zero_tuple_points)` reports it.
 - Make Reverse of a loop whose carried value is read from an array on every edge
   into the loop, such as a loop with its first step peeled (`yp = y[first]; for
   t in first+1:last; …; yp = y[t]; end`), cost close to what the same loop costs

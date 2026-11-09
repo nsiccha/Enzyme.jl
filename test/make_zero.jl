@@ -879,6 +879,128 @@ end
 @testset "make_zero!" test_make_zero!()
 @testset "remake_zero!" test_remake_zero!()
 
+# `make_zero(x)` of a tuple, named tuple or `Ref` of floating-point numbers,
+# integers, and arrays and `Ref`s of floating-point numbers makes no `seen`
+# table; `make_zero!(x)` and `remake_zero!(x)` of one make no `seen` set.
+general_make_zero(x) = Enzyme.EnzymeCore.make_zero(Core.Typeof(x), IdDict(), x, Val(false))
+
+# Equal values of equal types, compared field by field (a `RefValue` has no `==`).
+function same_structure(a, b)
+    typeof(a) === typeof(b) || return false
+    a isa Array && return size(a) == size(b) && all(i -> same_structure(a[i], b[i]), eachindex(a))
+    a isa Base.RefValue && return same_structure(a[], b[])
+    (a isa Number || a isa Nothing || a isa Symbol || a isa String) && return isequal(a, b)
+    return all(i -> same_structure(getfield(a, i), getfield(b, i)), 1:nfields(a))
+end
+
+# The Arrays and `Ref`s a value holds, at any depth of tuples and named tuples,
+# except arrays of integers, which a shadow shares with the primal.
+leaves(x::Union{Tuple, NamedTuple}) = mapreduce(leaves, vcat, values(x); init = Any[])
+leaves(x::Union{Array, Base.RefValue}) = Any[x]
+leaves(::Array{<:Integer}) = Any[]
+leaves(x) = Any[]
+
+hand_shadow(p) = (zero(p[1]), Ref(zero(p[2][])), Ref(zero(p[3][])))
+allocated_make_zero(x) = @allocated make_zero(x)
+allocated_make_zero!(x) = @allocated Enzyme.make_zero!(x)
+allocated_remake_zero!(x) = @allocated Enzyme.remake_zero!(x)
+allocated_hand_shadow(x) = @allocated hand_shadow(x)
+allocated_general_make_zero(x) = @allocated general_make_zero(x)
+point_loss(p) = sum(p[1]) * p[2][] + p[3][]
+
+struct VectorAndScalar
+    v::Vector{Float64}
+    s::Float64
+end
+
+@testset "make_zero of a small point skips the seen table" begin
+    v = [1.0, 2.0, 3.0]
+    w = [4.0f0]
+    r = Ref(0.5)
+    c = Ref(1.0 + 2.0im)
+    point = (v, Ref(0.5), Ref(0.7))
+    flat = [
+        point, r, c, (), (1.0,), (v,), (v, w), (v, 2, true, nothing),
+        (a = v, b = r, n = 3), ((v, 1.0f0), (x = Ref(2.0f0), y = (c,))),
+        (Float16(1), ComplexF32(1, 2), [ComplexF64(1, 2)], zeros(2, 3)),
+        ntuple(i -> Ref(Float64(i)), 32),
+    ]
+    aliased = [(v, v), (r, r), (a = r, b = (r,)), (v, r, w, r, v)]
+    general = [
+        ([1.0], [[1.0, 2.0]]), ([1.0], VectorAndScalar([2.0], 3.0)),
+        ([1.0], [1, 2]), ([1.0], "a"), (Ref{Any}(1.0),), Ref([1.0]),
+        ntuple(i -> Ref(Float64(i)), 33), ntuple(Float64, 40),
+    ]
+    @testset "the same shadow as with a table: $(typeof(x))" for x in vcat(flat, aliased, general)
+        z = make_zero(x)
+        @test same_structure(z, general_make_zero(x))
+        @test all(iszero, Iterators.flatten(l isa Base.RefValue ? (l[],) : l for l in leaves(z)))
+        # every array or Ref that can hold derivatives is new
+        @test all(l -> all(m -> m !== l, leaves(z)), leaves(x))
+    end
+    @testset "one object, one shadow" begin
+        z = make_zero((v, v))
+        @test z[1] === z[2] && z[1] !== v
+        z = make_zero((a = r, b = (r,)))
+        @test z.a === z.b[1] && z.a !== r
+        z = make_zero((v, r, w, r, v))
+        @test z[1] === z[5] && z[2] === z[4] && z[1] !== z[3]
+        z = make_zero(point)
+        @test z[2] !== z[3]
+        for k in (32, 33)  # the most the pairwise check takes, and one more (the table)
+            z = make_zero(ntuple(Returns(r), k))
+            @test all(s -> s === z[1], z) && z[1] !== r
+        end
+    end
+    @testset "inferred" begin
+        @test @inferred(make_zero(point)) isa typeof(point)
+        @test @inferred(make_zero(r)) isa typeof(r)
+        @test @inferred(make_zero((a = v, b = r))) isa NamedTuple{(:a, :b), Tuple{typeof(v), typeof(r)}}
+        for x in (point, ([1.0], [[1.0, 2.0]]), (1.0, [1.0], Ref(2.0f0)))
+            @test @inferred(Enzyme.EnzymeCore.make_zero(typeof(x), IdDict(), x, Val(false))) isa typeof(x)
+        end
+        # Each field of a tuple of up to 32 dispatches statically, so a number in a
+        # long tuple costs no allocation (a dynamic call returned it boxed).
+        long = (ntuple(Float64, 15)..., [[1.0]])
+        short = (1.0, [[1.0]])
+        allocated_general_make_zero(long); allocated_general_make_zero(short)
+        @test allocated_general_make_zero(long) == allocated_general_make_zero(short)
+    end
+    @testset "a tuple type with an abstract field" begin
+        z = Enzyme.EnzymeCore.make_zero(Tuple{Real, Vector{Float64}}, IdDict(), (1.0, [2.0]), Val(false))
+        @test z isa Tuple{Float64, Vector{Float64}} && z[1] == 0.0 && z[2] == [0.0]
+    end
+    @testset "allocations" begin
+        allocated_make_zero(point); allocated_hand_shadow(point)
+        @test allocated_make_zero(point) == allocated_hand_shadow(point)
+        g = hand_shadow(point)
+        allocated_make_zero!(g); allocated_remake_zero!(g)
+        for zero! in (Enzyme.make_zero!, Enzyme.remake_zero!)
+            g[1] .= 1.0; g[2][] = 2.0; g[3][] = 3.0
+            zero!(g)
+            @test all(iszero, g[1]) && iszero(g[2][]) && iszero(g[3][])
+        end
+        @test allocated_make_zero!(g) == 0
+        @test allocated_remake_zero!(g) == 0
+    end
+    @testset "in place" begin
+        x = (a = [1.0, 2.0], b = (Ref(3.0f0), 4, [ComplexF64(5, 6)]))
+        Enzyme.make_zero!(x)
+        @test x.a == [0.0, 0.0] && x.b[1][] == 0 && x.b[2] == 4 && x.b[3] == [0.0im]
+        # a number in an immutable position cannot be zeroed in place, as before
+        @test_throws ArgumentError Enzyme.make_zero!(([1.0], 1.0))
+        y = ([1.0], 1.0)
+        Enzyme.remake_zero!(y)
+        @test y[1] == [0.0] && y[2] == 1.0
+    end
+    @testset "Enzyme.gradient of a tuple point" begin
+        @test same_structure(
+            Enzyme.gradient(Reverse, point_loss, point),
+            (([0.5, 0.5, 0.5], Ref(6.0), Ref(1.0)),),
+        )
+    end
+end
+
 # Forward-mode differentiability of `jl_field_isdefined_checked`, the bookkeeping
 # builtin make_zero emits for the `isdefined(prev, i)` field walk when recursing
 # through undef-able / abstract fields. It showed up as `EnzymeNoDerivativeError`
