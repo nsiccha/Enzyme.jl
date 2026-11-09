@@ -1,0 +1,2 @@
+summary = "Static Reverse of a lazy broadcast reduction over Const data, or of any struct holding Const data beside active data that a recursive function passes on, gives the Const field no zero-filled copy per call"
+tests = ["test/recursive_constant_fields.jl"]

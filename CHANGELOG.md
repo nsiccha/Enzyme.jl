@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Make static Reverse of `sum` over a lazy broadcast that reads `Const` data
+  beside active data, `sum(Broadcast.instantiate(Broadcast.broadcasted(f, ds,
+  y)))` with `Const(y)`, allocate what runtime activity allocates. On Julia
+  1.10 and 1.13 it made a zero-filled copy of `y` on every call, 8 bytes per
+  element: at 5000 elements 280,544 bytes per gradient against 240,496 with
+  runtime activity (Julia 1.10.12). The `Broadcasted` reaches Base's pairwise
+  `mapreduce_impl`, which calls itself with the same struct, and the
+  constant-field proof gave up any slot a recursive call passes back to its own
+  function. `constant_field_places` now treats a slot passed on at the offset it
+  was received at as adding no place; a cycle that moves the offset still gives
+  the slot up. `Enzyme.has_dogfood_repair(:recursive_constant_fields)` reports
+  it.
 - Make `Enzyme.make_zero(x)` and `Enzyme.make_zero!(x)` of a point that is a
   tuple, named tuple or `Ref` of floating-point numbers, integers, and arrays or
   `Ref`s of floating-point numbers cost what building its shadow by hand costs.
