@@ -59,6 +59,10 @@
 # a parameter reaches every place its call sites pass, so those places are proved
 # constant together, and the struct's other fields keep their own proof.
 #
+# A recursive function passes a slot on to itself, as the pairwise `mapreduce_impl`
+# does with the lazy broadcast that `sum` reduces. Passed on at the offset it was
+# received at, the slot adds no place, so the proof holds through the recursion.
+#
 # A pointer can also be forwarded through several records without ever being
 # observed. Such fields need no shadow regardless of their stored values: prove
 # this by propagating observations backward along the field-copy graph. This
@@ -226,32 +230,55 @@ is_constant_field_base(cf::ConstantFields, @nospecialize(base::LLVM.Value)) =
 
 # The places the memory of `base` can be: `(root, delta)` for every root it can
 # point `delta` bytes into, following the edges of each parameter to the slots its
-# call sites pass. A base that no call passes a slot to is its own root. A recursive
-# call that passes a slot back to the function it is in gives that base up.
-function constant_field_places(cf::ConstantFields, @nospecialize(base::LLVM.Value), active::Set{LLVM.Value} = Set{LLVM.Value}())::Vector{ConstantField}
+# call sites pass. A base that no call passes a slot to is its own root.
+#
+# A recursive call that passes a slot on at the offset it was received at, as the
+# pairwise reduction `mapreduce_impl` does with the broadcast it reduces, passes
+# memory the function already holds: that cycle adds no place. A cycle that moves
+# the offset could reach unboundedly many places, so it gives that base up.
+function constant_field_places(cf::ConstantFields, @nospecialize(base::LLVM.Value))::Vector{ConstantField}
     known = get(cf.places, base, nothing)
     known === nothing || return known
+    out, _ = constant_field_places!(cf, base, 0, Dict{LLVM.Value, Tuple{Int, Int}}())
+    return out
+end
+
+# The places of `base`, which lies `offset` bytes before the base the query started
+# from, with the depth of the shallowest base on the current path that a cycle from
+# here returned to (`typemax(Int)` if none). `active` holds each base on the path
+# with its depth and offset. A result that returned to a base above it lacks that
+# base's other places until it finishes, so it is not cached.
+function constant_field_places!(cf::ConstantFields, @nospecialize(base::LLVM.Value), offset::Int, active::Dict{LLVM.Value, Tuple{Int, Int}})::Tuple{Vector{ConstantField}, Int}
+    known = get(cf.places, base, nothing)
+    known === nothing || return known, typemax(Int)
     edges = get(cf.edges, base, ConstantField[])
     if isempty(edges)
         out = ConstantField[(base, 0)]
         cf.places[base] = out
-        return out
+        return out, typemax(Int)
     end
-    if base in active
+    entry = get(active, base, nothing)
+    if entry !== nothing
+        depth, prev = entry
+        offset == prev && return ConstantField[], depth
         push!(cf.escaped, base)
-        return ConstantField[(base, 0)]
+        return ConstantField[(base, 0)], typemax(Int)
     end
-    push!(active, base)
+    depth = length(active) + 1
+    active[base] = (depth, offset)
     out = ConstantField[]
+    low = typemax(Int)
     for (a, delta) in edges
-        for (root, d) in constant_field_places(cf, a, active)
+        places, l = constant_field_places!(cf, a, offset + delta, active)
+        low = min(low, l)
+        for (root, d) in places
             place = (root, d + delta)
             place in out || push!(out, place)
         end
     end
     delete!(active, base)
-    cf.places[base] = out
-    return out
+    low >= depth && (cf.places[base] = out)
+    return out, low
 end
 
 function constant_field_find(cf::ConstantFields, field::ConstantField)::ConstantField
