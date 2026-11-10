@@ -21,7 +21,9 @@ struct HypotForward{A, H}
     args::A
     h::H
 end
-(f::HypotForward)(i) = sum(_hypotforward.(f.args, f.h, i))
+# Convert to the primal's type, as upstream #3981 does: mixed-precision arguments
+# give a tangent of another type than `hypot`'s result.
+(f::HypotForward)(i) = convert(typeof(f.h), sum(_hypotforward.(f.args, f.h, i)))
 
 function EnzymeRules.forward(
         config::EnzymeRules.FwdConfig,

@@ -14,6 +14,16 @@
   was received at as adding no place; a cycle that moves the offset still gives
   the slot up. `Enzyme.has_dogfood_repair(:recursive_constant_fields)` reports
   it.
+- Merge upstream through `a154f47`, Enzyme 0.13.220: TypeTrees of arrays and
+  memory with element type `Union{}`, Julia runtime singleton and exception
+  globals marked inactive, mode-specific custom-rule attributes stripped from
+  cached bitcode, `jl_ptr_to_array` forward with an active value,
+  `MixedDuplicated` task closures, `hypot` derivatives of mixed-precision
+  arguments in their argument and return types, multi-element type metadata for
+  fixed-size copies, `eps`, `nextfloat` and `prevfloat` read-only through
+  pointers, sparse shadows in `@import_rrule`, and `julia.get_pgcstack_or_new`
+  recomputable. Keep dogfood's Enzyme_jll 0.0.301 pin, its declared compiler
+  build and its in-tree EnzymeCore 0.8.28.
 - Make `Enzyme.make_zero(x)` and `Enzyme.make_zero!(x)` of a point that is a
   tuple, named tuple or `Ref` of floating-point numbers, integers, and arrays or
   `Ref`s of floating-point numbers cost what building its shadow by hand costs.
