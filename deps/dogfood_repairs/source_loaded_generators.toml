@@ -1,0 +1,2 @@
+summary = "With Enzyme loaded from source rather than its package image (Julia 1.12+), the generator of a reverse-mode runtime splat no longer raises UndefVarError for vaEltypes"
+tests = ["test/source_loaded.jl"]

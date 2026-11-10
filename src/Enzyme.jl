@@ -231,6 +231,51 @@ function enzyme_world_if_active()::Union{Nothing, UInt}
     return ENZYME_CONTEXT[].world
 end
 
+# These are defined before the compiler is included because a generator in it calls
+# `vaEltypes` while it generates code (`rev_with_return` in src/rules/jitrules.jl). What a
+# generator calls while it generates must be defined before its generated method.
+# `jl_code_for_staged` runs a generator in the world its method was defined in. When Enzyme
+# is loaded from source rather than from its package image (`--compiled-modules=existing`
+# without a cache, `--compiled-modules=no`, a precompile that failed), a function defined
+# after that method is, in that world, a const binding not defined yet. Julia 1.12 and
+# later do not let a generator read such a binding, so it raised
+# "UndefVarError: `vaEltypes` not defined in `Enzyme`". A package image gives every
+# binding of the module the world it was loaded in, so the order matters only then.
+# test/source_loaded.jl differentiates through the generators with Enzyme loaded from
+# source.
+@inline function vaTypeof(args::Vararg{Any, N}) where {N}
+    return Tuple{
+        (
+            ntuple(Val(N)) do i
+                Base.@_inline_meta
+                Core.Typeof(args[i])
+            end
+        )...
+    }
+end
+
+@inline function vaEltypeof(args::Vararg{Any, N}) where {N}
+    return Tuple{
+        (
+            ntuple(Val(N)) do i
+                Base.@_inline_meta
+                eltype(Core.Typeof(args[i]))
+            end
+        )...
+    }
+end
+
+@inline function vaEltypes(args::Type{Ty}) where {Ty <: Tuple}
+    return Tuple{
+        (
+            ntuple(Val(length(Ty.parameters))) do i
+                Base.@_inline_meta
+                eltype(Ty.parameters[i])
+            end
+        )...
+    }
+end
+
 include("safe_logging.jl")
 include("logic.jl")
 include("analyses/type.jl")
@@ -238,6 +283,16 @@ include("typetree.jl")
 include("gradientutils.jl")
 include("utils.jl")
 include("compiler.jl")
+
+# The generator of `prevmethodinstance` (`methodinstance_generator`, src/utils.jl) looks a
+# method up through `Compiler.primal_interp_world`, so the generated method comes after the
+# compiler, in whose world its generator runs (see the note above `vaTypeof`). It still
+# comes before `onehot_internal` (src/sugar.jl), whose generator calls it.
+@eval function prevmethodinstance(mode, ft, tt)::Core.MethodInstance
+    $(Expr(:meta, :generated_only))
+    $(Expr(:meta, :generated, methodinstance_generator))
+end
+
 include("internal_rules/core.jl")
 include("internal_rules/inactive.jl")
 include("internal_rules/linalg.jl")
@@ -272,33 +327,6 @@ end
             return false
         end
     end)
-end
-
-@inline function vaTypeof(args::Vararg{Any,N}) where {N}
-    return Tuple{(
-        ntuple(Val(N)) do i
-            Base.@_inline_meta
-            Core.Typeof(args[i])
-        end
-    )...}
-end
-
-@inline function vaEltypeof(args::Vararg{Any,N}) where {N}
-    return Tuple{(
-        ntuple(Val(N)) do i
-            Base.@_inline_meta
-            eltype(Core.Typeof(args[i]))
-        end
-    )...}
-end
-
-@inline function vaEltypes(args::Type{Ty}) where {Ty<:Tuple}
-    return Tuple{(
-        ntuple(Val(length(Ty.parameters))) do i
-            Base.@_inline_meta
-            eltype(Ty.parameters[i])
-        end
-    )...}
 end
 
 # The batch width fixed by an argument of type `T` (an annotation, or an annotation type

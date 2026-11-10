@@ -500,10 +500,8 @@ function methodinstance_generator(world::UInt, source, self, @nospecialize(mode:
     return ci
 end
 
-@eval function prevmethodinstance(mode, ft, tt)::Core.MethodInstance
-    $(Expr(:meta, :generated_only))
-    $(Expr(:meta, :generated, methodinstance_generator))
-end
+# The generated method `prevmethodinstance` is defined in src/Enzyme.jl, right after the
+# compiler: its generator calls `Compiler.primal_interp_world`.
 
 # XXX: version of Base.method_instance that uses a function type
 @inline function my_methodinstance(@nospecialize(mode::Union{Nothing, EnzymeCore.ForwardMode, EnzymeCore.ReverseMode}), @nospecialize(ft::Type), @nospecialize(tt::Type))::Core.MethodInstance

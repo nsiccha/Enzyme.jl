@@ -20,7 +20,10 @@
 # earlier `primary_world`, where these methods do not exist yet, and would fail with a
 # "method too new" MethodError whenever Enzyme is loaded without a pkgimage). Calling them
 # from ordinary functions, or from the code a generator *returns*, is fine. `prevmethodinstance`
-# deliberately stays in utils.jl for this reason (`onehot_internal`'s generator uses it).
+# deliberately stays out of this file for this reason (`onehot_internal`'s generator uses it):
+# it is defined in src/Enzyme.jl right after the compiler, whose functions its own generator
+# calls. The converse holds for every generator: what it calls while it generates must be
+# defined before its method, or loading Enzyme from source breaks it (test/source_loaded.jl).
 
 @eval Base.@assume_effects :removable :foldable :nothrow @inline function Compiler.primal_return_type(mode::Mode, ft::Type, tt::Type)
     $(Expr(:meta, :generated_only))
