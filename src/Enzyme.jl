@@ -232,7 +232,8 @@ function enzyme_world_if_active()::Union{Nothing, UInt}
 end
 
 # These are defined before the compiler is included because a generator in it calls
-# `vaEltypes` while it generates code (`rev_with_return` in src/rules/jitrules.jl).
+# `vaEltypes` while it generates code (`rev_with_return` in src/rules/jitrules.jl). What a
+# generator calls while it generates must be defined before its generated method.
 # `jl_code_for_staged` runs a generator in the world its method was defined in. When Enzyme
 # is loaded from source rather than from its package image (`--compiled-modules=existing`
 # without a cache, `--compiled-modules=no`, a precompile that failed), a function defined
@@ -282,6 +283,16 @@ include("typetree.jl")
 include("gradientutils.jl")
 include("utils.jl")
 include("compiler.jl")
+
+# The generator of `prevmethodinstance` (`methodinstance_generator`, src/utils.jl) looks a
+# method up through `Compiler.primal_interp_world`, so the generated method comes after the
+# compiler, in whose world its generator runs (see the note above `vaTypeof`). It still
+# comes before `onehot_internal` (src/sugar.jl), whose generator calls it.
+@eval function prevmethodinstance(mode, ft, tt)::Core.MethodInstance
+    $(Expr(:meta, :generated_only))
+    $(Expr(:meta, :generated, methodinstance_generator))
+end
+
 include("internal_rules/core.jl")
 include("internal_rules/inactive.jl")
 include("internal_rules/linalg.jl")

@@ -4,7 +4,8 @@ using Enzyme, Test, TOML
 # generator in the world its method was defined in, so a generator that reads a function
 # Enzyme defines later sees, in that world, a const binding not defined yet. Julia 1.12 and
 # later refuse a generator that read ("UndefVarError: `vaEltypes` not defined in `Enzyme`",
-# from `rev_with_return` in src/rules/jitrules.jl). A package image gives every binding of
+# from `rev_with_return` in src/rules/jitrules.jl; "`Compiler` not defined in `Enzyme`",
+# from `prevmethodinstance` in src/utils.jl, under `NonGenABI`). A package image gives every binding of
 # the module the world it was loaded in, so the order of definitions matters only when the
 # source is loaded: under `--compiled-modules=existing` for a package with no cache (how a
 # benchmark harness met it), `--compiled-modules=no`, or after a precompile that failed.
@@ -109,6 +110,16 @@ case("broadcast") do
     dx ≈ exp.(x) .* (1 .+ x)
 end
 
+# `NonGenABI` looks up the method instance in a generator (`prevmethodinstance`), through
+# the compiler's interpreter.
+square(v) = v * v
+case("non-generated ABI reverse") do
+    autodiff(Enzyme.set_abi(Reverse, NonGenABI), square, Active, Active(3.0))[1][1] == 6.0
+end
+case("non-generated ABI forward") do
+    autodiff(Enzyme.set_abi(Forward, NonGenABI), square, Duplicated(3.0, 1.0))[1] == 6.0
+end
+
 # Forward over Reverse: the inner derivative is compiled while the outer one is inferred.
 case("forward over reverse") do
     inner(v) = gradient(Reverse, w -> w[1]^2 * w[2], v)[1]
@@ -129,6 +140,8 @@ const SOURCE_LOADED_CASES = [
     "split mode",
     "make_zero",
     "broadcast",
+    "non-generated ABI reverse",
+    "non-generated ABI forward",
     "forward over reverse",
 ]
 
