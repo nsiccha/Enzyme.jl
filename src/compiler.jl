@@ -5612,6 +5612,14 @@ end
 # versa) does not dispatch to a nonexistent rule in the outer mode; the outer
 # compilation's `set_module_types!` re-applies `"enzyme_custom"` if and only if a
 # rule exists for the outer mode.
+#
+# `enzyme_preserve_primal` stays. It is what keeps `removeDeadArgs!` and
+# `propagate_returned!` from removing the function's parameters, and the cached bitcode
+# runs through them before it is stored. Without it a function with a rule reaches the
+# outer compilation with parameters removed, `set_module_types!` gives it
+# `"enzyme_custom"` again, and the rule's call setup refuses it
+# (`length(parmsRemoved) == 0`): nested derivatives through `hypot`, `digamma` or
+# `erfcx` raised that. Keeping the attribute only keeps the primal function as it was.
 function strip_custom_rule_attrs!(fn::LLVM.Function)
     attributes = function_attributes(fn)
     had_custom = false
@@ -5621,13 +5629,6 @@ function strip_custom_rule_attrs!(fn::LLVM.Function)
            LLVM.value(fattr) == "enzyme_custom"
             delete!(attributes, fattr)
             had_custom = true
-        end
-    end
-    if had_custom
-        for fattr in collect(attributes)
-            if isa(fattr, LLVM.StringAttribute) && kind(fattr) == PRESERVEPRIMAL_ATTR_KIND
-                delete!(attributes, fattr)
-            end
         end
     end
     return had_custom
