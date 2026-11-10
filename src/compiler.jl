@@ -1553,6 +1553,8 @@ end
             LLVM.Attribute[StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
         )
         return
+    else
+        strip_custom_rule_attrs!(llvmfn)
     end
 
 
@@ -1560,7 +1562,32 @@ end
     if func == typeof(Base.eps) ||
        func == typeof(Base.nextfloat) ||
        func == typeof(Base.prevfloat)
-        if LLVM.version().major <= 15
+        has_ptr = LLVM.return_type(LLVM.function_type(llvmfn)) isa LLVM.PointerType
+        if !has_ptr
+            for p in parameters(llvmfn)
+                if value_type(p) isa LLVM.PointerType
+                    has_ptr = true
+                    break
+                end
+            end
+        end
+        if has_ptr
+            handleCustom(
+                state,
+                custom,
+                k_name,
+                llvmfn,
+                "jl_inactive_inout",
+                LLVM.Attribute[
+                    StringAttribute("enzyme_inactive"),
+                    EnumAttribute("willreturn"),
+                    EnumAttribute("nosync"),
+                    EnumAttribute("nofree"),
+                    EnumAttribute("nounwind"),
+                    StringAttribute("enzyme_shouldrecompute"),
+                ],
+            )
+        elseif LLVM.version().major <= 15
             handleCustom(
                 state,
                 custom,
@@ -5578,6 +5605,41 @@ function strip_invariant_group_after_inserted_errors!(mod::LLVM.Module)
     return
 end
 
+# `"enzyme_math"="enzyme_custom"` is mode-dependent (`cached_has_frule` in forward
+# mode vs `cached_has_rrule` in reverse mode). Strip it after `enzyme!` has consumed
+# it so that bitcode cached in `autodiff_cache` for nested differentiation (e.g.
+# forward-over-reverse through a function with an `rrule` but no `frule`, or vice
+# versa) does not dispatch to a nonexistent rule in the outer mode; the outer
+# compilation's `set_module_types!` re-applies `"enzyme_custom"` if and only if a
+# rule exists for the outer mode.
+function strip_custom_rule_attrs!(fn::LLVM.Function)
+    attributes = function_attributes(fn)
+    had_custom = false
+    for fattr in collect(attributes)
+        if isa(fattr, LLVM.StringAttribute) &&
+           kind(fattr) == "enzyme_math" &&
+           LLVM.value(fattr) == "enzyme_custom"
+            delete!(attributes, fattr)
+            had_custom = true
+        end
+    end
+    if had_custom
+        for fattr in collect(attributes)
+            if isa(fattr, LLVM.StringAttribute) && kind(fattr) == PRESERVEPRIMAL_ATTR_KIND
+                delete!(attributes, fattr)
+            end
+        end
+    end
+    return had_custom
+end
+
+function strip_custom_rule_attrs!(mod::LLVM.Module)
+    for f in functions(mod)
+        strip_custom_rule_attrs!(f)
+    end
+    return
+end
+
 # Modified from GPUCompiler/src/irgen.jl:365 lower_byval
 function lower_convention(
     @nospecialize(functy::Type),
@@ -6671,11 +6733,17 @@ function memtransfer_truetype(world::UInt, @nospecialize(ptr::LLVM.Value), @nosp
     if byref == GPUCompiler.BITS_VALUE && jTy <: Ptr
         ET = eltype(jTy)
         if Base.isconcretetype(ET)
-            sz_et = actual_size(ET)
+            sz_et = allocatedinline(ET) ? Base.aligned_sizeof(ET) : actual_size(ET)
             if sz_et > 0
                 jTy = ET
                 byref = GPUCompiler.MUT_REF
                 offset = Base.mod(offset, sz_et)
+                if isa(sz, LLVM.ConstantInt)
+                    sz_int = convert(Int, sz)
+                    if offset + sz_int > sz_et && allocatedinline(ET)
+                        return to_fullmd(world, ET, offset, sz_int, sz_et)
+                    end
+                end
             end
         end
     end
@@ -7794,6 +7862,7 @@ end
     # Every deferred module is linked by now, so nothing declares the entry of
     # an imported cached thunk any more.
     internalize_imported_thunks!(mod)
+    strip_custom_rule_attrs!(mod)
 
     for (fname, lnk) in custom
         haskey(functions(mod), fname) || continue
