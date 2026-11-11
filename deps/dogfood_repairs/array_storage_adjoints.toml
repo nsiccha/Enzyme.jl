@@ -1,0 +1,2 @@
+summary = "Restore floating-point vector shadow storage and preserve reverse pointer offsets across deletion and sizehint! on Julia 1.11 and later"
+tests = ["test/array_storage.jl", "test/sort_filter_derivatives.jl", "test/memoryref_root.jl"]

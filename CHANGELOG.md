@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Restore the shadow vector's size and storage when reversing `_deleteend!` and
+  `sizehint!` on Julia 1.11 and later. Earlier reverse instructions then read the
+  original storage, and contributions through aliases to that storage are added
+  correctly. This repairs misplaced adjoints through `filter!` on floating-point
+  vectors while keeping paired MemoryRef loads recomputable. Preserve integer
+  addresses used in pointer-offset calculations, so Reverse over Forward also
+  uses the original offsets under forced bounds checking without caching GC roots.
+  `Enzyme.has_dogfood_repair(:array_storage_adjoints)` reports it.
 - Make Reverse over Forward of a typed nested comprehension over ranges,
   `Float64[ts[i] - d[j] for j in eachindex(d) for i in eachindex(ts)]` in a
   function Julia does not inline, compile. The gradient pass of the Forward
