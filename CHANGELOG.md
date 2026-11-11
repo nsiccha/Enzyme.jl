@@ -15,6 +15,14 @@
   provisional and are forgotten when the key they relied on turns out needed
   (libEnzyme build `b20b9440b32133907334d6cc60c21d1880ac5eb6`). `Enzyme.has_dogfood_repair(:use_analysis_cycle_memo)`
   reports it; `test/reverse_over_forward_collect.jl` is the canary.
+- Stop deferred activity analysis from repeatedly revisiting the same dependency
+  when an old hypothesis refills it. This caused intermittent `StackOverflowError`
+  while compiling derivatives on Julia 1.12 with forced bounds checks. A dependency
+  runs at most once while the known inactivity facts are unchanged, and remains
+  pending for another attempt when new facts are proved (libEnzyme build
+  `1204679cc8b68fc458be9bc2359e5132e9c841e1`).
+  `Enzyme.has_dogfood_repair(:activity_reevaluation)` reports the repair;
+  `test/data_pointer_phi.jl` and `test/inlined_loop_nest.jl` cover the affected cases.
 - Make Forward over Reverse compile when the inner reverse caches an element of
   a `Vector{Vector{Int}}` and one of a `Vector{Vector{Float64}}` in a loop it
   may skip. Enzyme.jl seeds every cache slot of a GC-tracked pointer type with
