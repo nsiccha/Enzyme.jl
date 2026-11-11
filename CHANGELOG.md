@@ -46,6 +46,11 @@
   was received at as adding no place; a cycle that moves the offset still gives
   the slot up. `Enzyme.has_dogfood_repair(:recursive_constant_fields)` reports
   it.
+- Merge upstream through `0126567` (#4035): differentiate broadcast and `map`
+  over arrays of structs with inline fields containing padding. Preserve
+  dogfood's cycle-aware offset analysis and readonly argument checks. The
+  package versions, Enzyme_jll 0.0.301 pin, and declared compiler build are
+  unchanged.
 - Merge upstream through `a154f47`, Enzyme 0.13.220: TypeTrees of arrays and
   memory with element type `Union{}`, Julia runtime singleton and exception
   globals marked inactive, mode-specific custom-rule attributes stripped from
