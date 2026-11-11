@@ -1,0 +1,3 @@
+summary = "Explicit type layouts retain active fields beyond the default 500-byte inference offset limit, including wide dynamically dispatched tuple tails and broadcasts"
+libenzyme_build = "ce4dc7981128cf593934e01f2d70066a1bfc76c1"
+tests = ["test/type_offset_layouts.jl"]

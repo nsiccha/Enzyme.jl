@@ -26,6 +26,13 @@
   analysis as the global (libEnzyme build `b20b9440b32133907334d6cc60c21d1880ac5eb6`).
   `Enzyme.has_dogfood_repair(:norecur_cast_type_seed)` reports it;
   `test/forward_over_reverse_cache_seed.jl` is the canary.
+- Preserve explicit type layouts beyond libEnzyme's 500-byte inference offset
+  limit. A wide tuple of broadcast operands dispatched at run time could silently
+  lose derivatives of its last fields. The native repair carries a finite bound
+  with each supplied layout; the process-wide inference limit remains 500.
+  `test/type_offset_layouts.jl` checks large layouts and Reverse through wide tuple
+  tails and broadcasts. `Enzyme.has_dogfood_repair(:explicit_type_layouts)` reports
+  the repair, supplied by libEnzyme `ce4dc798`.
 - Restore the shadow vector's size and storage when reversing `_deleteend!` and
   `sizehint!` on Julia 1.11 and later. Earlier reverse instructions then read the
   original storage, and contributions through aliases to that storage are added
