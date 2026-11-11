@@ -26,6 +26,22 @@
   `test/array_del_end.jl` checks nonzero shadow seeds, partial and complete
   deletion, batching and runtime activity;
   `Enzyme.has_dogfood_repair(:array_del_end_adjoints)` reports it.
+- Tag a boxed `Bool`, `Char` or integer that Enzyme allocates itself the way Julia tags
+  it. From Julia 1.10 such a type has a small type tag (`enum jl_small_typeof_tags`):
+  an object of it carries `tag << 4` in its header word, not a pointer to its datatype,
+  and the garbage collector aborts the process (`GC error (probable corruption)`,
+  printing the type) when it marks a pointer-tagged object of a small-tag type.
+  `emit_allocobj!` tagged every box with the datatype pointer. That box is the primal
+  a derivative returns when its entry returns a small `Union` of isbits members, such
+  as `Union{Missing, Bool}` or `Union{Nothing, Int}`, with `ForwardWithPrimal`,
+  `ReverseWithPrimal`, split mode, or any call Enzyme dispatches at run time (whose
+  thunk always returns its primal), and a custom rule's union tape. ReactiveKernels met it in ordinary Reverse of a plate cell
+  whose 33-operand broadcast dispatched `_cell_array_operand`, returning
+  `Union{Missing, Bool}`, at run time: the next collection aborted the process. The new
+  `emit_typetag!` emits the small tag as Julia's codegen does (`emit_tagfrom`), and a
+  boxed `Bool` is `jl_true` or `jl_false`, as Julia boxes it: Julia compares boxed
+  `Bool`s by pointer, so a tagged box of its own was `===` to neither.
+  `Enzyme.has_dogfood_repair(:small_typetag_boxes)` reports it.
 - Make static Reverse of `sum` over a lazy broadcast that reads `Const` data
   beside active data, `sum(Broadcast.instantiate(Broadcast.broadcasted(f, ds,
   y)))` with `Const(y)`, allocate what runtime activity allocates. On Julia

@@ -1,0 +1,2 @@
+summary = "A boxed Bool, Char or integer Enzyme allocates (the primal of a small Union return, a custom rule's union tape) carries Julia's small type tag, so the garbage collector no longer aborts on it"
+tests = ["test/small_typetag_boxes.jl"]

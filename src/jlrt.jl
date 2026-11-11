@@ -61,6 +61,64 @@ function emit_allocobj!(
 
     return call!(B, alty, alloc_obj, LLVM.Value[ct, Size, tag], name)
 end
+# From Julia 1.10 some types have a small type tag (`enum jl_small_typeof_tags` in
+# julia.h): `Bool`, `Char`, the `Int` and `UInt` types, and the runtime's own kinds. An
+# object of such a type carries `tag << 4` in its header word, not a pointer to its
+# datatype, and the garbage collector aborts the process ("GC error (probable corruption)",
+# printing the type) when it marks a pointer-tagged object of a small-tag type.
+# `jl_small_typeof` maps each header value, divided by the pointer size, to its datatype;
+# `small_typetag` is that map inverted.
+"""
+    small_typetag(T::DataType)
+
+The header word Julia gives an object of type `T` when `T` has a small type tag, or
+`nothing` when the header of such an object is the pointer to `T`.
+"""
+function small_typetag(@nospecialize(T::DataType))::Union{Nothing, UInt}
+    table = cglobal(:jl_small_typeof, Ptr{Cvoid})
+    want = convert(UInt, unsafe_to_pointer(T))
+    for k in 0:((JL_MAX_TAGS << 4) ÷ sizeof(Ptr{Cvoid}) - 1)
+        if convert(UInt, unsafe_load(table, k + 1)) == want
+            return UInt(k * sizeof(Ptr{Cvoid}))
+        end
+    end
+    return nothing
+end
+
+"""
+    emit_typetag!(B, T::Type)
+
+The type tag of a new object of type `T`, as `julia.gc_alloc_obj` and `jl_gc_alloc_typed`
+take it: `T`'s small type tag as Julia's codegen emits it (`emit_tagfrom`: the header word
+cast to a pointer, which absint decodes through `jl_small_typeof`), or else `T` itself.
+"""
+function emit_typetag!(B::LLVM.IRBuilder, @nospecialize(T::Type))::LLVM.Value
+    tag = T isa DataType ? small_typetag(T) : nothing
+    tag === nothing && return unsafe_to_llvm(B, T)
+    T_jlvalue = LLVM.StructType(LLVMType[])
+    T_pjlvalue = LLVM.PointerType(T_jlvalue)
+    T_prjlvalue = LLVM.PointerType(T_jlvalue, Tracked)
+    tagv = LLVM.const_inttoptr(LLVM.ConstantInt(convert(LLVM.LLVMType, UInt), tag), T_pjlvalue)
+    return LLVM.const_addrspacecast(tagv, T_prjlvalue)
+end
+
+"""
+    emit_bool_box!(B, val)
+
+The box of the `Bool` whose LLVM value is `val` (an `i1`, or Julia's `i8`): `jl_true` or
+`jl_false`. Julia compares boxed `Bool`s by pointer (`jl_egal`), so every boxed `Bool` is one
+of those two objects, as Julia's codegen boxes them; a `Bool` box of its own, however
+tagged, is `===` to neither.
+"""
+function emit_bool_box!(B::LLVM.IRBuilder, val::LLVM.Value)::LLVM.Value
+    isset = if value_type(val) == LLVM.Int1Type()
+        val
+    else
+        icmp!(B, LLVM.API.LLVMIntNE, val, LLVM.ConstantInt(value_type(val), 0))
+    end
+    return select!(B, isset, unsafe_to_llvm(B, true), unsafe_to_llvm(B, false))
+end
+
 function emit_allocobj!(B::LLVM.IRBuilder, @nospecialize(T::DataType), name::String = "")
     curent_bb = position(B)
     fn = LLVM.parent(curent_bb)
@@ -71,7 +129,7 @@ function emit_allocobj!(B::LLVM.IRBuilder, @nospecialize(T::DataType), name::Str
     T_prjlvalue = LLVM.PointerType(T_jlvalue, Tracked)
 
     # Obtain tag
-    tag = unsafe_to_llvm(B, T)
+    tag = emit_typetag!(B, T)
 
     T_size_t = convert(LLVM.LLVMType, UInt)
     Size = LLVM.ConstantInt(T_size_t, sizeof(T))
