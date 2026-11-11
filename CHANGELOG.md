@@ -42,6 +42,30 @@
   tuple; a more specific user `map` method stays authoritative, and the first-order
   `map` outside the differentiated code is unchanged. `test/tuple_map.jl`;
   `Enzyme.has_dogfood_repair(:long_tuple_map)` reports it.
+- Keep wide tuple splats typed during differentiation. Raise the interpreter's
+  inference and optimization splat limits from 32 to 512, following upstream
+  #3994 and matching the runtime helpers' argument budget. On Julia 1.12, calls
+  with 32 or 40 constant arguments beside an active `Ref` now differentiate in
+  Forward and Reverse instead of reaching an unsupported C-ABI generic call.
+  This also enables the long-tuple map tests and nested DifferentiationInterface
+  derivatives with 40 `Constant` contexts and one `Cache`. Consumer code needs no
+  change. `Enzyme.has_dogfood_repair(:wide_active_calls)` reports the repair.
+- Tag a boxed `Bool`, `Char` or integer that Enzyme allocates itself the way Julia tags
+  it. From Julia 1.10 such a type has a small type tag (`enum jl_small_typeof_tags`):
+  an object of it carries `tag << 4` in its header word, not a pointer to its datatype,
+  and the garbage collector aborts the process (`GC error (probable corruption)`,
+  printing the type) when it marks a pointer-tagged object of a small-tag type.
+  `emit_allocobj!` tagged every box with the datatype pointer. That box is the primal
+  a derivative returns when its entry returns a small `Union` of isbits members, such
+  as `Union{Missing, Bool}` or `Union{Nothing, Int}`, with `ForwardWithPrimal`,
+  `ReverseWithPrimal`, split mode, or any call Enzyme dispatches at run time (whose
+  thunk always returns its primal), and a custom rule's union tape. ReactiveKernels met it in ordinary Reverse of a plate cell
+  whose 33-operand broadcast dispatched `_cell_array_operand`, returning
+  `Union{Missing, Bool}`, at run time: the next collection aborted the process. The new
+  `emit_typetag!` emits the small tag as Julia's codegen does (`emit_tagfrom`), and a
+  boxed `Bool` is `jl_true` or `jl_false`, as Julia boxes it: Julia compares boxed
+  `Bool`s by pointer, so a tagged box of its own was `===` to neither.
+  `Enzyme.has_dogfood_repair(:small_typetag_boxes)` reports it.
 - Make static Reverse of `sum` over a lazy broadcast that reads `Const` data
   beside active data, `sum(Broadcast.instantiate(Broadcast.broadcasted(f, ds,
   y)))` with `Const(y)`, allocate what runtime activity allocates. On Julia
@@ -54,6 +78,11 @@
   was received at as adding no place; a cycle that moves the offset still gives
   the slot up. `Enzyme.has_dogfood_repair(:recursive_constant_fields)` reports
   it.
+- Merge upstream through `0126567` (#4035): differentiate broadcast and `map`
+  over arrays of structs with inline fields containing padding. Preserve
+  dogfood's cycle-aware offset analysis and readonly argument checks. The
+  package versions, Enzyme_jll 0.0.301 pin, and declared compiler build are
+  unchanged.
 - Merge upstream through `a154f47`, Enzyme 0.13.220: TypeTrees of arrays and
   memory with element type `Union{}`, Julia runtime singleton and exception
   globals marked inactive, mode-specific custom-rule attributes stripped from
