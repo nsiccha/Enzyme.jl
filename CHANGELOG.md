@@ -2,14 +2,6 @@
 
 ## Unreleased
 
-- Restore the shadow vector's size and storage when reversing `_deleteend!` and
-  `sizehint!` on Julia 1.11 and later. Earlier reverse instructions then read the
-  original storage, and contributions through aliases to that storage are added
-  correctly. This repairs misplaced adjoints through `filter!` on floating-point
-  vectors while keeping paired MemoryRef loads recomputable. Preserve integer
-  addresses used in pointer-offset calculations, so Reverse over Forward also
-  uses the original offsets under forced bounds checking without caching GC roots.
-  `Enzyme.has_dogfood_repair(:array_storage_adjoints)` reports it.
 - Make Reverse over Forward of a typed nested comprehension over ranges,
   `Float64[ts[i] - d[j] for j in eachindex(d) for i in eachindex(ts)]` in a
   function Julia does not inline, compile. The gradient pass of the Forward
@@ -34,6 +26,14 @@
   analysis as the global (libEnzyme build `b20b9440b32133907334d6cc60c21d1880ac5eb6`).
   `Enzyme.has_dogfood_repair(:norecur_cast_type_seed)` reports it;
   `test/forward_over_reverse_cache_seed.jl` is the canary.
+- Restore the shadow vector's size and storage when reversing `_deleteend!` and
+  `sizehint!` on Julia 1.11 and later. Earlier reverse instructions then read the
+  original storage, and contributions through aliases to that storage are added
+  correctly. This repairs misplaced adjoints through `filter!` on floating-point
+  vectors while keeping paired MemoryRef loads recomputable. Preserve integer
+  addresses used in pointer-offset calculations, so Reverse over Forward also
+  uses the original offsets under forced bounds checking without caching GC roots.
+  `Enzyme.has_dogfood_repair(:array_storage_adjoints)` reports it.
 - Differentiate Base's `map` over a tuple of 32 or more elements whose elements are
   of several types. Base's `map(f, t::Any32)` and its two- and many-tuple methods fill
   a `Vector{Any}` at a run-time index and splat it back into a tuple, so one value
@@ -58,6 +58,14 @@
   `test/array_del_end.jl` checks nonzero shadow seeds, partial and complete
   deletion, batching and runtime activity;
   `Enzyme.has_dogfood_repair(:array_del_end_adjoints)` reports it.
+- Keep wide tuple splats typed during differentiation. Raise the interpreter's
+  inference and optimization splat limits from 32 to 512, following upstream
+  #3994 and matching the runtime helpers' argument budget. On Julia 1.12, calls
+  with 32 or 40 constant arguments beside an active `Ref` now differentiate in
+  Forward and Reverse instead of reaching an unsupported C-ABI generic call.
+  This also enables the long-tuple map tests and nested DifferentiationInterface
+  derivatives with 40 `Constant` contexts and one `Cache`. Consumer code needs no
+  change. `Enzyme.has_dogfood_repair(:wide_active_calls)` reports the repair.
 - Tag a boxed `Bool`, `Char` or integer that Enzyme allocates itself the way Julia tags
   it. From Julia 1.10 such a type has a small type tag (`enum jl_small_typeof_tags`):
   an object of it carries `tag << 4` in its header word, not a pointer to its datatype,
@@ -86,6 +94,11 @@
   was received at as adding no place; a cycle that moves the offset still gives
   the slot up. `Enzyme.has_dogfood_repair(:recursive_constant_fields)` reports
   it.
+- Merge upstream through `0126567` (#4035): differentiate broadcast and `map`
+  over arrays of structs with inline fields containing padding. Preserve
+  dogfood's cycle-aware offset analysis and readonly argument checks. The
+  package versions, Enzyme_jll 0.0.301 pin, and declared compiler build are
+  unchanged.
 - Merge upstream through `a154f47`, Enzyme 0.13.220: TypeTrees of arrays and
   memory with element type `Union{}`, Julia runtime singleton and exception
   globals marked inactive, mode-specific custom-rule attributes stripped from
