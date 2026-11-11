@@ -26,6 +26,14 @@
   analysis as the global (libEnzyme build `b20b9440b32133907334d6cc60c21d1880ac5eb6`).
   `Enzyme.has_dogfood_repair(:norecur_cast_type_seed)` reports it;
   `test/forward_over_reverse_cache_seed.jl` is the canary.
+- Restore the shadow vector's size and storage when reversing `_deleteend!` and
+  `sizehint!` on Julia 1.11 and later. Earlier reverse instructions then read the
+  original storage, and contributions through aliases to that storage are added
+  correctly. This repairs misplaced adjoints through `filter!` on floating-point
+  vectors while keeping paired MemoryRef loads recomputable. Preserve integer
+  addresses used in pointer-offset calculations, so Reverse over Forward also
+  uses the original offsets under forced bounds checking without caching GC roots.
+  `Enzyme.has_dogfood_repair(:array_storage_adjoints)` reports it.
 - Differentiate Base's `map` over a tuple of 32 or more elements whose elements are
   of several types. Base's `map(f, t::Any32)` and its two- and many-tuple methods fill
   a `Vector{Any}` at a run-time index and splat it back into a tuple, so one value
@@ -42,6 +50,14 @@
   tuple; a more specific user `map` method stays authoritative, and the first-order
   `map` outside the differentiated code is unchanged. `test/tuple_map.jl`;
   `Enzyme.has_dogfood_repair(:long_tuple_map)` reports it.
+- Clear every restored shadow element when reversing `jl_array_del_end`, which
+  shrinks vectors on Julia 1.10, and use each lane's shadow in batched reverse.
+  Previously only one element was cleared, so deleting several elements could
+  leave stale adjoints in the restored tail. This also affected derivatives
+  through `filter!`, including nested derivatives through `sort!(filter!(...))`.
+  `test/array_del_end.jl` checks nonzero shadow seeds, partial and complete
+  deletion, batching and runtime activity;
+  `Enzyme.has_dogfood_repair(:array_del_end_adjoints)` reports it.
 - Keep wide tuple splats typed during differentiation. Raise the interpreter's
   inference and optimization splat limits from 32 to 512, following upstream
   #3994 and matching the runtime helpers' argument budget. On Julia 1.12, calls

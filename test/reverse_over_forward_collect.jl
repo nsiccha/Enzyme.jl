@@ -65,19 +65,24 @@ end
     @test for_hvp(rof_sumsq, ts, v, d) ≈ 2 * length(d) .* v
 
     # sum of exp over the sorted nonnegative differences: a diagonal Hessian
-    # on ts, Σ_j exp(ts_i - d_j) over the j with ts_i >= d_j. No value through
-    # `sort!(filter!(…))` is compared: on Julia 1.10 the gradient and both
-    # products read memory whose contents differ from process to process, so
-    # they are right in most runs and garbage in some, on the tip and with this
-    # repair alike (Enzyme todo 0uohlgh); on Julia 1.11 and later the gradient
-    # through a `filter!` that drops an element is wrong (todo 063gmv7), and a
-    # nested derivative built on it can crash, so none is taken there.
+    # on ts, Σ_j exp(ts_i - d_j) over the j with ts_i >= d_j. Check values after
+    # the other derivatives above: stale adjoints formerly made this depend on
+    # which computations had already run in the process.
+    diag = [sum(exp(t - dj) for dj in d if t >= dj) for t in ts]
     g = zero(ts)
     autodiff(Reverse, Const(rof_sumexp), Active, Duplicated(ts, g), Const(d))
-    @test length(g) == length(ts)
-    if VERSION < v"1.11"
-        hv = rof_hvp(rof_sumexp, ts, v, d)
-        @test length(hv) == length(ts)
-        @test length(for_hvp(rof_sumexp, ts, v, d)) == length(ts)
+    @test g ≈ diag
+    @test rof_hvp(rof_sumexp, ts, v, d) ≈ diag .* v
+    @test for_hvp(rof_sumexp, ts, v, d) ≈ diag .* v
+    expected_hv, expected_hd = zero(ts), zero(d)
+    for j in eachindex(d), i in eachindex(ts)
+        if ts[i] >= d[j]
+            z = exp(ts[i] - d[j]) * (v[i] - dd[j])
+            expected_hv[i] += z
+            expected_hd[j] -= z
+        end
     end
+    hv, hd = rof_hvp_both(rof_sumexp, ts, v, d, dd)
+    @test hv ≈ expected_hv
+    @test hd ≈ expected_hd
 end

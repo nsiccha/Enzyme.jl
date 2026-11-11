@@ -1,0 +1,2 @@
+summary = "Julia 1.10: reverse array_del_end clears every restored adjoint in each batch lane"
+tests = ["test/array_del_end.jl"]
