@@ -1,0 +1,2 @@
+summary = "Differentiating Base's map over a tuple of 32 or more elements of several types no longer raises IllegalTypeAnalysisException, and its result is typed: the interpreter maps such tuples field by field (DifferentiationInterface's contexts past 31, such as a nested hvp over Constant and Cache contexts)"
+tests = ["test/tuple_map.jl"]

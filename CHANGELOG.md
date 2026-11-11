@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Differentiate Base's `map` over a tuple of 32 or more elements whose elements are
+  of several types. Base's `map(f, t::Any32)` and its two- and many-tuple methods fill
+  a `Vector{Any}` at a run-time index and splat it back into a tuple, so one value
+  carries every element type, and Julia's union split stores it into boxes laid out
+  for each type. Type analysis gives a value one layout, so differentiating such a
+  `map` raised `IllegalTypeAnalysisException` (and its result was never typed).
+  DifferentiationInterface's `Rewrap`, `make_context_shadows` and
+  `translate_prepared!` reach these methods with more than 31 contexts, so a nested
+  derivative (`hvp` through `SecondOrder` of two `AutoEnzyme` backends) of a function
+  with 40 `Constant` contexts and one `Cache` failed in both compositions on Julia
+  1.10.12, while 40 `Constant` contexts alone, or 8 plus the `Cache`, differentiated.
+  Enzyme's interpreter now maps a concretely typed tuple that reaches one of those
+  methods field by field (`override_map`), in Base's order and over the shortest
+  tuple; a more specific user `map` method stays authoritative, and the first-order
+  `map` outside the differentiated code is unchanged. `test/tuple_map.jl`;
+  `Enzyme.has_dogfood_repair(:long_tuple_map)` reports it.
 - Make static Reverse of `sum` over a lazy broadcast that reads `Const` data
   beside active data, `sum(Broadcast.instantiate(Broadcast.broadcasted(f, ds,
   y)))` with `Const(y)`, allocate what runtime activity allocates. On Julia

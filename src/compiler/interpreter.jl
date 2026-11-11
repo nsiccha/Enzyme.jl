@@ -1039,6 +1039,7 @@ const DENSE_VCAT_METHOD = which(Base.vcat, Tuple{Vararg{Vector{T}}} where {T})
 
 include("concatenation.jl")
 include("foreach.jl")
+include("tuple_map.jl")
 
 concat_rewrite(interp::EnzymeInterpreter, f, argtypes, sv::AbsIntState) = nothing
 
@@ -1605,6 +1606,9 @@ function abstract_call_known(
         replacement = concat_rewrite(interp, f, argtypes, sv)
         if replacement === nothing
             replacement = foreach_rewrite(interp, f, argtypes, sv)
+        end
+        if replacement === nothing
+            replacement = map_rewrite(interp, f, argtypes, sv)
         end
         if replacement !== nothing
             arginfo2 = ArgInfo(
