@@ -18,6 +18,14 @@
   tuple; a more specific user `map` method stays authoritative, and the first-order
   `map` outside the differentiated code is unchanged. `test/tuple_map.jl`;
   `Enzyme.has_dogfood_repair(:long_tuple_map)` reports it.
+- Keep wide tuple splats typed during differentiation. Raise the interpreter's
+  inference and optimization splat limits from 32 to 512, following upstream
+  #3994 and matching the runtime helpers' argument budget. On Julia 1.12, calls
+  with 32 or 40 constant arguments beside an active `Ref` now differentiate in
+  Forward and Reverse instead of reaching an unsupported C-ABI generic call.
+  This also enables the long-tuple map tests and nested DifferentiationInterface
+  derivatives with 40 `Constant` contexts and one `Cache`. Consumer code needs no
+  change. `Enzyme.has_dogfood_repair(:wide_active_calls)` reports the repair.
 - Tag a boxed `Bool`, `Char` or integer that Enzyme allocates itself the way Julia tags
   it. From Julia 1.10 such a type has a small type tag (`enum jl_small_typeof_tags`):
   an object of it carries `tag << 4` in its header word, not a pointer to its datatype,
