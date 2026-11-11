@@ -1,0 +1,3 @@
+summary = "Reused sibling-loop load caches use the current loop's reverse index"
+libenzyme_build = "c4cae0313ff5b63b02067a208acc42ade0e8db8d"
+tests = ["test/sibling_loop_cache.jl"]

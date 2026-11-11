@@ -45,15 +45,8 @@ end
     v = [1.0, 0.5, -1.0, 2.0]
     g, hv = tape_closed_form(x, v)
     @test tape_objective(x) ≈ sum(sum(abs2, max.(x .- c, 0.0))^2 for c in TAPE_SHIFTS)
-    # On Julia 1.12 and later, Reverse through a filter! that drops an element puts
-    # derivatives on the wrong entries (Enzyme todo 063gmv7).
-    if VERSION >= v"1.12-"
-        @test_broken tape_gradient(x) ≈ g
-        @test_broken only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
-    else
-        @test tape_gradient(x) ≈ g
-        @test only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
-    end
+    @test tape_gradient(x) ≈ g
+    @test only(autodiff(Forward, tape_gradient, Duplicated(x, v))) ≈ hv
     @test x == [1.61, 3.13, 2.57, 4.09]
 end
 
