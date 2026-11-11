@@ -1,0 +1,2 @@
+summary = "Keep wide tuple splats typed during differentiation by raising inference and optimization limits from 32 to 512; repairs Julia 1.12 Forward and Reverse calls with 32 or 40 constant arguments beside an active Ref"
+tests = ["test/wide_active_args.jl", "test/tuple_map.jl", "test/applyiter.jl", "test/many_args.jl"]

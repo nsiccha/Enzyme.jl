@@ -34,9 +34,8 @@ end
 # `(sum(v₁) + ⋯ + sum(vₙ) + x₂) * x₁`, with the box stored into and read back through
 # the mapped tuple: d/dx₁ = Σ + x₂, d/dx₂ = x₁. The box comes right after `x`, and the
 # mapped 41-tuple is built by a generated constructor, so its type is concrete at the
-# `map` call sites, as DifferentiationInterface's tuples are, and no splat of more than
-# 32 elements is involved (a `Core._apply_iterate` call would hide the type, and on
-# Julia 1.12 one with an active argument among 32 or more stops Enzyme: see `broken`).
+# `map` call sites, as DifferentiationInterface's tuples are. The other shapes below
+# also cover tuple construction through a splat.
 @generated function tuple_map_with_box(box, vs::NTuple{N, Any}) where {N}
     return Expr(:tuple, (:(vs[$i]) for i in 1:N)..., :box)
 end
@@ -53,47 +52,27 @@ function tuple_map_triple_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
     cs = tuple_map_with_box(box, vs)
     return tuple_map_total(x, map((m, c, ::Int) -> m(c), makers, cs, ntuple(identity, Val(N + 1))))
 end
-# The mapped tuple built by a splat of more than 32 elements is untyped at the call site,
-# so the `map` is dispatched at run time and Enzyme compiles the dispatched method with
-# the run-time types.
-function tuple_map_untyped_single_loss(x, box, vs::Vararg{Any, N}) where {N}
+# Construct the mapped tuple through a splat as well as through the generated
+# constructor above. Both shapes must work beyond the former 32-element limit.
+function tuple_map_splat_single_loss(x, box, vs::Vararg{Any, N}) where {N}
     box[] = x[2]
     return tuple_map_total(x, map(tuple_map_wrap, (vs..., box)))
 end
-function tuple_map_untyped_double_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
+function tuple_map_splat_double_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
     box[] = x[2]
     return tuple_map_total(x, map((m, c) -> m(c), makers, (vs..., box)))
 end
-function tuple_map_untyped_triple_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
+function tuple_map_splat_triple_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
     box[] = x[2]
     return tuple_map_total(x, map((m, c, ::Int) -> m(c), makers, (vs..., box), ntuple(identity, Val(N + 1))))
 end
 
-# `broken`: on Julia 1.12 a call with an active argument among 32 or more arguments, at
-# Enzyme's own entry or dispatched at run time (`Core._apply_iterate`), stops Enzyme
-# before and after the typed map, with `AssertionError: conv == 37` in Forward and
-# `Unexpected calling conv, got 0` in Reverse; a separate defect (Enzyme todo filed with
-# snag nested-di-hvp-pa-5ec056c4). Julia 1.10 differentiates every shape below.
-const TUPLE_MAP_ACTIVE_PAST_32_BROKEN = VERSION >= v"1.12"
-function tuple_map_check(loss, K, extra...; broken::Bool = false)
+function tuple_map_check(loss, K, extra...)
     vs = ntuple(j -> fill(Float64(j), 3), K)
     consts = map(Const, vs)
     x = [0.3, 0.7]
     S = sum(3j for j in 1:K)
     expected = [S + x[2], x[1]]
-    if broken
-        ran = try
-            autodiff(Forward, loss, Duplicated(x, [1.0, 0.0]), Duplicated(Ref(0.0), Ref(0.0)), extra..., consts...)
-            autodiff(ReverseWithPrimal, loss, Active, Duplicated(x, zeros(2)), Duplicated(Ref(0.0), Ref(0.0)), extra..., consts...)
-            true
-        catch e
-            msg = sprint(showerror, e)
-            occursin("calling conv", msg) || occursin("conv == 37", msg) || rethrow()
-            false
-        end
-        @test_broken ran
-        return nothing
-    end
     box = Ref(0.0)
     dx = [1.0, 0.0]
     tangent = autodiff(Forward, loss, Duplicated(x, dx), Duplicated(box, Ref(0.0)), extra..., consts...)[1]
@@ -137,15 +116,14 @@ end
 @testset "Differentiating map over long mixed tuples" begin
     for K in (8, 40)
         makers = (ntuple(Returns(tuple_map_constant), K)..., tuple_map_cache)
-        broken = K >= 32 && TUPLE_MAP_ACTIVE_PAST_32_BROKEN
         # `rewrap(cs...)` splats the 41 contexts into the callable, as DI's Rewrap call does.
-        tuple_map_check(tuple_map_rewrap_loss, K, Const(TupleMapRewrap(makers...)); broken)
-        tuple_map_check(tuple_map_single_loss, K; broken)
-        tuple_map_check(tuple_map_triple_loss, K, Const(makers); broken)
-        # Base's method reached as a run-time dispatch target, in the three arities.
-        tuple_map_check(tuple_map_untyped_single_loss, K; broken)
-        tuple_map_check(tuple_map_untyped_double_loss, K, Const(makers); broken)
-        tuple_map_check(tuple_map_untyped_triple_loss, K, Const(makers); broken)
+        tuple_map_check(tuple_map_rewrap_loss, K, Const(TupleMapRewrap(makers...)))
+        tuple_map_check(tuple_map_single_loss, K)
+        tuple_map_check(tuple_map_triple_loss, K, Const(makers))
+        # Tuple construction through a splat, in the three map arities.
+        tuple_map_check(tuple_map_splat_single_loss, K)
+        tuple_map_check(tuple_map_splat_double_loss, K, Const(makers))
+        tuple_map_check(tuple_map_splat_triple_loss, K, Const(makers))
     end
 end
 
@@ -164,19 +142,8 @@ end
     K = 32
     vs = ntuple(j -> fill(Float64(j), 3), K)
     x = [0.3, 0.7]
-    if TUPLE_MAP_ACTIVE_PAST_32_BROKEN
-        ran = try
-            autodiff(Reverse, tuple_map_user_loss, Active, Duplicated(x, zeros(2)), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)
-            true
-        catch e
-            occursin("calling conv", sprint(showerror, e)) || rethrow()
-            false
-        end
-        @test_broken ran
-    else
-        dx = zeros(2)
-        autodiff(Reverse, tuple_map_user_loss, Active, Duplicated(x, dx), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)
-        @test dx == [0.0, 0.0]
-        @test autodiff(Forward, tuple_map_user_loss, Duplicated(x, [1.0, 0.0]), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)[1] == 0.0
-    end
+    dx = zeros(2)
+    autodiff(Reverse, tuple_map_user_loss, Active, Duplicated(x, dx), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)
+    @test dx == [0.0, 0.0]
+    @test autodiff(Forward, tuple_map_user_loss, Duplicated(x, [1.0, 0.0]), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)[1] == 0.0
 end
