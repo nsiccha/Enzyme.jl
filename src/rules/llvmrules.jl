@@ -1755,7 +1755,6 @@ end
             args = LLVM.Value[anti, offset]
 
             found, arty, byref = abs_typeof(origops[1], enzyme_ctx)
-            anti = shadowin
             elSize = if found
                 LLVM.ConstantInt(Csize_t(actual_size(eltype(arty))))
             else
@@ -1781,7 +1780,8 @@ end
             end
             toset = get_array_data(B, anti)
             toset = gep!(B, i8, toset, LLVM.Value[length])
-            LLVM.memset!(B, toset, LLVM.ConstantInt(i8, 0, false), elSize, algn)
+            restored_bytes = LLVM.mul!(B, offset, elSize)
+            LLVM.memset!(B, toset, LLVM.ConstantInt(i8, 0, false), restored_bytes, algn)
 
             if get_runtime_activity(gutils)
                 br!(B, endB)

@@ -18,6 +18,14 @@
   tuple; a more specific user `map` method stays authoritative, and the first-order
   `map` outside the differentiated code is unchanged. `test/tuple_map.jl`;
   `Enzyme.has_dogfood_repair(:long_tuple_map)` reports it.
+- Clear every restored shadow element when reversing `jl_array_del_end`, which
+  shrinks vectors on Julia 1.10, and use each lane's shadow in batched reverse.
+  Previously only one element was cleared, so deleting several elements could
+  leave stale adjoints in the restored tail. This also affected derivatives
+  through `filter!`, including nested derivatives through `sort!(filter!(...))`.
+  `test/array_del_end.jl` checks nonzero shadow seeds, partial and complete
+  deletion, batching and runtime activity;
+  `Enzyme.has_dogfood_repair(:array_del_end_adjoints)` reports it.
 - Make static Reverse of `sum` over a lazy broadcast that reads `Const` data
   beside active data, `sum(Broadcast.instantiate(Broadcast.broadcasted(f, ds,
   y)))` with `Const(y)`, allocate what runtime activity allocates. On Julia
