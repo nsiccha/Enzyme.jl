@@ -45,8 +45,8 @@ end
 
 # The shadow as it was when the rule ran, for its reverse pass. Since Julia 1.11 an in-place
 # resize after the call (`resize!`, `unique!`, `push!`, `deleteat!`, ...) rewrites the shadow
-# `Array`'s `size` and `ref` fields too, and the reverse pass does not undo that, while the
-# derivatives themselves do flow back into the memory the shadow had at the call.
+# `Array`'s `size` and `ref` fields too. Keep the header at this call even when a later
+# operation has no rule that restores it: the derivatives flow back into its old storage.
 shadow_at_call(dval::AbstractArray) = dval
 @static if VERSION >= v"1.11"
     shadow_at_call(dval::Array) = Base.wrap(Array, dval.ref, size(dval))
