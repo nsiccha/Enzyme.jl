@@ -1,0 +1,3 @@
+summary = "Type analysis treats a cast of a global it must not recurse into (jl_nothing seeding every GC-tracked cache slot) as opaque: Forward over Reverse of a kernel caching Vector{Int} and Vector{Float64} elements no longer fails with Illegal updateAnalysis"
+libenzyme_build = "b20b9440b32133907334d6cc60c21d1880ac5eb6"
+tests = ["test/forward_over_reverse_cache_seed.jl"]
