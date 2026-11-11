@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Make Reverse over Forward of a typed nested comprehension over ranges,
+  `Float64[ts[i] - d[j] for j in eachindex(d) for i in eachindex(ts)]` in a
+  function Julia does not inline, compile. The gradient pass of the Forward
+  derivative's split reverse dropped the next outer counter inserted into the
+  `Flatten` iterator's state while it still built the cached state tuple's
+  shadow from it: `EnzymeInternalError`, "Illegal replace ficticious phi for …
+  add i64 %value_phi21, 1". libEnzyme's `is_value_needed_in_reverse` had
+  memoized the state's loop-exit phi as never needed, provisionally, inside the
+  evaluation of the loop-header phi that is its only user, and kept that answer
+  once the header phi turned out needed. Answers read inside a cycle now stay
+  provisional and are forgotten when the key they relied on turns out needed
+  (libEnzyme build `b20b9440b32133907334d6cc60c21d1880ac5eb6`). `Enzyme.has_dogfood_repair(:use_analysis_cycle_memo)`
+  reports it; `test/reverse_over_forward_collect.jl` is the canary.
+- Make Forward over Reverse compile when the inner reverse caches an element of
+  a `Vector{Vector{Int}}` and one of a `Vector{Vector{Float64}}` in a loop it
+  may skip. Enzyme.jl seeds every cache slot of a GC-tracked pointer type with
+  `jl_nothing` cast to the slot's type, LLVM uniques that constant expression,
+  and libEnzyme's type analysis let what it learned from one cache's phi reach
+  the seed of every other: `IllegalTypeAnalysisException`, "Illegal
+  updateAnalysis" on `bitcast (@ejl_jl_nothing …)` with a cache phi as origin.
+  A cast of a global marked `enzyme_ta_norecur` is now as opaque to type
+  analysis as the global (libEnzyme build `b20b9440b32133907334d6cc60c21d1880ac5eb6`).
+  `Enzyme.has_dogfood_repair(:norecur_cast_type_seed)` reports it;
+  `test/forward_over_reverse_cache_seed.jl` is the canary.
 - Differentiate Base's `map` over a tuple of 32 or more elements whose elements are
   of several types. Base's `map(f, t::Any32)` and its two- and many-tuple methods fill
   a `Vector{Any}` at a run-time index and splat it back into a tuple, so one value
