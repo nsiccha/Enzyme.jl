@@ -5944,7 +5944,6 @@ function lower_convention(
                         ret!(builder, fill_val)
                     else
                         nobj = if sretPtr !== nothing
-                            obj = emit_allocobj!(builder, jlrettype, "boxunion")
                             llty = convert(LLVMType, jlrettype)
                             ld = load!(
                                 builder,
@@ -5955,6 +5954,10 @@ function lower_convention(
                                     LLVM.PointerType(llty, addrspace(value_type(sretPtr))),
                                 ),
                             )
+                            if jlrettype === Bool
+                                emit_bool_box!(builder, ld)
+                            else
+                                obj = emit_allocobj!(builder, jlrettype, "boxunion")
                             store!(
                                 builder,
                                 ld,
@@ -5970,10 +5973,11 @@ function lower_convention(
                             )
                             # memcpy!(builder, bitcast!(builder, obj, LLVM.PointerType(T_int8, addrspace(value_type(obj)))), 0, bitcast!(builder, sretPtr, LLVM.PointerType(T_int8)), 0, LLVM.ConstantInt(T_int64, sizeof(jlrettype)))
                             obj
+                            end
                         else
                             @assert false
                         end
-                        ret!(builder, obj)
+                        ret!(builder, nobj)
                     end
 
                     LLVM.API.LLVMAddCase(

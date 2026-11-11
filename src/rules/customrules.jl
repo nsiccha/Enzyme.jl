@@ -1689,6 +1689,8 @@ function box_inline_union!(B::LLVM.IRBuilder, alloctx::LLVM.IRBuilder, val::LLVM
     for T in members
         if Base.issingletontype(T)
             push!(boxed, unsafe_to_llvm(B, T.instance))
+        elseif T === Bool
+            push!(boxed, emit_bool_box!(B, load!(B, T_int8, payload)))
         else
             box = emit_allocobj!(B, T, "union.tape.$T")
             memcpy!(B, box, 0, payload, 0, LLVM.ConstantInt(T_int64, sizeof(T)))
@@ -2356,6 +2358,9 @@ function enzyme_custom_common_rev(
         cur_singleton = nothing
         cur_singleton_val = nothing
         any_singleton = false
+        # A `Bool` tape is `jl_true` or `jl_false`, never a box of its own.
+        cur_bool = nothing
+        any_bool = false
 
         counter = 1
 
@@ -2371,20 +2376,24 @@ function enzyme_custom_common_rev(
             singleton = Base.issingletontype(jlrettype)
             any_singleton |= singleton
             singleton_val = unsafe_to_llvm(B, singleton ? jlrettype.instance : nothing)
+            isbool = jlrettype === Bool
+            any_bool |= isbool
 
             if cur === nothing
-                cur = unsafe_to_llvm(B, jlrettype)
+                cur = emit_typetag!(B, jlrettype)
                 cur_size = LLVM.ConstantInt(sizeof(jlrettype))
                 cur_offset = LLVM.ConstantInt(fieldoffset(aug_RT, 3))
                 cur_singleton = LLVM.ConstantInt(T_int1, singleton)
                 cur_singleton_val = singleton_val
+                cur_bool = LLVM.ConstantInt(T_int1, isbool)
             else
                 cmpv = icmp!(B, LLVM.API.LLVMIntEQ, idxv, LLVM.ConstantInt(value_type(idxv), counter))
-                cur = select!(B, cmpv, unsafe_to_llvm(B, jlrettype), cur)
+                cur = select!(B, cmpv, emit_typetag!(B, jlrettype), cur)
                 cur_size = select!(B, cmpv, LLVM.ConstantInt(sizeof(jlrettype)), cur_size)
                 cur_offset = select!(B, cmpv, LLVM.ConstantInt(fieldoffset(aug_RT, 3)), cur_offset)
                 cur_singleton = select!(B, cmpv, LLVM.ConstantInt(T_int1, singleton), cur_singleton)
                 cur_singleton_val = select!(B, cmpv, singleton_val, cur_singleton_val)
+                cur_bool = select!(B, cmpv, LLVM.ConstantInt(T_int1, isbool), cur_bool)
             end
 
             counter += 1
@@ -2393,7 +2402,7 @@ function enzyme_custom_common_rev(
         for_each_uniontype_small(inner, miRT)
 
         isboxed = icmp!(B, LLVM.API.LLVMIntEQ, and!(B, idxv, LLVM.ConstantInt(value_type(idxv), 128)), LLVM.ConstantInt(value_type(idxv), 128))
-        cur = select!(B, isboxed, unsafe_to_llvm(B, UInt8), cur)
+        cur = select!(B, isboxed, emit_typetag!(B, UInt8), cur)
         cur_size = select!(B, isboxed, LLVM.ConstantInt(sizeof(UInt8)), cur_size)
 
         sret_union_tape = emit_allocobj!(B, cur, cur_size, false)
@@ -2404,6 +2413,11 @@ function enzyme_custom_common_rev(
         if any_singleton
             use_singleton = and!(B, cur_singleton, not!(B, isboxed))
             sret_union_tape = select!(B, use_singleton, cur_singleton_val, sret_union_tape)
+        end
+        if any_bool
+            use_bool = and!(B, cur_bool, not!(B, isboxed))
+            boolv = load!(B, T_int8, gep!(B, T_int8, bitcast!(B, sret, LLVM.PointerType(T_int8)), LLVM.Value[cur_offset]))
+            sret_union_tape = select!(B, use_bool, emit_bool_box!(B, boolv), sret_union_tape)
         end
         
         res = sret
