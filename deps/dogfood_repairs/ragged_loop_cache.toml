@@ -1,0 +1,3 @@
+summary = "Group reverse tapes across inner loops sharing an event-dependent bound, and recompute identical branch index arithmetic"
+libenzyme_build = "eea6a012bc319b5a20d68a945f816dfc0312e4ab"
+tests = ["test/broadcast_ragged_cache.jl"]
