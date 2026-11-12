@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Reduce native Reverse tape allocations when a runtime row count varies by
+  outer event but is shared by its inner component loop. libEnzyme groups
+  those component caches into one allocation per event and recomputes identical,
+  safely speculatable branch arithmetic. Values and bounds that later writes
+  can change remain taped. The build also includes upstream's clamp for hoisted
+  counts of skipped inner loops (libEnzyme `eea6a012`).
+  `Enzyme.has_dogfood_repair(:ragged_loop_cache)` reports the repair;
+  `test/broadcast_ragged_cache.jl` checks broadcast shapes, mutation and tape sites.
 - Make Reverse over Forward of a typed nested comprehension over ranges,
   `Float64[ts[i] - d[j] for j in eachindex(d) for i in eachindex(ts)]` in a
   function Julia does not inline, compile. The gradient pass of the Forward
