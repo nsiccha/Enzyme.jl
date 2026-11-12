@@ -1,6 +1,12 @@
-struct BuiltinWrapper{F}
+struct RuntimeCallWrapper{F}
     f::F
 end
+
+# Builtins need a Julia entry point. A dynamically dispatched map also needs an
+# inner call: its concrete tuple types become known only here, and the interpreter
+# applies its method-checked long-tuple rewrite at call sites, not at entry points.
+@inline runtime_function(f) = f
+@inline runtime_function(f::Union{Core.Builtin, typeof(Base.map)}) = RuntimeCallWrapper(f)
 
 """
     ReadonlyArg{Active}()
@@ -55,7 +61,7 @@ end
 @inline readonly_callee(@nospecialize(activity), ::Val{nargs}) where {nargs} =
     is_readonly_arg(activity) ? Val((true, ntuple(Returns(false), Val(nargs))...)) : Val(false)
 
-@generated function (w::BuiltinWrapper{F})(args::Vararg{Any,N}) where {F, N}
+@generated function (w::RuntimeCallWrapper{F})(args::Vararg{Any, N}) where {F, N}
    cargs = Expr[]
    for i in 1:N
       push!(cargs, :(args[$i]))
@@ -367,11 +373,7 @@ function body_runtime_generic_fwd(N, Width, wrapped, primtypes, dfns)
             gv = Core.getglobal($(globalargs...))
             return ReturnType((gv, $(globalshadows...)))
         end
-        f = if f isa Core.Builtin
-            BuiltinWrapper(f)
-        else
-            f
-        end
+        f = runtime_function(f)
 
         # TODO: Annotation of return value
         # tt0 = Tuple{$(primtypes...)}
@@ -569,11 +571,7 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
 
     return quote
         f_unwrapped = f
-        f = if f isa Core.Builtin
-            BuiltinWrapper(f)
-        else
-            f
-        end
+        f = runtime_function(f)
         $(active_refs...)
         args = ($(wrapped...),)
         $(MakeTypes...)
@@ -811,11 +809,7 @@ function body_runtime_generic_rev(
 
     quote
         f_unwrapped = f
-        f = if f isa Core.Builtin
-            BuiltinWrapper(f)
-        else
-            f
-        end
+        f = runtime_function(f)
         if f_unwrapped isa typeof(Core.getglobal)
         else
             $(active_refs...)
@@ -1240,11 +1234,7 @@ function body_runtime_iterate_fwd(N, Width, wrapped, primtypes, active_refs)
         @inbounds wrappedexexpand[i] = :($(wrapped[i])...)
     end
     return quote
-        f = if f isa Core.Builtin
-            BuiltinWrapper(f)
-        else
-            f
-        end
+        f = runtime_function(f)
         $(active_refs...)
         args = ($(wrappedexexpand...),)
         tt′ = Enzyme.vaTypeof(args...)
@@ -1533,11 +1523,7 @@ function body_runtime_iterate_augfwd(N, Width, modbetween, wrapped, primtypes, a
         results[i] = :(tmpvals[$i])
     end
     return quote
-        f = if f isa Core.Builtin
-            BuiltinWrapper(f)
-        else
-            f
-        end
+        f = runtime_function(f)
         refs = Base.RefValue[]
         $(active_refs...)
         args = ($(wrappedexexpand...),)
@@ -1847,11 +1833,7 @@ function body_runtime_iterate_rev(
         push!(shadowsplat, :(($(s...),)))
     end
     quote
-        f = if f isa Core.Builtin
-            BuiltinWrapper(f)
-        else
-            f
-        end
+        f = runtime_function(f)
         (tape0, refs) = tape
         $(active_refs...)
         args = ($(wrappedexexpand...),)

@@ -1,0 +1,2 @@
+summary = "Differentiate runtime-dispatched map over long mixed tuples, including inference-hidden tuples and splatted calls, by exposing the concrete runtime types to the existing method-checked tuple rewrite"
+tests = ["test/tuple_map.jl", "test/applyiter.jl", "test/mixedapplyiter.jl", "test/runtime_calls.jl"]

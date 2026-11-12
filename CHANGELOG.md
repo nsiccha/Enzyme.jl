@@ -65,6 +65,13 @@
   tuple; a more specific user `map` method stays authoritative, and the first-order
   `map` outside the differentiated code is unchanged. `test/tuple_map.jl`;
   `Enzyme.has_dogfood_repair(:long_tuple_map)` reports it.
+- Apply the long-tuple `map` repair to runtime-dispatched calls, including tuples
+  hidden behind `Base.inferencebarrier` and splatted argument tuples. Runtime
+  differentiation previously compiled Base's `map` directly, missing the
+  interpreter's call-site rewrite and raising `IllegalTypeAnalysisException` on
+  mixed tuples of 32 or more elements. A Julia wrapper exposes the concrete runtime
+  types to that rewrite while preserving more specific methods and custom rules.
+  `test/tuple_map.jl`; `Enzyme.has_dogfood_repair(:runtime_tuple_map)` reports it.
 - Clear every restored shadow element when reversing `jl_array_del_end`, which
   shrinks vectors on Julia 1.10, and use each lane's shadow in batched reverse.
   Previously only one element was cleared, so deleting several elements could

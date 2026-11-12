@@ -127,6 +127,107 @@ end
     end
 end
 
+# Keep the tuple hidden even when Enzyme increases its tuple-splat inference limit.
+# These calls compile map as a runtime dispatch target rather than as a known call
+# inside the differentiated entry point.
+tuple_map_apply(m, c) = m(c)
+tuple_map_apply(m, c, ::Int) = m(c)
+
+function tuple_map_dynamic_single_loss(x, box, vs::Vararg{Any, N}) where {N}
+    box[] = x[2]
+    return tuple_map_total(x, map(tuple_map_wrap, Base.inferencebarrier((vs..., box))))
+end
+function tuple_map_dynamic_double_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
+    box[] = x[2]
+    return tuple_map_total(x, map(tuple_map_apply, makers, Base.inferencebarrier((vs..., box))))
+end
+function tuple_map_dynamic_triple_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
+    box[] = x[2]
+    return tuple_map_total(x, map(tuple_map_apply, makers, Base.inferencebarrier((vs..., box)), ntuple(identity, Val(N + 1))))
+end
+
+# Hide the argument tuple too, to exercise the separate _apply_iterate runtime rules.
+function tuple_map_iterate_single_loss(x, box, vs::Vararg{Any, N}) where {N}
+    box[] = x[2]
+    args = Base.inferencebarrier((tuple_map_wrap, (vs..., box)))
+    return tuple_map_total(x, map(args...))
+end
+function tuple_map_iterate_double_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
+    box[] = x[2]
+    args = Base.inferencebarrier((tuple_map_apply, makers, (vs..., box)))
+    return tuple_map_total(x, map(args...))
+end
+function tuple_map_iterate_triple_loss(x, box, makers, vs::Vararg{Any, N}) where {N}
+    box[] = x[2]
+    args = Base.inferencebarrier((tuple_map_apply, makers, (vs..., box), ntuple(identity, Val(N + 1))))
+    return tuple_map_total(x, map(args...))
+end
+
+function tuple_map_batch_check(loss, K, extra...)
+    vs = ntuple(j -> fill(Float64(j), 3), K)
+    x = [0.3, 0.7]
+    box = Ref(0.0)
+    result = autodiff(
+        ForwardWithPrimal, loss,
+        BatchDuplicated(x, ([1.0, 0.0], [0.0, 1.0])),
+        BatchDuplicated(box, (Ref(0.0), Ref(0.0))), extra..., map(Const, vs)...,
+    )
+    S = sum(3j for j in 1:K)
+    @test collect(result[1]) ≈ [S + x[2], x[1]]
+    @test result[2] ≈ (S + x[2]) * x[1]
+    @test x == [0.3, 0.7]
+    @test box[] == x[2]
+    @test vs == ntuple(j -> fill(Float64(j), 3), K)
+    return nothing
+end
+
+@testset "Runtime-dispatched map over long mixed tuples" begin
+    for K in (8, 30, 31, 40)
+        makers = (ntuple(Returns(tuple_map_constant), K)..., tuple_map_cache)
+        tuple_map_check(tuple_map_dynamic_single_loss, K)
+        tuple_map_check(tuple_map_dynamic_double_loss, K, Const(makers))
+        tuple_map_check(tuple_map_dynamic_triple_loss, K, Const(makers))
+        tuple_map_check(tuple_map_iterate_single_loss, K)
+        tuple_map_check(tuple_map_iterate_double_loss, K, Const(makers))
+        tuple_map_check(tuple_map_iterate_triple_loss, K, Const(makers))
+        if K == 31 || K == 40
+            tuple_map_batch_check(tuple_map_dynamic_single_loss, K)
+            tuple_map_batch_check(tuple_map_dynamic_double_loss, K, Const(makers))
+            tuple_map_batch_check(tuple_map_dynamic_triple_loss, K, Const(makers))
+            tuple_map_batch_check(tuple_map_iterate_single_loss, K)
+            tuple_map_batch_check(tuple_map_iterate_double_loss, K, Const(makers))
+            tuple_map_batch_check(tuple_map_iterate_triple_loss, K, Const(makers))
+        end
+    end
+end
+
+struct TupleMapRuleMapper end
+(::TupleMapRuleMapper)(c) = TupleMapCache(c)
+tuple_map_rule_shadow(c) = TupleMapCache(Ref(7c[]))
+tuple_map_rule_loss(cs) = tuple_map_sum(map(TupleMapRuleMapper(), Base.inferencebarrier(cs)))
+
+@testset "Runtime map before adding a rule" begin
+    cs = ntuple(Returns(Ref(2.0)), 32)
+    dcs = ntuple(Returns(Ref(1.0)), 32)
+    @test autodiff(Forward, tuple_map_rule_loss, Duplicated(cs, dcs))[1] == 32.0
+end
+
+function Enzyme.EnzymeRules.forward(
+        config::Enzyme.EnzymeRules.FwdConfig,
+        ::Const{typeof(map)},
+        ::Type{RT},
+        mapper::Const{TupleMapRuleMapper},
+        cs::Duplicated{<:Tuple},
+    ) where {RT <: Duplicated}
+    return RT(map(mapper.val, cs.val), map(tuple_map_rule_shadow, cs.dval))
+end
+
+@testset "Runtime map keeps a rule added after compilation" begin
+    cs = ntuple(Returns(Ref(2.0)), 32)
+    dcs = ntuple(Returns(Ref(1.0)), 32)
+    @test autodiff(Forward, tuple_map_rule_loss, Duplicated(cs, dcs))[1] == 224.0
+end
+
 # A more specific `map` method stays authoritative: the rewrite applies only when Base's
 # long-tuple method is the one dispatch selects.
 struct TupleMapUserMapper end
@@ -138,12 +239,19 @@ function tuple_map_user_loss(x, box, vs::Vararg{Any, N}) where {N}
     return tuple_map_total(x, map(TupleMapUserMapper(), tuple_map_with_box(box, vs)))
 end
 
+function tuple_map_dynamic_user_loss(x, box, vs::Vararg{Any, N}) where {N}
+    box[] = x[2]
+    return tuple_map_total(x, map(TupleMapUserMapper(), Base.inferencebarrier((vs..., box))))
+end
+
 @testset "A user map method is not replaced" begin
     K = 32
     vs = ntuple(j -> fill(Float64(j), 3), K)
     x = [0.3, 0.7]
-    dx = zeros(2)
-    autodiff(Reverse, tuple_map_user_loss, Active, Duplicated(x, dx), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)
-    @test dx == [0.0, 0.0]
-    @test autodiff(Forward, tuple_map_user_loss, Duplicated(x, [1.0, 0.0]), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)[1] == 0.0
+    for loss in (tuple_map_user_loss, tuple_map_dynamic_user_loss)
+        dx = zeros(2)
+        autodiff(Reverse, loss, Active, Duplicated(x, dx), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)
+        @test dx == [0.0, 0.0]
+        @test autodiff(Forward, loss, Duplicated(x, [1.0, 0.0]), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)[1] == 0.0
+    end
 end
