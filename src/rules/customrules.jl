@@ -1755,6 +1755,51 @@ function nthfield_if_byref!(B, isboxed, sret_union_type, res)
     return call!(B, fty, func, [isboxed, sret_union_type, res])
 end
 
+# Keep custom-rule return fields independently available to the reverse pass.
+# Caching a whole aggregate load also retains its primal and shadow when only
+# the tape is needed. Load and mark the top-level fields separately, retaining
+# the structure of the tape itself.
+function load_rule_return!(B::LLVM.IRBuilder, ty::LLVM.LLVMType, ptr::LLVM.Value)
+    if ty isa LLVM.StructType || ty isa LLVM.ArrayType
+        val = LLVM.UndefValue(ty)
+        count = ty isa LLVM.StructType ? length(LLVM.elements(ty)) : length(ty)
+        for i in 1:count
+            fieldty = ty isa LLVM.StructType ? LLVM.elements(ty)[i] : eltype(ty)
+            fieldptr = inbounds_gep!(
+                B, ty, ptr,
+                LLVM.Value[LLVM.ConstantInt(LLVM.Int32Type(), 0), LLVM.ConstantInt(LLVM.Int32Type(), i - 1)],
+            )
+            field = load!(B, fieldty, fieldptr, "rules_return_field")
+            # A field can belong to a packed aggregate; LLVM can recover the
+            # stronger alignment from the alloca where it is valid.
+            LLVM.alignment!(field, 1)
+            API.SetMustCache!(field)
+            val = insert_value!(B, val, field, i - 1)
+        end
+        return val
+    end
+    val = load!(B, ty, ptr, "rules_return_field")
+    # A field can be part of a packed aggregate. The alloca's alignment lets
+    # subsequent LLVM passes recover stronger alignment where it is valid.
+    LLVM.alignment!(val, 1)
+    API.SetMustCache!(val)
+    return val
+end
+
+# Resolve the fields we just constructed before Enzyme looks up their values
+# in reverse. An extractvalue of an insertvalue chain otherwise makes lookup
+# visit (and cache) the loads for the other fields as well.
+function extract_rule_return!(B::LLVM.IRBuilder, val::LLVM.Value, idx::Integer)
+    while val isa LLVM.InsertValueInst
+        LLVM.API.LLVMGetNumIndices(val) == 1 || break
+        if unsafe_load(LLVM.API.LLVMGetIndices(val)) == idx
+            return operands(val)[2]
+        end
+        val = operands(val)[1]
+    end
+    return extract_value!(B, val, idx)
+end
+
 function enzyme_custom_common_rev(
     forward::Bool,
     B::LLVM.IRBuilder,
@@ -2440,8 +2485,7 @@ function enzyme_custom_common_rev(
     	if returnRoots !== nothing && VERSION >= v"1.12"
     	    res = recombine_value_ptr!(B, sty, sret, returnRoots; must_cache=true)
     	else
-            res = load!(B, sty, sret, "rules_sret_not_nothing")
-            API.SetMustCache!(res)
+            res = load_rule_return!(B, sty, sret)
     	end
     end
 
@@ -2545,7 +2589,7 @@ function enzyme_custom_common_rev(
         idx = 0
         if needsPrimal
             @assert !isghostty(RealRt)
-            normalV = extract_value!(B, resV, idx)
+            normalV = extract_rule_return!(B, resV, idx)
 	        _, prim_sret, prim_roots = get_return_info(RealRt)
             if prim_sret !== nothing
                 val = new_from_original(gutils, operands(orig)[1+orig_swiftself])
@@ -2568,7 +2612,7 @@ function enzyme_custom_common_rev(
         if needsShadow
             if needsShadowJL
                 @assert !isghostty(RealRt)
-                shadowV = extract_value!(B, resV, idx)
+                shadowV = extract_rule_return!(B, resV, idx)
 	        _, prim_sret, prim_roots = get_return_info(RealRt)
                 if prim_sret !== nothing
                     dval = if is_constant_value(gutils, operands(orig)[1+orig_swiftself])
@@ -2631,7 +2675,7 @@ function enzyme_custom_common_rev(
                 # The struct holds the tape inline as payload and selector.
                 box_inline_union!(B, alloctx, res, Int(fieldoffset(aug_RT, 3)), TapeT)
             else
-                extract_value!(B, res, idx)
+                extract_rule_return!(B, res, idx)
             end
             if length(byval_tapes) == 0
                 tapeV = tapeV0.ref
