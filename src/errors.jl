@@ -1288,6 +1288,11 @@ function constant_argument_data(
             constant_argument_data(gutils, operands(cur)[3], enzyme_ctx, seen)
     end
     isa(cur, LLVM.Argument) && return is_constant_value(gutils, cur)
+    # Reshaping an Array makes a new header over the same element storage.
+    # Its contents therefore come from the source, just as for a load from it.
+    if called_function_name(cur) in ("jl_reshape_array", "ijl_reshape_array")
+        return constant_argument_data(gutils, operands(cur)[2], enzyme_ctx, seen)
+    end
     isa(cur, LLVM.LoadInst) || return false
     ptr = operands(cur)[1]
     # The last load on the way to the root: what it reads is what the root holds.

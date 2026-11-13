@@ -490,10 +490,10 @@ record_contents(r) = r
     end
 end
 
-# Julia 1.13 constructs a reshaped Array by copying the source MemoryRef into
+# Julia 1.11+ constructs a reshaped Array by copying the source MemoryRef into
 # a new header. A constant row reduction can make that header active when it
 # shares the reshaped array with a broadcast over active data.
-@static if VERSION >= v"1.13-"
+@static if VERSION >= v"1.11-"
     function const_reshape_weighted_rows(X, a)
         A = reshape(a, 1, length(a))
         return sum(sum((A .- 1) .* log.(X); dims = 2))

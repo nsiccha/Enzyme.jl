@@ -1,0 +1,2 @@
+summary = "A reshape of Const array storage can be stored beside active arrays without a runtime activity error, including Julia 1.10 runtime calls and Julia 1.11+ MemoryRef headers"
+tests = ["test/const_reshape.jl"]
