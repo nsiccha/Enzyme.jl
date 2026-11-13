@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Retain package-image derivatives that call library functions whose selected
+  implementation has no exported name, such as glibc's `memchr` reached through
+  `findfirst`. Enzyme uses its known foreign-function names and verifies that
+  each resolves to the exact address in the containing library. Fresh processes
+  can then link these derivatives instead of recompiling them; unknown pointers
+  still prevent retention. `test/precompile.jl` checks fresh-process reuse and
+  numerical results in Forward and Reverse.
 - Reduce native Reverse tape allocations when a runtime row count varies by
   outer event but is shared by its inner component loop. libEnzyme groups
   those component caches into one allocation per event and recomputes identical,

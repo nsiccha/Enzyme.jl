@@ -822,6 +822,65 @@ Enzyme.Compiler.RetainDerivatives[] = true
 end
 """
 
+# findfirst on an ASCII character calls memchr, which on glibc resolves to an
+# unnamed implementation selected for this CPU. Its exported name still resolves
+# to that address, even though dladdr cannot recover the name from the address.
+const RETAINED_FOREIGN = """
+module EnzymeRetainedForeign
+using Enzyme
+f(x, s) = x * something(findfirst('a', s), 0)
+rev(x, s) = autodiff(Reverse, f, Active, Active(x), Const(s))[1][1]
+fwd(x, s) = autodiff(Forward, f, Duplicated(x, 1.0), Const(s))[1]
+const WORKLOAD = (rev(2.0, "banana"), fwd(2.0, "banana"))
+end
+"""
+
+@testset "retained foreign functions with unnamed implementations" begin
+    if Enzyme.Compiler.retention_supported()
+        C = Enzyme.Compiler
+        @test C.foreign_address(UInt(0)) === nothing
+        for symbol in ("memchr", "memset", "memcpy", "memmove", "memcmp", "malloc")
+            ptr = C.LLVM.find_symbol(symbol)
+            @test ptr != C_NULL
+            foreign = C.foreign_address(UInt(ptr))
+            @test foreign !== nothing
+            if foreign !== nothing
+                handle = C.Libdl.dlopen(foreign.library)
+                try
+                    @test C.Libdl.dlsym(handle, foreign.symbol) == ptr
+                finally
+                    C.Libdl.dlclose(handle)
+                end
+            end
+            # A nearby address is not the entry point, even if dladdr attributes
+            # it to the same function or shared library.
+            @test C.foreign_address(UInt(ptr) + UInt(1)) === nothing
+        end
+    end
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymeRetainedForeign.jl"), RETAINED_FOREIGN)
+        code = """
+        using Enzyme, EnzymeRetainedForeign
+        for s in ("abc", "banana", "xyz", "λa", repeat("x", 4096) * "a")
+            print(EnzymeRetainedForeign.rev(3.0, s), " ", EnzymeRetainedForeign.fwd(3.0, s), " ")
+        end
+        stats = Enzyme.Compiler.retained_derivative_stats()
+        print(stats.compiled, " ", stats.materialized, " ", isempty(stats.rejected), " ", isempty(stats.absent))
+        """
+        for _ in 1:2
+            ok, fields = run_child(load_path, code)
+            @test ok
+            ok || continue
+            @test parse.(Float64, fields[1:10]) == repeat([1.0, 2.0, 0.0, 3.0, 4097.0]; inner = 2)
+            if Enzyme.Compiler.retention_supported()
+                @test parse(Int, fields[11]) == 0
+                @test parse(Int, fields[12]) == 2
+                @test fields[13:14] == ["true", "true"]
+            end
+        end
+    end
+end
+
 @testset "a package can keep its derivatives out of its image" begin
     precompile_test_harness() do load_path
         write(joinpath(load_path, "EnzymeNotRetained.jl"), RETAINED_OFF)
