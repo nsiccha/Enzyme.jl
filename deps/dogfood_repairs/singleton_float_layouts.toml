@@ -1,0 +1,2 @@
+summary = "Allow singleton subtypes of AbstractFloat with no runtime payload in type layouts, including static floats used by MeasureTheory For measures"
+tests = ["test/float_layouts.jl", "test/integration/MeasureTheory/runtests.jl"]

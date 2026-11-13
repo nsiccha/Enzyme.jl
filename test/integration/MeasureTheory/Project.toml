@@ -1,0 +1,7 @@
+[deps]
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+MeasureTheory = "eadaa1a4-d27c-401d-8699-e962e1bbc33b"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+MeasureTheory = "0.16.5"
