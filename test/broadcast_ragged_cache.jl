@@ -148,6 +148,32 @@ function shape_value(input, direction, step)
     return bound_objective(x, data, scratch, Val(true), Val(true), Val(true))
 end
 
+function shape_split_gradient(input)
+    x, data, scratch = deepcopy(input)
+    args = (
+        Duplicated(x, zero(x)), Const(data), Duplicated(scratch, zero(scratch)),
+        Const(Val(true)), Const(Val(true)), Const(Val(true)),
+    )
+    fwd, rev = autodiff_thunk(
+        ReverseSplitWithPrimal, Const{typeof(bound_objective)}, Active,
+        map(typeof, args)...,
+    )
+    tape, value, _ = fwd(Const(bound_objective), args...)
+    rev(Const(bound_objective), args..., 1.0, tape)
+    return value, args[1].dval, scratch, args[3].dval
+end
+
+function component_gradient(x, lengths, components)
+    values, dx = copy(x), zero(x)
+    autodiff(
+        Reverse, mutating_components, Active,
+        Duplicated(values, dx), Const(lengths), Const(components),
+    )
+    return dx
+end
+
+component_gradient_sum(x, lengths, components) = sum(component_gradient(x, lengths, components))
+
 @testset "Runtime broadcast cache shapes" begin
     cases = (
         (5, [5, 1, 5, 1, 1, 5], false),
@@ -166,6 +192,57 @@ end
         direction = cos.(eachindex(g))
         fd = (shape_value(input, direction, 1.0e-5) - shape_value(input, direction, -1.0e-5)) / 2.0e-5
         @test sum(g .* direction) ≈ fd rtol = 1.0e-6 atol = 1.0e-6
+    end
+end
+
+@testset "Split reverse across ragged buffer growth" begin
+    # Large jumps cross multiple growth boundaries; empty events consume no
+    # values. Aliases require both the old values and the saved event offsets.
+    cases = (
+        (1, [0, 1, 0, 33, 1, 257, 0, 2], false),
+        (5, [5, 1, 5, 1, 1, 5], true),
+        (1, Int[], false),
+        (0, [0, 1, 0, 1], false),
+    )
+    for (t, lengths, alias_scratch) in cases, components in (1, 2, 3)
+        input = shape_input(t, lengths, components, alias_scratch)
+        expected, scratch_ref, ds_ref = shape_gradient(input, false)
+        value, got, scratch, ds = shape_split_gradient(input)
+        @test value ≈ shape_value(input, zero(input[1]), 0.0)
+        @test got ≈ expected rtol = 1.0e-12 atol = 1.0e-12
+        @test scratch == scratch_ref
+        @test ds ≈ ds_ref rtol = 1.0e-12 atol = 1.0e-12
+    end
+end
+
+@testset "Ragged cache higher derivatives" begin
+    # Growth must preserve the old storage while differentiating its copies.
+    # A raw realloc can pass first derivatives but invalidate the second reverse.
+    for T in (Float64, Float32), lengths in ([1, 0, 2, 4], [0, 0]), components in (0, 1, 2)
+        x = T[0.2, -0.4, 0.6, -0.8]
+        direction = T.(cos.(1:4))
+        tolerance = T === Float32 ? 1.0e-5 : 1.0e-6
+        h = 1.0e-5
+        up = mutating_components_reference(x .+ h .* direction, lengths, components)[2]
+        down = mutating_components_reference(x .- h .* direction, lengths, components)[2]
+        expected = (up .- down) ./ (2h)
+        got = only(
+            autodiff(
+                Forward, component_gradient, Duplicated(x, direction),
+                Const(lengths), Const(components),
+            )
+        )
+        @test got ≈ expected rtol = tolerance atol = tolerance
+
+        up = mutating_components_reference(x .+ h, lengths, components)[2]
+        down = mutating_components_reference(x .- h, lengths, components)[2]
+        expected = (up .- down) ./ (2h)
+        got = zero(x)
+        autodiff(
+            Reverse, component_gradient_sum, Active,
+            Duplicated(x, got), Const(lengths), Const(components),
+        )
+        @test got ≈ expected rtol = tolerance atol = tolerance
     end
 end
 
