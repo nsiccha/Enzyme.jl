@@ -408,24 +408,33 @@ end
 """
     address_in_object(object)::Union{UInt, Nothing}
 
-A word of the object file that is an address mapped in this process, if there is one. Nothing
-in the IR says that every address was found: this is what shows it was. An x86-64 instruction
-holds a 64-bit address as eight consecutive bytes wherever it is, so every offset is looked at.
+A word in the object's loaded code or data that matches an address mapped in this process,
+if there is one. This is a conservative check after replacing literal pointers in the IR.
+An x86-64 instruction holds a 64-bit address as eight consecutive bytes wherever it is, so
+every offset within each file-backed allocated section is checked. ELF metadata (including
+relocation records) is not loaded data: adjacent fields can look like an address by chance.
 """
 function address_in_object(object::Vector{UInt8})::Union{UInt, Nothing}
     regions = mapped_regions()
     isempty(regions) && return nothing
     low = regions[1][1]
     high = regions[end][2]
-    n = length(object) - 7
-    @inbounds for i in 1:n
-        # User addresses leave the two top bytes zero; nearly all other bytes do not.
-        (object[i + 7] == 0x00 && object[i + 6] == 0x00) || continue
-        word = UInt(object[i]) | UInt(object[i + 1]) << 8 | UInt(object[i + 2]) << 16 | UInt(object[i + 3]) << 24 |
-            UInt(object[i + 4]) << 32 | UInt(object[i + 5]) << 40
-        (low <= word < high) || continue
-        k = searchsortedlast(regions, (word, typemax(UInt)))
-        k >= 1 && regions[k][1] <= word < regions[k][2] && return word
+    elf = only(ObjectFile.readmeta(IOBuffer(object), ObjectFile.ELF.ELFHandle))
+    for section in ObjectFile.Sections(elf)
+        header = ObjectFile.deref(section)
+        header.sh_flags & ObjectFile.ELF.SHF_ALLOC == 0 && continue
+        header.sh_type == ObjectFile.ELF.SHT_NOBITS && continue
+        start = Int(ObjectFile.section_offset(section)) + 1
+        stop = start + Int(ObjectFile.section_size(section)) - 1
+        @inbounds for i in start:(stop - 7)
+            # User addresses leave the two top bytes zero; nearly all other bytes do not.
+            (object[i + 7] == 0x00 && object[i + 6] == 0x00) || continue
+            word = UInt(object[i]) | UInt(object[i + 1]) << 8 | UInt(object[i + 2]) << 16 | UInt(object[i + 3]) << 24 |
+                UInt(object[i + 4]) << 32 | UInt(object[i + 5]) << 40
+            (low <= word < high) || continue
+            k = searchsortedlast(regions, (word, typemax(UInt)))
+            k >= 1 && regions[k][1] <= word < regions[k][2] && return word
+        end
     end
     return nothing
 end
