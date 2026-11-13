@@ -9,6 +9,10 @@
   can then link these derivatives instead of recompiling them; unknown pointers
   still prevent retention. `test/precompile.jl` checks fresh-process reuse and
   numerical results in Forward and Reverse.
+- Check only file-backed allocated ELF sections for embedded process addresses
+  when retaining derivatives. Relocation records and other metadata no longer
+  cause layout-dependent refusals; embedded addresses in code and data are still
+  checked. `Enzyme.has_dogfood_repair(:retained_object_sections)` reports the repair.
 - Reduce native Reverse tape allocations when a runtime row count varies by
   outer event but is shared by its inner component loop. libEnzyme groups
   those component caches into one allocation per event and recomputes identical,

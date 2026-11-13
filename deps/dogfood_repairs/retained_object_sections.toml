@@ -1,0 +1,2 @@
+summary = "Derivative retention scans loaded ELF sections instead of mistaking relocation and other metadata for process addresses"
+tests = ["test/retained_object.jl", "test/precompile.jl"]
