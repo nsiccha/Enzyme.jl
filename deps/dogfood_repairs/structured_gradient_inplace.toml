@@ -1,0 +1,2 @@
+summary = "Reverse gradient! writes into matching mutable derivative storage in tuples, named tuples, Refs and structs, including calls through DifferentiationInterface without contexts"
+tests = ["test/gradient_inplace.jl", "test/integration/DifferentiationInterface/structured_gradient.jl"]

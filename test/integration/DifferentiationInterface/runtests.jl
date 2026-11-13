@@ -15,6 +15,8 @@ using EnzymeCore: Forward, Reverse, Const, Duplicated
 using StaticArrays: StaticArrays
 using Test
 
+include("structured_gradient.jl")
+
 logging = get(ENV, "CI", "false") == "false"
 
 function remove_matrices(scens::Vector{<:Scenario})  # TODO: remove
