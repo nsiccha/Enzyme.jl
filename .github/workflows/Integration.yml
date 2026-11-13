@@ -59,6 +59,7 @@ jobs:
           - SciML
           - KernelAbstractions
           - MatrixAlgebraKit
+          - MeasureTheory
           - Molly
           - MPI
           - Comrade
