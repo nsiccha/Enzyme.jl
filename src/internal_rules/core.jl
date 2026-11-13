@@ -373,7 +373,7 @@ function EnzymeRules.reverse(
     return (dret.val,)
 end
 
-# Julia 1.13 builds a reshaped Array by copying its MemoryRef fields into a new
+# Julia 1.11+ builds a reshaped Array by copying its MemoryRef fields into a new
 # Array header. When the source is Const but the result is used with active data,
 # the copied data pointer otherwise looks like an inactive value stored into an
 # active object. Give the result an independent zero shadow, as for deepcopy of
@@ -387,7 +387,7 @@ end
 # reverse can pass them as `Duplicated`). Only the method that builds the new
 # header is intercepted; reshapes that return the source itself, such as
 # `reshape(v, Val(1))` in `view(v, i)`, stay native.
-@static if VERSION >= v"1.13-"
+@static if VERSION >= v"1.11-"
     struct ConstReshapeZero{T}
         primal::T
     end

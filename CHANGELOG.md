@@ -10,6 +10,14 @@
   counts of skipped inner loops (libEnzyme `eea6a012`).
   `Enzyme.has_dogfood_repair(:ragged_loop_cache)` reports the repair;
   `test/broadcast_ragged_cache.jl` checks broadcast shapes, mutation and tape sites.
+- Preserve constant-data provenance through `jl_reshape_array` and
+  `ijl_reshape_array`. On Julia 1.10, storing `vec` of a constant matrix beside
+  an active vector now receives independent zero derivative storage instead of
+  raising `EnzymeRuntimeActivityError`; the primal keeps its original aliases.
+  Enable the existing Array reshape rule on Julia 1.11 and 1.12, whose
+  MemoryRef array headers need the same handling as Julia 1.13.
+  `Enzyme.has_dogfood_repair(:const_array_reshape)` reports the repair;
+  `test/const_reshape.jl` covers reverse, forward, batch, split and nested modes.
 - Pack eligible ragged Reverse caches into geometrically growing value buffers
   with saved event offsets, reducing allocations as event counts grow. Values
   and bounds that later writes can change remain taped. Buffer growth supports
