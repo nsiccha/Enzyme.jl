@@ -210,7 +210,10 @@ const ILNEST_CASES = (
 
         # Small enough that every array stays in Julia's pools (an object over 2032
         # bytes is malloc'd, which the native measurement below would count).
-        G, T = 40, 60
+        # A power-of-two number of equal chunks fills the packed cache's geometric
+        # capacity, so the native measurement counts saved values rather than spare
+        # capacity. Ragged growth itself is covered by broadcast_ragged_cache.jl.
+        G, T = 32, 60
         P = ilnest_problem(G, T)
         shadows = map(zero, args_of(P))
         warm(f) = (grad!(f, P, shadows); grad!(f, P, shadows); @allocated grad!(f, P, shadows))
