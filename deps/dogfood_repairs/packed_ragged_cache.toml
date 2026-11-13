@@ -1,0 +1,3 @@
+summary = "Pack eligible ragged reverse tapes into growing buffers with saved event offsets, preserving mutation and higher derivatives"
+libenzyme_build = "e316a076ef438970e339876079acd02ce48d3d21"
+tests = ["test/broadcast_ragged_cache.jl"]

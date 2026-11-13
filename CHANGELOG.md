@@ -10,6 +10,15 @@
   counts of skipped inner loops (libEnzyme `eea6a012`).
   `Enzyme.has_dogfood_repair(:ragged_loop_cache)` reports the repair;
   `test/broadcast_ragged_cache.jl` checks broadcast shapes, mutation and tape sites.
+- Pack eligible ragged Reverse caches into geometrically growing value buffers
+  with saved event offsets, reducing allocations as event counts grow. Values
+  and bounds that later writes can change remain taped. Buffer growth supports
+  split reverse and higher derivatives; extra capacity and copying can increase
+  peak native memory. This applies to scalar numeric caches with two allocation
+  levels and known chunk bounds on 64-bit integral host pointers using `malloc`.
+  `Enzyme.has_dogfood_repair(:packed_ragged_cache)` reports the repair, supplied
+  by libEnzyme `e316a076`. `test/broadcast_ragged_cache.jl` covers split reverse,
+  empty chunks, large growth steps and nested differentiation.
 - Make Reverse over Forward of a typed nested comprehension over ranges,
   `Float64[ts[i] - d[j] for j in eachindex(d) for i in eachindex(ts)]` in a
   function Julia does not inline, compile. The gradient pass of the Forward
