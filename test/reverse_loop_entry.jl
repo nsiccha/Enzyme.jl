@@ -20,6 +20,69 @@ function central_differences(f, x; h = 1.0e-6)
     return g
 end
 
+# A forward SSA value may still be available even when the reverse pass cannot
+# recreate it. loopentryavailable.ll checks that such an operand does not keep
+# log recomputation inside the reverse loop. Check values, adjoints, mutation,
+# and the empty path here, including an input whose unused log would throw.
+function overwritten_scale(x, scales)
+    s = scales[1]
+    result = 0.0
+    if !isempty(x)
+        ls = log(s)
+        for xi in x
+            result += ls * xi * xi
+        end
+    end
+    scales[1] = 0.0
+    return result
+end
+
+@noinline opaque_scale(s) = exp(s)
+
+function called_scale(x, s)
+    scale = opaque_scale(s)
+    result = 0.0
+    if !isempty(x)
+        ls = log(scale)
+        for xi in x
+            result += ls * xi * xi
+        end
+    end
+    return result + scale
+end
+
+@testset "Forward values available to the reverse loop" begin
+    for x in (Float64[], [0.2], [0.2, -0.5, 1.3]), s in (0.5, 2.5)
+        scales, ds = [s], [0.0]
+        dx = zero(x)
+        _, value = autodiff(
+            ReverseWithPrimal, Const(overwritten_scale), Active,
+            Duplicated(x, dx), Duplicated(scales, ds),
+        )
+        @test value ≈ log(s) * sum(abs2, x)
+        @test dx ≈ 2log(s) .* x
+        @test ds ≈ [sum(abs2, x) / s]
+        @test scales == [0.0]
+
+        dx = zero(x)
+        derivs, value = autodiff(
+            ReverseWithPrimal, Const(called_scale), Active,
+            Duplicated(x, dx), Active(s),
+        )
+        @test value ≈ s * sum(abs2, x) + exp(s)
+        @test dx ≈ 2s .* x
+        @test last(derivs) ≈ sum(abs2, x) + exp(s)
+    end
+    scales, ds = [-0.5], [0.0]
+    _, value = autodiff(
+        ReverseWithPrimal, Const(overwritten_scale), Active,
+        Duplicated(Float64[], Float64[]), Duplicated(scales, ds),
+    )
+    @test value == 0.0
+    @test ds == [0.0]
+    @test scales == [0.0]
+end
+
 function reverse_gradient(mode, f, x, args...)
     dx = zero(x)
     autodiff(mode, Const(f), Active, Duplicated(x, dx), map(Const, args)...)

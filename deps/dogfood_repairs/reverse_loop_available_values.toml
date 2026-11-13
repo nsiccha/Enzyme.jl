@@ -1,0 +1,3 @@
+summary = "Forward values still available in the reverse pass allow their users to be recomputed once on entry to a reverse loop"
+libenzyme_build = "0078fb6cd255da1cc22f43b90f06cb8e7f7700db"
+tests = ["test/reverse_loop_entry.jl"]
