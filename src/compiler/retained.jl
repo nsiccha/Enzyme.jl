@@ -166,12 +166,23 @@ at another address in another process, but its symbols keep their names.
 """
 function foreign_address(addr::UInt)::Union{ForeignAddress, Nothing}
     info = Ref{SymbolAddressInfo}()
-    found = ccall(:dladdr, Cint, (Ptr{Cvoid}, Ptr{SymbolAddressInfo}), Ptr{Cvoid}(addr), info)
+    ptr = Ptr{Cvoid}(addr)
+    found = ccall(:dladdr, Cint, (Ptr{Cvoid}, Ptr{SymbolAddressInfo}), ptr, info)
     found == 0 && return nothing
-    info[].saddr == Ptr{Cvoid}(addr) || return nothing
-    info[].sname == C_NULL && return nothing
     info[].fname == C_NULL && return nothing
-    return ForeignAddress(unsafe_string(info[].sname), unsafe_string(info[].fname))
+    library = unsafe_string(info[].fname)
+    # An ELF indirect function can resolve to a hidden implementation (glibc's memchr,
+    # for example), so dladdr knows its library but not its exported name. The FFI map
+    # already records the addresses Enzyme resolves by name; use that same information
+    # here, and verify the name in this library before keeping it for another process.
+    symbol = if info[].saddr == ptr && info[].sname != C_NULL
+        unsafe_string(info[].sname)
+    else
+        get(FFI.ptr_map, ptr, nothing)
+    end
+    symbol === nothing && return nothing
+    resolve_symbol_name(symbol, library, ptr) === :match || return nothing
+    return ForeignAddress(symbol, library)
 end
 
 # The constant expressions `inttoptr (iN <address> to T)` reachable from the constant `c`.
