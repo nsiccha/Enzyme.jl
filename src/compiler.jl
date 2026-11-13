@@ -6946,7 +6946,10 @@ function readonly_walk!(
                 if isa(called, LLVM.Function)
                     intr = LLVM.API.LLVMGetIntrinsicID(called)
                     if intr == LLVM.Intrinsic("llvm.memset").id
-                        if cur != operands(user)[1]
+                        # Clearing a local argument or roots slot writes only
+                        # that slot, not any held data stored in it later.
+                        if cur != operands(user)[1] ||
+                                local_memory_base(operands(user)[1]) !== nothing
                             continue
                         end
                     end

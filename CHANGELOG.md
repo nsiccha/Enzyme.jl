@@ -16,6 +16,11 @@
   Nonempty unsupported float types still require an explicit type mapping.
   `Enzyme.has_dogfood_repair(:singleton_float_layouts)` reports the repair;
   `test/float_layouts.jl` and `test/integration/MeasureTheory/runtests.jl` cover it.
+- Accept `memset` initialization of local argument and GC roots slots in the
+  readonly check. This lets Soss differentiate `For` measures over captured
+  vector data. Writes through captured pointers remain rejected.
+  `Enzyme.has_dogfood_repair(:readonly_local_memset)` reports the repair;
+  `test/readonly_memset.jl` and `test/readonly_argument.jl` cover it.
 - Preserve constant-data provenance through `jl_reshape_array` and
   `ijl_reshape_array`. On Julia 1.10, storing `vec` of a constant matrix beside
   an active vector now receives independent zero derivative storage instead of

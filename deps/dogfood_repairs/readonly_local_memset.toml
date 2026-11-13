@@ -1,0 +1,2 @@
+summary = "Accept memset initialization of local argument and GC roots slots in the readonly check, while still rejecting writes through held pointers"
+tests = ["test/readonly_memset.jl", "test/readonly_argument.jl"]
