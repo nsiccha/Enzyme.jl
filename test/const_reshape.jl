@@ -137,3 +137,48 @@ reshaped_constant_loss(x, m) = reshaped_constant_distance(x, m) + sum(reshaped_c
     @test autodiff(Reverse, reshaped_constant_loss, Active, Const(x), Active(0.2))[1][2] ≈ -0.4
     @test x == [0.4]
 end
+
+struct TupleReshapedArrayFrame{N, T}
+    values::NTuple{N, Vector{T}}
+end
+
+@noinline reshaped_tuple_frame(a, c) = TupleReshapedArrayFrame(map(vec, (a, c)))
+
+function reshaped_tuple_loss(u, data)
+    frame = reshaped_tuple_frame(u[1] .+ data.offsets, data.log_scale)
+    result = zero(eltype(u))
+    for i in eachindex(frame.values[1])
+        y = (u[i + 1] - frame.values[1][i]) * exp(-frame.values[2][i])
+        result += y * y / 2
+    end
+    return result
+end
+
+@testset "Constant reshapes returned beside active arrays in a tuple" begin
+    data = (offsets = [0.1 0.3 0.5; 0.2 0.4 0.6], log_scale = log.([0.7 1.1 1.5; 0.9 1.3 1.7]))
+    u = 0.1 .* cos.(1:7)
+    saved_u, saved_data = copy(u), deepcopy(data)
+    residual = (u[2:end] .- u[1] .- vec(data.offsets)) .* exp.(-2 .* vec(data.log_scale))
+    expected = [-sum(residual); residual]
+    du = zero(u)
+    result = autodiff(ReverseWithPrimal, reshaped_tuple_loss, Active, Duplicated(u, du), Const(data))
+    @test result[2] ≈ reshaped_tuple_loss(u, data)
+    @test du ≈ expected
+    direction = collect(1.0:7.0)
+    @test autodiff(Forward, reshaped_tuple_loss, Duplicated(u, direction), Const(data))[1] ≈ sum(expected .* direction)
+    d1, d2 = zero(u), zero(u)
+    autodiff(Reverse, reshaped_tuple_loss, Active, BatchDuplicated(u, (d1, d2)), Const(data))
+    @test d1 ≈ expected
+    @test d2 ≈ expected
+    forward, reverse = autodiff_thunk(
+        ReverseSplitWithPrimal, Const{typeof(reshaped_tuple_loss)}, Active,
+        Duplicated{typeof(u)}, Const{typeof(data)},
+    )
+    fill!(du, 0)
+    tape, primal, _ = forward(Const(reshaped_tuple_loss), Duplicated(u, du), Const(data))
+    reverse(Const(reshaped_tuple_loss), Duplicated(u, du), Const(data), 1.0, tape)
+    @test du ≈ expected
+    @test primal ≈ reshaped_tuple_loss(u, data)
+    @test u == saved_u
+    @test data == saved_data
+end
