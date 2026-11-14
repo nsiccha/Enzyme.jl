@@ -1,0 +1,2 @@
+summary = "Julia 1.12: a stack-slot reload without its type tag, which libEnzyme's rewrite of the function drops, is typed from the slot's writes again, so a Hessian-vector product through a custom rule with try/catch or try/finally, and split-mode Reverse of a view whose index vector is reloaded from a vararg method's argument tuple, do not raise EnzymeRuntimeActivityError"
+tests = ["test/rule_handler_slot_reloads.jl", "test/const_slot_reloads.jl", "test/const_element_store.jl"]

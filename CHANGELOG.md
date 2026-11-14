@@ -9,6 +9,8 @@
   can then link these derivatives instead of recompiling them; unknown pointers
   still prevent retention. `test/precompile.jl` checks fresh-process reuse and
   numerical results in Forward and Reverse.
+- Use Base's inherited `ndims`, `eltype` and array conversion for `TupleArray`,
+  avoiding invalidation of existing abstract-array callers when Enzyme loads.
 - Preserve distinct allocation instances when an array is carried from one loop
   iteration to the next. Reverse replay could substitute an uninitialized new
   array header for the previous iteration's header, causing incorrect gradients
@@ -25,6 +27,25 @@
   when retaining derivatives. Relocation records and other metadata no longer
   cause layout-dependent refusals; embedded addresses in code and data are still
   checked. `Enzyme.has_dogfood_repair(:retained_object_sections)` reports the repair.
+- Keep the Julia type of a pointer reloaded from a stack slot where libEnzyme
+  drops its tag, on Julia 1.12. Enzyme.jl tags such reloads before
+  differentiation, but libEnzyme differentiates a copy of the function in which
+  it has rewritten the slot's loads without the tag, and a slot it moves to the
+  heap is declared an array of `Any` there. The mixed-activity handler then
+  could not see that a reloaded index vector of a `view`, a `Vector{Int}`,
+  holds no derivative, and raised `EnzymeRuntimeActivityError` in two places:
+  a custom rule that holds `try`/`catch` or `try`/`finally`, differentiated
+  again in Forward mode as a Hessian-vector product does (Julia zero-initializes
+  the roots slot of an argument that a handler may read, which keeps the slot
+  on the stack); and split-mode Reverse, or a dynamic call, of a vararg method
+  whose `view` merges an index vector reloaded from its argument tuple with the
+  copy `unalias` makes. `abs_typeof` now reads the type of an untagged reload
+  from the slot's writes, by the rule of the tagging pass and in every module
+  that pass has typed. `Enzyme.has_dogfood_repair(:untagged_slot_reloads)`
+  reports the repair; `test/rule_handler_slot_reloads.jl` checks gradients and
+  products through rules with either handler, and the split-mode and
+  dynamic-call checks of `test/const_slot_reloads.jl` and
+  `test/const_element_store.jl` now run on Julia 1.12 as on 1.10 and 1.13.
 - Reduce native Reverse tape allocations when a runtime row count varies by
   outer event but is shared by its inner component loop. libEnzyme groups
   those component caches into one allocation per event and recomputes identical,

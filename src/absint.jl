@@ -646,6 +646,9 @@ const TypesNotToDisect = Set{Type}([BigFloat])
 # The Julia type of the values a load returns, set by `type_slot_field_loads!`.
 const SLOT_FIELD_TYPE = "enzymejl_slot_field_type"
 
+# Named metadata of a module whose slot reloads `type_slot_field_loads!` has typed.
+const SLOT_TYPED_MODULE = "enzymejl_slot_typed_module"
+
 # The type of the Julia values that the global slots merged by the phi `phi`, or by
 # phis feeding it, hold, if every incoming value is such a slot and they agree, as for
 # a phi of `@jl_true` and `@jl_false`; otherwise `nothing`.
@@ -956,6 +959,14 @@ function abs_typeof(
             T = Base.unsafe_pointer_to_objref(reinterpret(Ptr{Cvoid}, parse(UInt, convert(String, ops[1]::MDString))))
             return (true, T, GPUCompiler.ArgumentCC(parse(Int, convert(String, ops[2]::MDString))))
         end
+        # Such a reload without the tag, in a module whose reloads were typed: libEnzyme
+        # differentiates a copy of the function that it first simplifies, and the loads
+        # it writes there carry none. The type is read off the slot's writes as the
+        # function stands (`slot_reload_type`), ahead of the typing below as the tag is:
+        # for a slot libEnzyme moved to the heap, that typing answers `Any`. `seenphis`
+        # also holds the slots being typed.
+        reload = slot_reload_type(arg, enzyme_ctx, seenphis)
+        reload === nothing || return (true, reload[1], reload[2])
         ce, _ = get_base_and_offset(operands(arg)[1]; offsetAllowed = false, inttoptr = true)
         if isa(ce, GlobalVariable)
             found = julia_value_of_slot(ce, enzyme_ctx)

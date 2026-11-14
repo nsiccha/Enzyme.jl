@@ -111,10 +111,12 @@ function slot_field_call!(
 end
 
 # The Julia type and representation of the values a pointer field `off` bytes
-# into a slot holds, or `nothing`.
+# into a slot holds, or `nothing`. `seen` holds the slots being typed
+# (`slot_reload_type`).
 function slot_field_type(
         writes::Vector{Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}}, off::Int,
         enzyme_ctx::Union{EnzymeContext, Nothing},
+        seen::Set{LLVM.Instruction} = Set{LLVM.Instruction}(),
     )
     found = nothing
     for (woff, len, val) in writes
@@ -126,7 +128,7 @@ function slot_field_type(
             continue
         end
         (val isa LLVM.Value && woff == off && len == sizeof(Int)) || return nothing
-        legal, T, byref = abs_typeof(val, enzyme_ctx)
+        legal, T, byref = abs_typeof(val, enzyme_ctx, false, seen)
         legal || return nothing
         (found === nothing || found == (T, byref)) || return nothing
         found = (T, byref)
@@ -134,7 +136,51 @@ function slot_field_type(
     return found
 end
 
+# The Julia type and representation of the values that `ld`, a load of a tracked
+# pointer from a stack slot, returns by the rule above, read off the function as it
+# stands; `nothing` if the rule gives none. `abs_typeof` asks this of a load that
+# carries no `SLOT_FIELD_TYPE` tag. It answers only in a module whose reloads
+# `type_slot_field_loads!` has typed (`SLOT_TYPED_MODULE`), so it gives a type exactly
+# where that pass gives one: not under runtime activity, and not before the pass.
+#
+# libEnzyme differentiates a copy of the function that it first simplifies. SROA there
+# splits a slot into one alloca per field and writes new loads, which carry no tag, and
+# a slot the reverse pass may need moves to the heap (`enzyme_fromstack`), declared an
+# array of `Any`. A slot that a zero store initializes cannot become a value: the store
+# writes an integer and the loads read a tracked pointer, which no cast joins. On Julia
+# 1.12 that keeps two kinds of roots slot on the stack: that of an argument an exception
+# handler may read, which Julia zero-initializes, and that of the argument tuple of a
+# vararg method, which is zeroed before the arguments are stored. What asks for the type
+# of their reloads while libEnzyme differentiates (the mixed-activity handler, for one)
+# then met them untyped, or typed `Any` from the declaration of the heap slot.
+#
+# A stored value that is itself a reload, or a merge of reloads, is typed the same way
+# through `abs_typeof`, as the fixpoint of `type_slot_field_loads!` does. `seen` holds
+# the phis and the slots being typed: a slot whose type would rest on its own reloads
+# stays untyped.
+function slot_reload_type(
+        ld::LLVM.LoadInst, enzyme_ctx::Union{EnzymeContext, Nothing}, seen = Set{LLVM.Instruction}(),
+    )
+    is_tracked_pointer(value_type(ld)) || return nothing
+    mod = LLVM.parent(LLVM.parent(LLVM.parent(ld)))
+    haskey(metadata(mod), SLOT_TYPED_MODULE) || return nothing
+    slot, _ = constant_field_pointer(operands(ld)[1])
+    is_stack_slot(slot) || return nothing
+    slot in seen && return nothing
+    loads = Tuple{LLVM.LoadInst, Int}[]
+    writes = Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}[]
+    slot_field_accesses!(loads, writes, slot, 0, datalayout(mod)) || return nothing
+    inner = Set{LLVM.Instruction}(seen)
+    push!(inner, slot)
+    for (other, off) in loads
+        other == ld && return slot_field_type(writes, off, enzyme_ctx, inner)
+    end
+    return nothing
+end
+
 function type_slot_field_loads!(mod::LLVM.Module, enzyme_ctx::Union{EnzymeContext, Nothing})
+    # From here on a reload without a tag is typed when asked (`slot_reload_type`).
+    metadata(mod)[SLOT_TYPED_MODULE]
     dl = datalayout(mod)
     slots = Tuple{Vector{Tuple{LLVM.LoadInst, Int}}, Vector{Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}}}[]
     for f in functions(mod), bb in blocks(f), inst in instructions(bb)

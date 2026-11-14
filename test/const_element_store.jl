@@ -1140,15 +1140,11 @@ end
         autodiff(set_runtime_activity(Reverse), Const(c), Active, Duplicated(u, want), Const(1), Const(plan))
         @test any(!iszero, want)
         @testset "$(nameof(check))" for check in (wide_slot_reverse, wide_slot_forward, wide_slot_batch, wide_slot_split)
-            if v"1.12" <= VERSION < v"1.13" && check === wide_slot_split && k !== :hcat_unsafe_view
-                # Julia 1.12 keeps the tuple's pointers in a roots slot. In the augmented
-                # pass of split mode, Base's `unalias` merges a reloaded row vector with its
-                # copy in a phi whose type the mixed-activity handler cannot read, and it
-                # raises EnzymeRuntimeActivityError (Enzyme todo 0qtmgmj).
-                @test_broken check(c, u, plan, want)
-            else
-                @test check(c, u, plan, want)
-            end
+            # Julia 1.12 keeps the tuple's pointers in a roots slot. In the augmented pass
+            # of split mode, Base's `unalias` merges a reloaded row vector with its copy
+            # in a phi; the reload gets its type from the slot's writes
+            # (`slot_reload_type`), which libEnzyme has moved to the heap by then.
+            @test check(c, u, plan, want)
             @test unchanged(plan)
         end
     end
