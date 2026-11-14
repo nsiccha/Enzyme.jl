@@ -1,0 +1,3 @@
+summary = "Independent Reverse adjoint sums inherit explicit reassociation permission from eligible primal additive reductions"
+libenzyme_build = "eed19f79bd6725da87508b74ef2bd14098733a67"
+tests = ["test/simd_adjoint_reduction.jl", "test/floating_point.jl"]
