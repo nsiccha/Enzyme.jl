@@ -1,0 +1,2 @@
+summary = "Julia 1.13: custom reverse rules can read unchanged tuples containing array references without conflicting root alias metadata"
+tests = ["test/rules/unchanged_roots.jl"]
