@@ -2277,6 +2277,15 @@ end
                     return make_batched(ncur, prevbb)
                 end
 
+                # Nested differentiation can leave an unused scalar result's type
+                # tree unknown. An inactive, unboxed float still has a zero tangent,
+                # including when it is an argument rather than an LLVM constant.
+                if mode == API.DEM_ForwardMode && byref == GPUCompiler.BITS_VALUE &&
+                        TT <: AbstractFloat && value_type(cur) isa LLVM.FloatingPointType &&
+                        is_constant_value(gutils, cur)
+                    return make_batched(LLVM.null(value_type(cur)), prevbb)
+                end
+
                 legal2, obj = absint(cur, enzyme_ctx)
 		obj0 = obj
                 # Only do so for the immediate operand/etc to a phi, since otherwise we will make multiple

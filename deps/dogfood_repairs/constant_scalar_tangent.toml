@@ -1,0 +1,2 @@
+summary = "Forward differentiation supplies zero tangents for inactive unboxed floating-point values with incomplete native type information"
+tests = ["test/constant_scalar_tangent.jl"]
