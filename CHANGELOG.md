@@ -9,6 +9,8 @@
   can then link these derivatives instead of recompiling them; unknown pointers
   still prevent retention. `test/precompile.jl` checks fresh-process reuse and
   numerical results in Forward and Reverse.
+- Use Base's inherited `ndims`, `eltype` and array conversion for `TupleArray`,
+  avoiding invalidation of existing abstract-array callers when Enzyme loads.
 - Preserve distinct allocation instances when an array is carried from one loop
   iteration to the next. Reverse replay could substitute an uninitialized new
   array header for the previous iteration's header, causing incorrect gradients
