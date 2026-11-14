@@ -9,6 +9,13 @@
   can then link these derivatives instead of recompiling them; unknown pointers
   still prevent retention. `test/precompile.jl` checks fresh-process reuse and
   numerical results in Forward and Reverse.
+- Preserve distinct allocation instances when an array is carried from one loop
+  iteration to the next. Reverse replay could substitute an uninitialized new
+  array header for the previous iteration's header, causing incorrect gradients
+  or memory corruption in nested scans on Julia 1.13.
+  `Enzyme.has_dogfood_repair(:loop_carried_allocations)` reports the repair;
+  `test/loop_carried_allocations.jl` covers changing scan lengths, empty inputs,
+  repeated calls, garbage collection, and combined and split Reverse.
 - Support caller-owned structured destinations in reverse-mode `gradient!`,
   including tuples and named tuples of arrays and `Ref`s. Repeated calls zero
   and refill the same storage, including through DifferentiationInterface
@@ -592,6 +599,19 @@
   `EnzymeRuntimeActivityError`. A member of an active call's result now takes
   the shadow the callee's derivative gave it, a tape member no reverse pass
   reads needs none, and a merge of `true` and `false` is known to be a `Bool`.
+
+## 0.13.221
+
+- Let independent Reverse adjoint sums inherit explicit reassociation permission
+  from an eligible primal additive reduction, such as a Julia `@simd` sum. This
+  enables vectorized coefficient gradients for row-wise residual sums without
+  a mode opt-in or global fast math. Enzyme adds `reassoc` only to proven additive
+  adjoint updates; the products and divisions it emits retain their configured
+  flags. Strict primal reductions, dependent recurrences, aliased writes and
+  atomic accumulation stay conservative. `fast_math_flags!()` clears global
+  permissions; explicit primal reduction permission is handled independently.
+  `Enzyme.has_dogfood_repair(:simd_adjoint_reduction)` reports the repair, and
+  `test/simd_adjoint_reduction.jl` covers it.
 
 ## 0.13.217
 
