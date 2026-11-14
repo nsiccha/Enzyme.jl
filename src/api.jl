@@ -1305,8 +1305,9 @@ end
     fast_math!(val::Bool)
 
 Whether generated derivatives may use every fast-math transformation. Off by
-default in the dogfood compiler, where derivative arithmetic carries only the flags
-[`fast_math_flags!`](@ref) chooses (`nsz` and `contract` by default). Setting `true`
+default in the dogfood compiler, where [`fast_math_flags!`](@ref) chooses the global
+flags (`nsz` and `contract` by default). Independent adjoint sums may also inherit
+explicit reassociation permission from a primal additive reduction. Setting `true`
 also permits reassociation, reciprocals and assumptions about nonfinite values; these
 can change results, including underflowing an otherwise representable derivative.
 Set this before compiling a derivative; changing it does not invalidate already
@@ -1321,12 +1322,16 @@ end
     fast_math_flags!(; reassoc=false, nnan=false, ninf=false, nsz=false, arcp=false,
                      contract=false, afn=false)
 
-Choose the LLVM fast-math flags that derivative arithmetic carries while
+Choose the global LLVM fast-math flags for derivative arithmetic while
 [`fast_math!`](@ref) is off; every flag not passed as `true` is cleared. The dogfood
 compiler's default is `fast_math_flags!(nsz = true, contract = true)`: LLVM may ignore
 the sign of a zero (so an adjoint's `+ 0.0` folds away) and fuse a multiply and an
-add into one rounding, but it never regroups an expression and assumes nothing about
-NaN or infinity. `fast_math_flags!()` makes derivative arithmetic fully strict.
+add into one rounding, without globally permitting reassociation or assumptions about
+NaN or infinity. `fast_math_flags!()` clears these global permissions. Independently,
+an eligible primal additive reduction with explicit `reassoc` permission (for example,
+a Julia `@simd` sum) grants that permission to proven independent adjoint sums of
+loop-invariant values. Enzyme adds it only to those additive updates, preserving the
+configured flags on the products and divisions it emits for each contribution.
 `reassoc` can underflow a representable derivative (the Reverse derivative of
 `exp(log(t * 1e-190))` becomes `0.0`), and `arcp` loses digits where a division
 cancels. Only arithmetic libEnzyme emits for derivatives is affected, not the primal
