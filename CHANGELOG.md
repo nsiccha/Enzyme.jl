@@ -1,18 +1,5 @@
 # Changelog
 
-## 0.13.221
-
-- Let independent Reverse adjoint sums inherit explicit reassociation permission
-  from an eligible primal additive reduction, such as a Julia `@simd` sum. This
-  enables vectorized coefficient gradients for row-wise residual sums without
-  a mode opt-in or global fast math. Enzyme adds `reassoc` only to proven additive
-  adjoint updates; the products and divisions it emits retain their configured
-  flags. Strict primal reductions, dependent recurrences, aliased writes and
-  atomic accumulation stay conservative. `fast_math_flags!()` clears global
-  permissions; explicit primal reduction permission is handled independently.
-  `Enzyme.has_dogfood_repair(:simd_adjoint_reduction)` reports the repair, and
-  `test/simd_adjoint_reduction.jl` covers it.
-
 ## Unreleased
 
 - Retain package-image derivatives that call library functions whose selected
@@ -605,6 +592,19 @@
   `EnzymeRuntimeActivityError`. A member of an active call's result now takes
   the shadow the callee's derivative gave it, a tape member no reverse pass
   reads needs none, and a merge of `true` and `false` is known to be a `Bool`.
+
+## 0.13.221
+
+- Let independent Reverse adjoint sums inherit explicit reassociation permission
+  from an eligible primal additive reduction, such as a Julia `@simd` sum. This
+  enables vectorized coefficient gradients for row-wise residual sums without
+  a mode opt-in or global fast math. Enzyme adds `reassoc` only to proven additive
+  adjoint updates; the products and divisions it emits retain their configured
+  flags. Strict primal reductions, dependent recurrences, aliased writes and
+  atomic accumulation stay conservative. `fast_math_flags!()` clears global
+  permissions; explicit primal reduction permission is handled independently.
+  `Enzyme.has_dogfood_repair(:simd_adjoint_reduction)` reports the repair, and
+  `test/simd_adjoint_reduction.jl` covers it.
 
 ## 0.13.217
 
