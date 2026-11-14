@@ -122,8 +122,10 @@ end
     rows_after = simd_adjoint_ir(simd_regression, row_types; second_stage = true, returnPrimal = true)
     @test occursin(r"f(?:add|sub) reassoc nsz contract double", rows_before)
     @test !occursin(r"f(?:mul|div) reassoc", rows_before)
-    # nsz distinguishes the vectorized reverse reductions from the primal sum.
-    @test occursin(r"call reassoc nsz contract double @llvm.vector.reduce.fadd", rows_after)
+    # nsz distinguishes the adjoint from the primal sum. LLVM can vectorize
+    # across iterations or pack the independent coefficient sums together.
+    vector_adjoint = r"(?:call reassoc nsz contract double @llvm.vector.reduce.fadd|f(?:add|sub) reassoc nsz contract <\d+ x double>)"
+    @test occursin(vector_adjoint, rows_after)
 end
 
 @testset "SIMD preserves tiny per-iteration gradients" begin
