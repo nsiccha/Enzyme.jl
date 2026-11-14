@@ -1,0 +1,3 @@
+summary = "Preserve Julia GC allocation initialization bundles through forward and reverse differentiation, including zero initialization of shadow allocations"
+libenzyme_build = "77a03738accde662b1e19ae490ddc8c5ea1a73c0"
+tests = ["test/gc_alloc_bundles.jl"]
