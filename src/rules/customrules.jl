@@ -192,6 +192,19 @@ function push_box_for_argument!(
         @assert num_inline_roots == inline_roots_type(arg.typ)
     end
 
+    # Julia's rule entry reads roots with constant-memory alias metadata,
+    # whereas the original slots can be written with GC-frame metadata.
+    # Forwarding those slots lets LLVM treat the writes and reads as disjoint.
+    # Reconstruct the roots in the rule's own buffer, using unannotated accesses
+    # at this boundary, just as we do for cached or shadow roots below.
+    if roots_val !== nothing && roots_cache === nothing && shadow_roots === nothing
+        root_ty = convert(LLVMType, AnyArray(num_inline_roots))
+        root_ptr = create_rooted_array(alloctx, num_inline_roots, "rule_roots_copy")
+        root_values = load!(B, root_ty, roots_val, "rule_roots_values")
+        store!(B, root_values, root_ptr)
+        roots_val = root_ptr
+    end
+
     arty = convert(LLVMType, arg.typ; allow_boxed = true)
 
     # if either not a bits ref, or the data was not overwritten, the data is left
