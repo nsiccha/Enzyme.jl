@@ -1,0 +1,2 @@
+summary = "Loading Enzyme preserves compiled abstract-array callers of ndims, eltype and convert"
+tests = ["test/tuplearray.jl", "test/sugar.jl"]

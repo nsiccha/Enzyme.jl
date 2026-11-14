@@ -517,22 +517,13 @@ struct TupleArray{T, Length, N} <: AbstractArray{T, N}
     shape::NTuple{N, Int}
 end
 
-@inline Base.eltype(::TupleArray{T}) where {T} = T
-@inline Base.eltype(::Type{<:TupleArray{T}}) where {T} = T
+# Inherit ndims, eltype and convert from AbstractArray: redundant methods here
+# invalidate callers with abstract array arguments when Enzyme loads.
 @inline Base.size(a::TupleArray) = a.shape
-@inline Base.ndims(::TupleArray{<:Any, <:Any, N}) where {N} = N
 
 # The data is stored in column-major order, like an `Array`.
 Base.IndexStyle(::Type{<:TupleArray}) = IndexLinear()
 @inline Base.getindex(a::TupleArray, i::Int) = a.data[i]
-
-function Base.convert(::Type{Array{T, N}}, X::TupleArray{T, Length, N}) where {T, Length, N}
-    vals = Array{T, N}(undef, size(X)...)
-    for i = 1:Length
-        @inbounds vals[i] = X.data[i]
-    end
-    return vals
-end
 
 @inline function tupstack(data::Tuple{Vararg{Array{T}}}, outshape::Tuple{Vararg{Int}}, inshape::Tuple{Vararg{Int}}) where {T}
 	num = prod(outshape)
