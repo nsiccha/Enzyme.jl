@@ -1,0 +1,2 @@
+summary = "Pass immutable Active return seeds to custom reverse rules without heap boxing."
+tests = ["test/rules/reverse_seed.jl"]
