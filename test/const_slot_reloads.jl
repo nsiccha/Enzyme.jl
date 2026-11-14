@@ -153,12 +153,13 @@ function slot_reload_split(c, u, base, plan)
     return ds, prim
 end
 
-# Julia 1.12 keeps the tuple's pointers in a separate roots slot. Where an augmented
-# pass (split mode, or the one a dynamic call compiles for its callee) meets Base's
-# `unalias` merging a reloaded row vector with its copy, the mixed-activity handler
-# cannot read the phi's type and raises EnzymeRuntimeActivityError (Enzyme todo
-# 0qtmgmj). Julia 1.10 and 1.13 differentiate every shape here, and the reads the
-# proof covers with no copy.
+# Julia 1.12 keeps the tuple's pointers in a separate roots slot, which the
+# constant-field proof does not reach: the reads the proof covers on Julia 1.10 and 1.13
+# with no copy get a zero-filled copy of `base` there (Enzyme todo 0qtmgmj). Every
+# version differentiates every shape here. On 1.12 an augmented pass (split mode, or the
+# one a dynamic call compiles for its callee) meets Base's `unalias` merging a reloaded
+# row vector with its copy; libEnzyme has moved the roots slot to the heap by then, and
+# the reload gets its type from the slot's writes (`slot_reload_type`).
 const SLOT_RELOAD_ROOTS_SLOT = v"1.12" <= VERSION < v"1.13"
 
 @testset "Const data read back from a stack tuple beside active data" begin
@@ -177,11 +178,7 @@ const SLOT_RELOAD_ROOTS_SLOT = v"1.12" <= VERSION < v"1.13"
         d1, d2 = zero(u), zero(u)
         autodiff(Reverse, Const(c), Active, BatchDuplicated(u, (d1, d2)), Const(base), Const(plan))
         @test d1 == want && d2 == want
-        if SLOT_RELOAD_ROOTS_SLOT && K in (:view_call, :hash_branch, :hash_stored)
-            @test_broken slot_reload_split(c, u, base, plan) == (want, c(u, base, plan))
-        else
-            @test slot_reload_split(c, u, base, plan) == (want, c(u, base, plan))
-        end
+        @test slot_reload_split(c, u, base, plan) == (want, c(u, base, plan))
         # A compact read costs what its selection costs, whatever the size of `base`.
         big, bigplan = slot_reload_data(40_000)
         g() = slot_reload_reverse!(du, c, u, big, bigplan)
@@ -203,18 +200,14 @@ const SLOT_RELOAD_ROOTS_SLOT = v"1.12" <= VERSION < v"1.13"
         autodiff(set_runtime_activity(Reverse), Const(c), Active, Duplicated(u, want), Const(base), Const(plan))
         @test any(!iszero, want)
         du = zero(u)
-        if SLOT_RELOAD_ROOTS_SLOT && K === :dynamic
-            @test_broken slot_reload_reverse!(du, c, u, base, plan) == want
-        else
-            @test slot_reload_reverse!(du, c, u, base, plan) == want
-            @test du ≈ slot_reload_differences(c, u, base, plan) atol = 1.0e-7
-            big, bigplan = slot_reload_data(40_000)
-            g() = slot_reload_reverse!(du, c, u, big, bigplan)
-            g()
-            # A copy per overlay built, not one per read.
-            @test (@allocated g()) < 3 * sizeof(big)
-            @test big == 0.25 .* (1:40_000)
-        end
+        @test slot_reload_reverse!(du, c, u, base, plan) == want
+        @test du ≈ slot_reload_differences(c, u, base, plan) atol = 1.0e-7
+        big, bigplan = slot_reload_data(40_000)
+        g() = slot_reload_reverse!(du, c, u, big, bigplan)
+        g()
+        # A copy per overlay built, not one per read.
+        @test (@allocated g()) < 3 * sizeof(big)
+        @test big == 0.25 .* (1:40_000)
         @test base == 0.25 .* (1:40)
     end
     @testset "a merge on its constant side leaves the `Const` array alone" begin
