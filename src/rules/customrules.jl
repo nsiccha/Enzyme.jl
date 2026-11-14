@@ -2213,8 +2213,10 @@ function enzyme_custom_common_rev(
                 end
             end
 
-            al0 = al = emit_allocobj!(B, nRT, "activeRT.$RT")
-            al = bitcast!(B, al, LLVM.PointerType(llty, addrspace(value_type(al))))
+            # Like the other rule arguments, the immutable seed is passed by
+            # reference as readonly nocapture. Its storage need only live for
+            # the call, even when the reverse rule is not inlined.
+            al = alloca!(alloctx, llty, "activeRT.$RT")
             al = addrspacecast!(B, al, LLVM.PointerType(llty, Derived))
 
             if width == 1
@@ -2233,10 +2235,6 @@ function enzyme_custom_common_rev(
                 ptr = bitcast!(B, al, LLVM.PointerType(pty, Derived))
             end
             store!(B, val, ptr)
-
-            if active_roots == 0 && any_jltypes(llty)
-                emit_writebarrier!(B, get_julia_inner_types(B, al0, val))
-            end
 
             active_idx = 1
 
