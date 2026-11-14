@@ -47,9 +47,9 @@ end
         convert_array(a) = convert(Vector{Float64}, Base.inferencebarrier(a)::AbstractVector{Float64})
     end
 
-    function invalidated_callers(log)
+    function invalidated_callers(invalidations)
         callers = Symbol[]
-        for entry in log
+        for entry in invalidations
             if entry isa Core.MethodInstance && entry.def isa Method && entry.def.module === ArrayConsumer
                 push!(callers, entry.def.name)
             end
@@ -60,25 +60,25 @@ end
     ArrayConsumer.dims([1.0])
     ArrayConsumer.element([1.0])
     ArrayConsumer.convert_array([1.0])
-    log = ccall(:jl_debug_method_invalidation, Any, (Cint,), 1)
+    invalidations = ccall(:jl_debug_method_invalidation, Any, (Cint,), 1)
     try
         @eval using Enzyme
     finally
         ccall(:jl_debug_method_invalidation, Any, (Cint,), 0)
     end
-    @test isempty(invalidated_callers(log))
+    @test isempty(invalidated_callers(invalidations))
 
     # Positive control: a redundant ndims method must invalidate the warmed
     # caller, even though it returns exactly what AbstractArray already does.
     ArrayConsumer.dims([1.0])
     struct ControlArray <: AbstractVector{Float64} end
-    log = ccall(:jl_debug_method_invalidation, Any, (Cint,), 1)
+    invalidations = ccall(:jl_debug_method_invalidation, Any, (Cint,), 1)
     try
         @eval Base.ndims(::ControlArray) = 1
     finally
         ccall(:jl_debug_method_invalidation, Any, (Cint,), 0)
     end
-    @test :dims in invalidated_callers(log)
+    @test :dims in invalidated_callers(invalidations)
     """
     project = dirname(Base.active_project())
     cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project -e $script`
