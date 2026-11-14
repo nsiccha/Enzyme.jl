@@ -9,6 +9,13 @@
   can then link these derivatives instead of recompiling them; unknown pointers
   still prevent retention. `test/precompile.jl` checks fresh-process reuse and
   numerical results in Forward and Reverse.
+- Preserve distinct allocation instances when an array is carried from one loop
+  iteration to the next. Reverse replay could substitute an uninitialized new
+  array header for the previous iteration's header, causing incorrect gradients
+  or memory corruption in nested scans on Julia 1.13.
+  `Enzyme.has_dogfood_repair(:loop_carried_allocations)` reports the repair;
+  `test/loop_carried_allocations.jl` covers changing scan lengths, empty inputs,
+  repeated calls, garbage collection, and combined and split Reverse.
 - Support caller-owned structured destinations in reverse-mode `gradient!`,
   including tuples and named tuples of arrays and `Ref`s. Repeated calls zero
   and refill the same storage, including through DifferentiationInterface
