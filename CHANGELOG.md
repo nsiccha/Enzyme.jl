@@ -9,6 +9,12 @@
   can then link these derivatives instead of recompiling them; unknown pointers
   still prevent retention. `test/precompile.jl` checks fresh-process reuse and
   numerical results in Forward and Reverse.
+- Repair and preserve the `sret`/`returnRoots` calling convention for retained
+  helpers under `InlineABI`. First-order Forward through a helper returning
+  both an inactive integer array and scalar data could otherwise crash Julia's
+  GC lowering. `Enzyme.has_dogfood_repair(:inline_return_roots)` reports the
+  repair; `test/inline_return_roots.jl` checks scalar and batched Forward and
+  Reverse across several aggregate layouts.
 - Use Base's inherited `ndims`, `eltype` and array conversion for `TupleArray`,
   avoiding invalidation of existing abstract-array callers when Enzyme loads.
 - Preserve distinct allocation instances when an array is carried from one loop
