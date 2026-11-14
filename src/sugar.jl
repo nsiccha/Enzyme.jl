@@ -404,9 +404,17 @@ end
 """
     gradient!(::ReverseMode, dx, f, x)
 
-Compute the gradient of an array-input function `f` using reverse mode,
-storing the derivative result in an existing array `dx`.
-Both `x` and `dx` must be `Array`s of the same type.
+Compute the gradient of a function `f` using reverse mode, storing the
+derivative result in existing storage `dx`. Both `x` and `dx` must have the
+same type, and all differentiable values must be in mutable storage. This
+includes arrays, `Ref`s, mutable structs, and tuples or immutable structs
+containing such storage. Immutable differentiable values, such as a scalar
+or a tuple containing a scalar, require [`gradient`](@ref) instead.
+
+The differentiable values in `dx` are zeroed before computing the gradient,
+so repeated calls overwrite the previous result. As with [`Duplicated`](@ref),
+`dx` must have the same layout and aliasing structure as `x`, with separate
+storage for the differentiable values.
 
 Example:
 
@@ -433,7 +441,11 @@ gradient!(ReverseWithPrimal, dx, f, [2.0, 3.0])
     dx::X,
     f::F,
     x::X,
-) where {X<:AbstractArray,F,ReturnPrimal,RuntimeActivity,StrongZero,ABI,Holomorphic,ErrIfFuncWritten}
+    ) where {X, F, ReturnPrimal, RuntimeActivity, StrongZero, ABI, Holomorphic, ErrIfFuncWritten}
+    activity = Compiler.active_reg_nothrow(X)
+    if activity == Compiler.ActiveState || activity == Compiler.MixedState
+        throw(ArgumentError("gradient! requires all differentiable values in mutable storage; use gradient for immutable differentiable values"))
+    end
     make_zero!(dx)
     res = autodiff(rm, f, Active, Duplicated(x, dx))
     return if ReturnPrimal

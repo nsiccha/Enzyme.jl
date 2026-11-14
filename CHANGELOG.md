@@ -9,6 +9,11 @@
   can then link these derivatives instead of recompiling them; unknown pointers
   still prevent retention. `test/precompile.jl` checks fresh-process reuse and
   numerical results in Forward and Reverse.
+- Support caller-owned structured destinations in reverse-mode `gradient!`,
+  including tuples and named tuples of arrays and `Ref`s. Repeated calls zero
+  and refill the same storage, including through DifferentiationInterface
+  without contexts. `Enzyme.has_dogfood_repair(:structured_gradient_inplace)`
+  reports the repair.
 - Check only file-backed allocated ELF sections for embedded process addresses
   when retaining derivatives. Relocation records and other metadata no longer
   cause layout-dependent refusals; embedded addresses in code and data are still
