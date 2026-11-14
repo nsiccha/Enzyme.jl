@@ -8892,10 +8892,12 @@ function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, Stri
 
     # Run post optimization pipeline
     prepost = if postopt
+        # InlineABI is lowered by Julia in its caller, which needs the same valid
+        # sret/returnRoots convention as code compiled by our JIT.
+        fixup_callconv!(mod, JIT.get_tm())
         mstr = if job.config.params.ABI <: InlineABI
             ""
         else
-            fixup_callconv!(mod, JIT.get_tm())
             for f in functions(mod)
                 for i in 1:length(parameters(f))
                     for a in collect(parameter_attributes(f, i))
@@ -8928,7 +8930,7 @@ function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, Stri
             end
         else
             define_ntuple_type!(mod)
-            propagate_returned!(mod)
+            propagate_returned!(mod; keep_return_roots = true)
             Compiler.JIT.prepare!(mod)
         end
         mstr

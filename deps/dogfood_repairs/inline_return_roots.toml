@@ -1,0 +1,2 @@
+summary = "InlineABI repairs and preserves the sret/returnRoots calling convention for retained helpers returning mixed aggregates, avoiding a Julia GC-lowering crash in first-order Forward with inactive integer arrays"
+tests = ["test/inline_return_roots.jl"]
