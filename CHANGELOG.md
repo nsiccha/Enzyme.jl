@@ -17,6 +17,10 @@
   can then link these derivatives instead of recompiling them; unknown pointers
   still prevent retention. `test/precompile.jl` checks fresh-process reuse and
   numerical results in Forward and Reverse.
+- Give constant differentiable fields separate zero shadows when runtime tuple
+  and struct constructors run under static Reverse. Such fields can now be
+  captured alongside active data without a runtime-activity error or writes
+  into the constant input.
 - Repair and preserve the `sret`/`returnRoots` calling convention for retained
   helpers under `InlineABI`. First-order Forward through a helper returning
   both an inactive integer array and scalar data could otherwise crash Julia's
