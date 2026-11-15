@@ -17,13 +17,10 @@
                 else
                 return quote
                     Base.@_inline_meta
-                    throw(
-                        EnzymeRuntimeActivityError{String, Nothing, Nothing}(
-                        "Error cannot store inactive but differentiable variable "*string(primarg)*" into active tuple",
-                        nothing,
-                        nothing
-                       )
-                    )
+                        # This field is constant even though its type can hold derivatives.
+                        # Give the active aggregate separate zero storage; its adjoint is
+                        # discarded when the constructor's reverse skips this argument.
+                        Enzyme.make_zero(primarg)
                 end
               end
             end
