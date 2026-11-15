@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Retrieve cached custom-rule return values at their reverse use instead of
+  reusing a forward load that may not dominate that use. A conditional
+  `reshape` followed by a broadcast could otherwise abort LLVM verification
+  with "Instruction does not dominate all uses!". The native repair preserves
+  the separate caching of rule-return fields and is reported by
+  `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
+  `test/conditional_rule_return.jl` covers early returns, empty arrays,
+  combined and split Reverse, batched Reverse, and Forward over Reverse.
 - Retain package-image derivatives that call library functions whose selected
   implementation has no exported name, such as glibc's `memchr` reached through
   `findfirst`. Enzyme uses its known foreign-function names and verifies that
