@@ -1,0 +1,2 @@
+summary = "Avoid recursive runtime map wrappers for custom collections with imprecise return types while preserving the long-tuple map rewrite"
+tests = ["test/tuple_map.jl", "test/applyiter.jl", "test/mixedapplyiter.jl", "test/runtime_calls.jl", "test/test_builtin_dynamic.jl"]
