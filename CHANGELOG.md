@@ -27,6 +27,12 @@
   and struct constructors run under static Reverse. Such fields can now be
   captured alongside active data without a runtime-activity error or writes
   into the constant input.
+- Omit nonexistent element-layout facts from array allocations initialized with
+  the empty Memory singleton on Julia 1.11 and later. Constructor maps whose
+  empty and nonempty arrays
+  meet at a return can then differentiate without conflicting pointer and
+  floating-point type facts. Array and Memory header facts are preserved.
+  `Enzyme.has_dogfood_repair(:empty_array_types)` reports the repair.
 - Repair and preserve the `sret`/`returnRoots` calling convention for retained
   helpers under `InlineABI`. First-order Forward through a helper returning
   both an inactive integer array and scalar data could otherwise crash Julia's

@@ -1,0 +1,2 @@
+summary = "Empty array allocations do not impose an element layout on constructor-map return joins"
+tests = ["test/empty_array_types.jl"]
