@@ -10,6 +10,12 @@
   `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
   `test/conditional_rule_return.jl` covers early returns, empty arrays,
   combined and split Reverse, batched Reverse, and Forward over Reverse.
+- Limit the runtime `map` wrapper to long-tuple calls. A custom collection's
+  `map` with an imprecise return type could otherwise re-enter the wrapper
+  indefinitely and overflow the stack during differentiation.
+  `Enzyme.has_dogfood_repair(:runtime_map_collection)` reports the repair;
+  `test/tuple_map.jl` checks direct and splatted calls in Reverse, Forward,
+  and batched Forward, alongside the existing long-tuple checks.
 - Retain package-image derivatives that call library functions whose selected
   implementation has no exported name, such as glibc's `memchr` reached through
   `findfirst`. Enzyme uses its known foreign-function names and verifies that

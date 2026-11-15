@@ -255,3 +255,39 @@ end
         @test autodiff(Forward, loss, Duplicated(x, [1.0, 0.0]), Duplicated(Ref(0.0), Ref(0.0)), map(Const, vs)...)[1] == 0.0
     end
 end
+
+# Mapping values with distinct type tags widens the enclosing record's return
+# type. Wrapping this dynamic map leaves another dynamic map inside the wrapper,
+# which used to recurse into the same wrapper until the stack overflowed.
+struct TupleMapValue{Tag}
+    value::Vector{Float64}
+end
+struct TupleMapRecord{T}
+    data::T
+end
+Base.map(f::Function, r::TupleMapRecord) = TupleMapRecord(map(f, r.data))
+tuple_map_record_square(x) = x > 0 ? TupleMapValue{:positive}([x * x]) : TupleMapValue{:negative}([x * x])
+tuple_map_record_value(x) = only(x.value)
+function tuple_map_record_loss(x)
+    r = TupleMapRecord((x, x, x, x, x, x))
+    return sum(tuple_map_record_value, map(tuple_map_record_square, Base.inferencebarrier(r)).data)
+end
+function tuple_map_record_iterate_loss(x)
+    r = TupleMapRecord((x, x, x, x, x, x))
+    args = Base.inferencebarrier((tuple_map_record_square, r))
+    return sum(tuple_map_record_value, map(args...).data)
+end
+@testset "Runtime map of a custom collection with an imprecise return" begin
+    for loss in (tuple_map_record_loss, tuple_map_record_iterate_loss),x in (-2.0, 2.0)
+        @test loss(x) == 6x^2
+        r = autodiff(ReverseWithPrimal, loss, Active, Active(x))
+        @test r[1][1] == 12x
+        @test r[2] == 6x^2
+        f = autodiff(ForwardWithPrimal, loss, Duplicated(x, 1.0))
+        @test f[1] == 12x
+        @test f[2] == 6x^2
+        b = autodiff(ForwardWithPrimal, loss, BatchDuplicated(x, (1.0, 3.0)))
+        @test Tuple(b[1]) == (12x, 36x)
+        @test b[2] == 6x^2
+    end
+end

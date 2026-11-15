@@ -2,11 +2,15 @@ struct RuntimeCallWrapper{F}
     f::F
 end
 
-# Builtins need a Julia entry point. A dynamically dispatched map also needs an
-# inner call: its concrete tuple types become known only here, and the interpreter
-# applies its method-checked long-tuple rewrite at call sites, not at entry points.
-@inline runtime_function(f) = f
-@inline runtime_function(f::Union{Core.Builtin, typeof(Base.map)}) = RuntimeCallWrapper(f)
+# Builtins need a Julia entry point. A dynamically dispatched long-tuple map also
+# needs an inner call so the interpreter can apply its method-checked rewrite.
+# Other map methods must remain entry points: if the wrapper's inner call stays
+# dynamic, differentiating it would enter the same wrapper again indefinitely.
+@inline runtime_function(f, ::Type) = f
+@inline runtime_function(f::Core.Builtin, ::Type) = RuntimeCallWrapper(f)
+@inline function runtime_function(f::typeof(Base.map), ::Type{TT}) where {TT}
+    return TT <: Tuple{Any, Base.Any32, Vararg{Base.Any32}} ? RuntimeCallWrapper(f) : f
+end
 
 """
     ReadonlyArg{Active}()
@@ -373,11 +377,10 @@ function body_runtime_generic_fwd(N, Width, wrapped, primtypes, dfns)
             gv = Core.getglobal($(globalargs...))
             return ReturnType((gv, $(globalshadows...)))
         end
-        f = runtime_function(f)
-
         # TODO: Annotation of return value
         # tt0 = Tuple{$(primtypes...)}
         tt = Tuple{$(ElTypes...)}
+        f = runtime_function(f, tt)
         tt′ = Tuple{$(Types...)}
         FT = Core.Typeof(f)
         rt = Compiler.primal_return_type(Forward, FT, tt)
@@ -571,10 +574,11 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
 
     return quote
         f_unwrapped = f
-        f = runtime_function(f)
         $(active_refs...)
         args = ($(wrapped...),)
         $(MakeTypes...)
+        tt = Tuple{$(ElTypes...)}
+        f = runtime_function(f, tt)
 
         FT = Core.Typeof(f)
         dupClosure0 = if is_active_arg(ActivityTup[1])
@@ -589,8 +593,6 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
             tape = Tape{Nothing, Nothing, typeof(gv)}(nothing, nothing)
             return ReturnType((gv, $(globalshadows...), tape))
         else
-
-            tt = Tuple{$(ElTypes...)}
 
             rt = Compiler.primal_return_type(Reverse, FT, tt)
             annotation0 = guess_activity(rt, API.DEM_ReverseModePrimal)
@@ -809,12 +811,13 @@ function body_runtime_generic_rev(
 
     quote
         f_unwrapped = f
-        f = runtime_function(f)
         if f_unwrapped isa typeof(Core.getglobal)
         else
             $(active_refs...)
             args = ($(wrapped...),)
             $(MakeTypes...)
+            tt = Tuple{$(ElTypes...)}
+            f = runtime_function(f, tt)
 
             FT = Core.Typeof(f)
             dupClosure0 = if is_active_arg(ActivityTup[1])
@@ -822,7 +825,6 @@ function body_runtime_generic_rev(
             else
                 false
             end
-            tt = Tuple{$(ElTypes...)}
             rt = Compiler.primal_return_type(Reverse, FT, tt)
             annotation0 = guess_activity(rt, API.DEM_ReverseModePrimal)
 
@@ -1234,10 +1236,10 @@ function body_runtime_iterate_fwd(N, Width, wrapped, primtypes, active_refs)
         @inbounds wrappedexexpand[i] = :($(wrapped[i])...)
     end
     return quote
-        f = runtime_function(f)
         $(active_refs...)
         args = ($(wrappedexexpand...),)
         tt′ = Enzyme.vaTypeof(args...)
+        f = runtime_function(f, Enzyme.vaEltypes(tt′))
         FT = Core.Typeof(f)
         fwddiff_with_return(
             runtimeActivity,
@@ -1523,11 +1525,11 @@ function body_runtime_iterate_augfwd(N, Width, modbetween, wrapped, primtypes, a
         results[i] = :(tmpvals[$i])
     end
     return quote
-        f = runtime_function(f)
         refs = Base.RefValue[]
         $(active_refs...)
         args = ($(wrappedexexpand...),)
         tt′ = Enzyme.vaTypeof(args...)
+        f = runtime_function(f, Enzyme.vaEltypes(tt′))
         FT = Core.Typeof(f)
         tmpvals = augfwd_with_return(
             runtimeActivity,
@@ -1832,12 +1834,12 @@ function body_runtime_iterate_rev(
     for s in shadowargs
         push!(shadowsplat, :(($(s...),)))
     end
-    quote
-        f = runtime_function(f)
+    return quote
         (tape0, refs) = tape
         $(active_refs...)
         args = ($(wrappedexexpand...),)
         tt′ = Enzyme.vaTypeof(args...)
+        f = runtime_function(f, Enzyme.vaEltypes(tt′))
         FT = Core.Typeof(f)
         rev_with_return(
             runtimeActivity,
