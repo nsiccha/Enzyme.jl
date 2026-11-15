@@ -134,12 +134,21 @@ function tupq(x, y)
     use(res)::Float64
 end
 
-@testset "Runtime Activity Tuple Construction" begin
+@testset "Static Activity Tuple Construction" begin
     x = [2.0]
     y = [3.0]
     dy = [0.0]
 
-    @test_throws Enzyme.Compiler.EnzymeRuntimeActivityError Enzyme.autodiff(Reverse, tupq, Const(x), Duplicated(y, dy))
+    Enzyme.autodiff(Reverse, tupq, Const(x), Duplicated(y, dy))
+    @test x == [2.0]
+    @test y == [3.0]
+    @test dy ≈ [2.0]
+
+    dy1, dy2 = [0.0], [0.0]
+    Enzyme.autodiff(Reverse, tupq, Const(x), BatchDuplicated(y, (dy1, dy2)))
+    @test dy1 ≈ [2.0]
+    @test dy2 ≈ [2.0]
+    @test x == [2.0]
 
     x = [2.0]
     y = [3.0]
