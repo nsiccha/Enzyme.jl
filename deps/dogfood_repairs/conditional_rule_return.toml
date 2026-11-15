@@ -1,0 +1,3 @@
+summary = "Retrieve cached custom-rule returns on reverse paths not dominated by the forward load"
+libenzyme_build = "eb82b697068538ee9074e2751f160838a8154005"
+tests = ["test/conditional_rule_return.jl"]
