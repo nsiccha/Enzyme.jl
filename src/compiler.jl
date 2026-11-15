@@ -3566,6 +3566,7 @@ include("compiler/narrow_tuple_fields.jl")
 include("compiler/fold_type_tests.jl")
 include("compiler/conditioned_selects.jl")
 include("compiler/constant_fields.jl")
+include("compiler/empty_array_types.jl")
 include("compiler/retained_shadows.jl")
 include("compiler/slot_field_types.jl")
 
@@ -3591,6 +3592,7 @@ function enzyme!(
     fold_type_tests!(mod, enzyme_ctx)
     simplify_conditioned_selects!(mod)
     narrow_tuple_fields!(mod, enzyme_ctx)
+    relax_empty_array_types!(mod, enzyme_ctx)
     if DumpPreEnzyme[]
         API.EnzymeDumpModuleRef(mod.ref)
     end
