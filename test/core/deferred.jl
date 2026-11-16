@@ -12,8 +12,13 @@ using Enzyme, Test
         def_A, thunk_A = copy(A), copy(A)
         primal = Enzyme.autodiff(ReverseWithPrimal, dot, Active, Duplicated(A, dA))[2]
         @test primal == 34.0
-        primal = Enzyme.autodiff_deferred(ReverseWithPrimal, Const(dot), Active, Duplicated(def_A, def_dA))[2]
-        @test primal == 34.0
+        for RT in (Active, Active{Float64})
+            fill!(def_dA, 0)
+            primal = Enzyme.autodiff_deferred(ReverseWithPrimal, Const(dot), RT, Duplicated(def_A, def_dA))[2]
+            @test primal == 34.0
+            @test def_dA == [6.0, 10.0]
+            @test def_A == A
+        end
 
         dup = Duplicated(thunk_A, thunk_dA)
         TapeType = Enzyme.EnzymeCore.tape_type(
