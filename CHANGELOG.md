@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Accept captured BLAS input buffers in the readonly check for an unannotated
+  function argument. The proof uses per-argument readonly and nocapture
+  attributes only for typed raw data pointers, and ignores uses solely in
+  Julia GC-root bundles. Captured output buffers and aliases in writable
+  positions still raise `EnzymeMutabilityException`.
+  `Enzyme.has_dogfood_repair(:readonly_pointer_operands)` reports the repair.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification

@@ -253,6 +253,53 @@ function is_inactive_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospeciali
 end
 
 """
+    is_readonly_call_operand(call, fn, val, world, enzyme_ctx)::Bool
+
+Whether `call` only keeps `val` alive in a Julia GC root bundle, or passes it
+as a noncaptured, readonly raw data pointer. Every argument position receiving
+`val` must be `nocapture` and `readonly` (or `readnone`). The pointee's Julia
+type must not hold references to derivative data: readonly on an array header
+alone does not prevent writing through the data pointer loaded from it.
+"""
+function is_readonly_call_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospecialize(val::LLVM.Value), world::UInt, enzyme_ctx::EnzymeContext)::Bool
+    LLVM.called_operand(call) == val && return false
+    rooted = false
+    for bundle in LLVM.operand_bundles(call)
+        val in LLVM.inputs(bundle) || continue
+        LLVM.tag(bundle) == "jl_roots" || return false
+        rooted = true
+    end
+    found = false
+    nparms = length(LLVM.parameters(fn))
+    readonly_kind = kind(EnumAttribute("readonly"))
+    readnone_kind = kind(EnumAttribute("readnone"))
+    nocapture_kind = kind(EnumAttribute("nocapture"))
+    for (i, op) in enumerate(arg_operands_view(call))
+        op == val || continue
+        i <= nparms || return false
+        reads_only = false
+        captures_nothing = false
+        for attrs in (parameter_attributes(fn, i), LLVM.argument_attributes(call, i))
+            for attr in collect(attrs)
+                attr isa LLVM.EnumAttribute || continue
+                k = kind(attr)
+                reads_only |= k == readonly_kind || k == readnone_kind
+                captures_nothing |= k == nocapture_kind
+            end
+        end
+        reads_only && captures_nothing || return false
+        found = true
+    end
+    found || return rooted
+    base, _ = get_base_and_offset(val)
+    legal, typ, byref = abs_typeof(base, enzyme_ctx)
+    legal && byref == GPUCompiler.BITS_VALUE || return false
+    (typ <: Ptr || typ <: Core.LLVMPtr) || return false
+    reg = active_reg(ptreltype(typ), world)
+    return reg == ActiveState || reg == AnyState
+end
+
+"""
     readonly_checked_params(primalf, TT, err_if_written, world)::Vector{LLVM.Value}
 
 The parameters of `primalf` whose data the readonly check follows. `err_if_written`
