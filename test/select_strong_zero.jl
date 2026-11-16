@@ -53,6 +53,85 @@ guarded_gradient(x) = (dx = zero(x); autodiff(Reverse, guarded_inverse_sum, Acti
 off_guard(l, t) = l > t ? 1 / l : 0.0
 on_guard(l, t) = l > t ? 1 / l : 0.0
 
+function guarded_integer(x::T, n::Int) where {T <: AbstractFloat}
+    if isfinite(n) && isinteger(n) && n >= 0 && isfinite(x) && 0 <= x && x <= 1
+        return x * x
+    else
+        return T(-Inf)
+    end
+end
+
+# Finite inputs can also overflow before a select discards the result.
+function guarded_fourth(x)
+    if -1 <= x <= 1
+        y = x * x
+        return y * y
+    else
+        return zero(x)
+    end
+end
+
+function guarded_product(x, y)
+    return isfinite(x) && isfinite(y) ? x * y : zero(x)
+end
+
+function guarded_square_sum(x)
+    s = zero(eltype(x))
+    for v in x
+        s += guarded_integer(v, 5)
+    end
+    return s
+end
+
+function guarded_square_gradient(x)
+    dx = zero(x)
+    autodiff(Reverse, guarded_square_sum, Active, Duplicated(x, dx))
+    return dx
+end
+
+unguarded_square(x) = x * x
+
+@testset "Select-masked nonfinite products" begin
+    @testset "$T" for T in (Float32, Float64)
+        for x in T.((0.0, 0.4, 1.0, -0.2, 1.2, NaN, Inf, -Inf, floatmax(T)))
+            valid = isfinite(x) && 0 <= x <= 1
+            expected = valid ? 2x : zero(x)
+            result = autodiff(ReverseWithPrimal, guarded_integer, Active, Active(x), Const(5))
+            @test result[1][1] == expected
+            @test result[2] == (valid ? x * x : T(-Inf))
+            @test autodiff(Reverse, guarded_integer, Active, Active(x), Const(-1))[1][1] == 0
+            @test autodiff(Reverse, guarded_fourth, Active, Active(x))[1][1] ≈ (isfinite(x) && -1 <= x <= 1 ? 4x^3 : zero(x))
+        end
+        for x in T.((NaN, Inf, -Inf)), y in T.((0.4, NaN, Inf, -Inf))
+            dx, dy = autodiff(Reverse, guarded_product, Active, Active(x), Active(y))[1]
+            @test dx == 0
+            @test dy == 0
+        end
+        @test autodiff(Reverse, guarded_product, Active, Active(T(0.4)), Active(T(0.6)))[1] == (T(0.6), T(0.4))
+        @test isnan(autodiff(Reverse, unguarded_square, Active, Active(T(NaN)))[1][1])
+        @test autodiff(Reverse, unguarded_square, Active, Active(T(Inf)))[1][1] == Inf
+    end
+
+    x = [0.0, 0.4, 1.0, -0.2, 1.2, NaN, Inf, -Inf]
+    expected = [0.0, 0.8, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    @test guarded_square_gradient(x) == expected
+    dx1, dx2 = zero(x), zero(x)
+    autodiff(Reverse, guarded_square_sum, Active, BatchDuplicated(x, (dx1, dx2)))
+    @test dx1 == expected
+    @test dx2 == expected
+
+    fwdthunk, revthunk = autodiff_thunk(
+        ReverseSplitWithPrimal, Const{typeof(guarded_square_sum)}, Active,
+        Duplicated{Vector{Float64}},
+    )
+    dx = zero(x)
+    tape, primal, _ = fwdthunk(Const(guarded_square_sum), Duplicated(x, dx))
+    revthunk(Const(guarded_square_sum), Duplicated(x, dx), 1.0, tape)
+    @test primal == -Inf
+    @test dx == expected
+    @test autodiff(Forward, guarded_square_gradient, Duplicated(x, ones(length(x))))[1] == [2.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+end
+
 @testset "Guarded division speculated into a select" begin
     @testset "$(nameof(f))" for f in SPELLINGS
         @test f(0.0, 1.0e-12) == 0.0
