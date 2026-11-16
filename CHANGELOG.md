@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-- Sync upstream through `415dce4`, including the LLVM.jl 10 migration and
+- Return zero gradients when a guard rejects a nonfinite product, including
+  `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
+  The native select repair now protects products whose operands are nonfinite
+  or overflowed, extending the existing guarded-division repair.
+  `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
+  `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
+  Forward over Reverse, and finite inputs whose intermediate products overflow.
+- Sync upstream through `9cc1c3a`, including the LLVM.jl 10 migration and
   repository formatting. Adapt the dogfood compiler passes, retained
   derivatives, safepoint attributes, metadata, and regression tests to the
   new APIs. LLVM.jl now requires 10.4.3 and GPUCompiler 1.23.1 or 2.11;
