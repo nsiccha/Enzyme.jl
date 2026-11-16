@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Return zero gradients when a guard rejects a nonfinite product, including
+  `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
+  The native select repair now protects products whose operands are nonfinite
+  or overflowed, extending the existing guarded-division repair.
+  `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
+  `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
+  Forward over Reverse, and finite inputs whose intermediate products overflow.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification
