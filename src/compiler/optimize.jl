@@ -725,8 +725,8 @@ function excludes_safepoint(attr::LLVM.Attribute)::Bool
     attr.kind == (EnumAttribute(:memory)).kind || return false
     effect = LLVM.MemoryEffects(attr)
     return is_readonly(effect) || (
-        effect.inaccessiblemem == :none &&
-            effect.other == :none
+        effect[:inaccessiblemem] == :none &&
+            effect[:other] == :none
     )
 end
 

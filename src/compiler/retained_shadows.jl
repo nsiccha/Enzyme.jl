@@ -257,7 +257,7 @@ function retained_shadow_external_readonly(attrs)::Bool
                 return true
             end
         elseif k == (EnumAttribute(:memory)).kind
-            LLVM.MemoryEffects(attr).other in (:none, :read) && return true
+            LLVM.MemoryEffects(attr)[:other] in (:none, :read) && return true
         end
     end
     return false
@@ -271,7 +271,7 @@ function retained_shadow_no_argument_memory(attrs)::Bool
             k in ((EnumAttribute(:readnone)).kind, (EnumAttribute(:inaccessiblememonly)).kind) && return true
         elseif k == (EnumAttribute(:memory)).kind
             effect = LLVM.MemoryEffects(attr)
-            effect.argmem == :none && effect.other == :none && return true
+            effect[:argmem] == :none && effect[:other] == :none && return true
         end
     end
     return false
