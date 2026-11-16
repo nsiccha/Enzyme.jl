@@ -330,17 +330,17 @@ end
 function slot_reload_proof(uses)
     return LLVM.Context() do ctx
         mod = parse(LLVM.Module, slot_reload_ir(uses))
-        f = LLVM.functions(mod)["f"]
+        f = mod.functions["f"]
         activity = Enzyme.API.CDIFFE_TYPE[Enzyme.API.DFT_CONSTANT, Enzyme.API.DFT_DUP_ARG]
         Enzyme.Compiler.mark_constant_fields!(mod, f, activity)
         tags = Dict{String, Bool}()
-        for inst in LLVM.instructions(first(LLVM.blocks(f)))
-            nm = LLVM.name(inst)
+        for inst in (first(f.blocks)).instructions
+            nm = inst.name
             if nm in ("reload", "other")
                 tags[nm] = Enzyme.Compiler.is_constant_field_load(inst)
             elseif inst isa LLVM.StoreInst
-                stored = LLVM.name(LLVM.operands(inst)[1])
-                tags[stored] = haskey(LLVM.metadata(inst), Enzyme.Compiler.CONSTANT_FIELD_STORE)
+                stored = (inst.operands[1]).name
+                tags[stored] = haskey(inst.metadata, Enzyme.Compiler.CONSTANT_FIELD_STORE)
             end
         end
         tags

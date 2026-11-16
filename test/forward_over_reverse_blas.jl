@@ -125,7 +125,7 @@ const BLAS_SYRK_BRANCH = (
 
     # A constant operand: the inner reverse keeps the constant matrix's data pointer
     # on its tape, which is active in the outer Forward pass, and the mixed-activity
-    # handler has no shadow for a bare `Ptr{Float64}` (EnzymeRuntimeActivityError).
+    # handler has no shadow for a bare `Ptr{Float64}` EnzymeRuntimeActivityError.
     # Reverse over Forward differentiates these. Tracking: Enzyme todo `0mcxlsc`.
     @testset "constant operand (not yet)" begin
         for (f, n) in (

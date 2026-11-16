@@ -18,7 +18,7 @@ function select_condition_leaf(@nospecialize(value::LLVM.Value), depth::Int = 8)
     value isa LLVM.ConstantInt && return nothing
     if select_condition_expression(value)
         result = nothing
-        for operand in operands(value)
+        for operand in value.operands
             operand isa LLVM.ConstantInt && continue
             leaf = select_condition_leaf(operand, depth - 1)
             leaf === nothing && return nothing
@@ -36,8 +36,8 @@ function evaluate_select_condition(@nospecialize(value), @nospecialize(variable)
     depth == 0 && return nothing
     if value isa LLVM.ICmpInst || value isa LLVM.AndInst ||
             value isa LLVM.OrInst || value isa LLVM.XorInst
-        lhs = evaluate_select_condition(operands(value)[1], variable, constant, depth - 1)
-        rhs = evaluate_select_condition(operands(value)[2], variable, constant, depth - 1)
+        lhs = evaluate_select_condition(value.operands[1], variable, constant, depth - 1)
+        rhs = evaluate_select_condition(value.operands[2], variable, constant, depth - 1)
         lhs isa LLVM.ConstantInt && rhs isa LLVM.ConstantInt || return nothing
         # IRBuilder folds constant integer operands on all supported LLVM
         # versions; the older LLVMConst* entry points were removed in LLVM 18/19.
@@ -54,15 +54,15 @@ function evaluate_select_condition(@nospecialize(value), @nospecialize(variable)
         dispose(builder)
         return result
     elseif value isa LLVM.TruncInst || value isa LLVM.ZExtInst || value isa LLVM.SExtInst
-        operand = evaluate_select_condition(operands(value)[1], variable, constant, depth - 1)
+        operand = evaluate_select_condition(value.operands[1], variable, constant, depth - 1)
         operand isa LLVM.ConstantInt || return nothing
         builder = IRBuilder()
         result = if value isa LLVM.TruncInst
-            LLVM.trunc!(builder, operand, value_type(value))
+            LLVM.trunc!(builder, operand, value.value_type)
         elseif value isa LLVM.ZExtInst
-            LLVM.zext!(builder, operand, value_type(value))
+            LLVM.zext!(builder, operand, value.value_type)
         else
-            LLVM.sext!(builder, operand, value_type(value))
+            LLVM.sext!(builder, operand, value.value_type)
         end
         dispose(builder)
         return result
@@ -88,37 +88,37 @@ function finite_select_values(@nospecialize(root::LLVM.Value))
         if value isa LLVM.ConstantInt && isempty(path)
             value in result || push!(result, value)
         elseif value isa LLVM.PHIInst
-            for (incoming, _) in LLVM.incoming(value)
+            for (incoming, _) in value.incoming
                 length(todo) < budget || return nothing
                 push!(todo, (incoming, path))
             end
         elseif value isa LLVM.SelectInst
-            push!(todo, (operands(value)[2], path), (operands(value)[3], path))
+            push!(todo, (value.operands[2], path), (value.operands[3], path))
         elseif value isa LLVM.ExtractValueInst
             LLVM.API.LLVMGetNumIndices(value) <= 8 || return nothing
             indices = Tuple(unsafe_wrap(Array, LLVM.API.LLVMGetIndices(value), Int(LLVM.API.LLVMGetNumIndices(value))))
-            push!(todo, (operands(value)[1], (indices..., path...)))
+            push!(todo, (value.operands[1], (indices..., path...)))
         elseif value isa LLVM.InsertValueInst && !isempty(path)
             LLVM.API.LLVMGetNumIndices(value) <= 8 || return nothing
             indices = Tuple(unsafe_wrap(Array, LLVM.API.LLVMGetIndices(value), Int(LLVM.API.LLVMGetNumIndices(value))))
             common = min(length(indices), length(path))
             if length(indices) <= length(path) && path[1:common] == indices
-                push!(todo, (operands(value)[2], path[(length(indices) + 1):end]))
+                push!(todo, (value.operands[2], path[(length(indices) + 1):end]))
             elseif path[1:common] != indices[1:common]
-                push!(todo, (operands(value)[1], path))
+                push!(todo, (value.operands[1], path))
             else
                 return nothing
             end
-        elseif value isa LLVM.CallInst && called_operand(value) isa LLVM.Function
-            fn = called_operand(value)
-            LLVM.linkage(fn) in (LLVM.API.LLVMInternalLinkage, LLVM.API.LLVMPrivateLinkage) || return nothing
+        elseif value isa LLVM.CallInst && value.called_operand isa LLVM.Function
+            fn = value.called_operand
+            fn.linkage in (LLVM.API.LLVMInternalLinkage, LLVM.API.LLVMPrivateLinkage) || return nothing
             found = false
-            for bb in blocks(fn)
+            for bb in fn.blocks
                 budget -= 1
                 budget >= 0 || return nothing
-                term = terminator(bb)
-                term isa LLVM.RetInst && !isempty(operands(term)) || continue
-                push!(todo, (operands(term)[1], path))
+                term = bb.terminator
+                term isa LLVM.RetInst && !isempty(term.operands) || continue
+                push!(todo, (term.operands[1], path))
                 found = true
             end
             found || return nothing
@@ -191,15 +191,15 @@ function record_conditioned_phis!(phis, term::LLVM.BrInst, @nospecialize(conditi
             unique_predecessors[arm] = length(LLVM.predecessors(arm)) == 1
         end
         unique_predecessors[arm] || return
-        branch = terminator(arm)
+        branch = arm.terminator
         branch isa LLVM.BrInst && LLVM.API.LLVMGetNumSuccessors(branch) == 1 || return
     end
-    merge = LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(terminator(left), 0))
-    merge == LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(terminator(right), 0)) || return
-    merge in (left, right, LLVM.parent(term)) && return
-    for phi in instructions(merge)
+    merge = LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(left.terminator, 0))
+    merge == LLVM.BasicBlock(LLVM.API.LLVMGetSuccessor(right.terminator, 0)) || return
+    merge in (left, right, term.parent) && return
+    for phi in merge.instructions
         phi isa LLVM.PHIInst || break
-        incoming = LLVM.incoming(phi)
+        incoming = phi.incoming
         length(incoming) == 2 || return
         a, b = incoming
         if a[2] == left && b[2] == right
@@ -219,7 +219,7 @@ function available_conditioned_value!(builder, @nospecialize(value), @nospeciali
     LLVM.dominates(tree, value, user) && return value
     depth == 0 && return nothing
     LLVM.API.LLVMIsACastInst(value) != C_NULL || return nothing
-    input = available_conditioned_value!(builder, operands(value)[1], user, tree, depth - 1)
+    input = available_conditioned_value!(builder, value.operands[1], user, tree, depth - 1)
     input === nothing && return nothing
     clone = LLVM.Instruction(LLVM.API.LLVMInstructionClone(value))
     LLVM.API.LLVMSetOperand(clone, 0, input)
@@ -229,14 +229,14 @@ end
 
 function specialize_conditioned_select!(builder, @nospecialize(value), @nospecialize(user), @nospecialize(local_condition), local_taken::Bool, tree, tests, domains, proofs, phis, depth::Int = 8)
     depth == 0 && return value
-    if value_type(value) == LLVM.Int1Type() && !(value isa LLVM.ConstantInt)
+    if value.value_type == LLVM.Int1Type() && !(value isa LLVM.ConstantInt)
         known = known_condition_at_use(value, user, local_condition, local_taken, tree, tests, domains, proofs)
         known === nothing || return LLVM.ConstantInt(known)
     end
-    if value isa LLVM.SelectInst && value_type(operands(value)[1]) == LLVM.Int1Type()
-        selected = known_condition_at_use(operands(value)[1], user, local_condition, local_taken, tree, tests, domains, proofs)
+    if value isa LLVM.SelectInst && (value.operands[1]).value_type == LLVM.Int1Type()
+        selected = known_condition_at_use(value.operands[1], user, local_condition, local_taken, tree, tests, domains, proofs)
         selected === nothing && return value
-        return specialize_conditioned_select!(builder, operands(value)[selected ? 2 : 3], user, local_condition, local_taken, tree, tests, domains, proofs, phis, depth - 1)
+        return specialize_conditioned_select!(builder, value.operands[selected ? 2 : 3], user, local_condition, local_taken, tree, tests, domains, proofs, phis, depth - 1)
     elseif value isa LLVM.PHIInst && haskey(phis, value)
         condition, left, right = phis[value]
         selected = known_condition_at_use(condition, user, local_condition, local_taken, tree, tests, domains, proofs)
@@ -244,7 +244,7 @@ function specialize_conditioned_select!(builder, @nospecialize(value), @nospecia
         replacement = available_conditioned_value!(builder, selected ? left : right, user, tree, depth - 1)
         return replacement === nothing ? value : replacement
     elseif value isa LLVM.Instruction && LLVM.API.LLVMIsACastInst(value) != C_NULL
-        input = operands(value)[1]
+        input = value.operands[1]
         replacement = specialize_conditioned_select!(builder, input, user, local_condition, local_taken, tree, tests, domains, proofs, phis, depth - 1)
         replacement == input && return value
         # Clone only casts. Loads and calls must retain their execution order,
@@ -260,11 +260,11 @@ end
 function simplify_conditioned_selects!(mod::LLVM.Module)
     changed = 0
     cfg_changed = false
-    for fn in functions(mod)
-        isempty(blocks(fn)) && continue
+    for fn in mod.functions
+        isempty(fn.blocks) && continue
         original_instructions = LLVM.Instruction[]
         has_control = false
-        for bb in blocks(fn), inst in instructions(bb)
+        for bb in fn.blocks, inst in bb.instructions
             push!(original_instructions, inst)
             has_control |= inst isa LLVM.SelectInst || (inst isa LLVM.BrInst && LLVM.API.LLVMGetNumSuccessors(inst) == 2)
         end
@@ -272,8 +272,8 @@ function simplify_conditioned_selects!(mod::LLVM.Module)
         tests = Dict{LLVM.Value, Vector{Tuple{LLVM.Value, LLVM.Instruction, Bool}}}()
         unique_predecessors = Dict{LLVM.BasicBlock, Bool}()
         phis = Dict{LLVM.PHIInst, Tuple{LLVM.Value, LLVM.Value, LLVM.Value}}()
-        for bb in blocks(fn)
-            term = terminator(bb)
+        for bb in fn.blocks
+            term = bb.terminator
             term isa LLVM.BrInst && LLVM.API.LLVMGetNumSuccessors(term) == 2 || continue
             condition = LLVM.Value(LLVM.API.LLVMGetCondition(term))
             record_conditioned_phis!(phis, term, condition, unique_predecessors)
@@ -288,7 +288,7 @@ function simplify_conditioned_selects!(mod::LLVM.Module)
                     unique_predecessors[succ] = length(LLVM.predecessors(succ)) == 1
                 end
                 unique_predecessors[succ] || continue
-                for anchor in instructions(succ)
+                for anchor in succ.instructions
                     anchor isa LLVM.PHIInst && continue
                     push!(entries, (condition, anchor, edge == 0))
                     break
@@ -302,11 +302,11 @@ function simplify_conditioned_selects!(mod::LLVM.Module)
         for user in original_instructions
             # PHI operands are evaluated on incoming edges, not in this block.
             user isa LLVM.PHIInst && continue
-            position!(builder, user)
-            for index in 1:length(operands(user))
-                value = operands(user)[index]
+            position!(builder, LLVM.before(user))
+            for index in 1:length(user.operands)
+                value = user.operands[index]
                 local_condition = user isa LLVM.SelectInst && index in (2, 3) &&
-                    value_type(operands(user)[1]) == LLVM.Int1Type() ? operands(user)[1] : nothing
+                    (user.operands[1]).value_type == LLVM.Int1Type() ? user.operands[1] : nothing
                 replacement = specialize_conditioned_select!(builder, value, user, local_condition, index == 2, tree, tests, domains, proofs, phis)
                 replacement == value && continue
                 LLVM.API.LLVMSetOperand(user, index - 1, replacement)

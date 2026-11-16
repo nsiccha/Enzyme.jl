@@ -22,10 +22,10 @@ function tanh_work_sum(x)
 end
 
 function calls_julia_safepoint(f)
-    for bb in LLVM.blocks(f), inst in LLVM.instructions(bb)
+    for bb in f.blocks, inst in bb.instructions
         inst isa LLVM.CallInst || continue
-        callee = LLVM.called_operand(inst)
-        if callee isa LLVM.Function && LLVM.name(callee) == "julia.safepoint"
+        callee = inst.called_operand
+        if callee isa LLVM.Function && callee.name == "julia.safepoint"
             return true
         end
     end
@@ -34,8 +34,8 @@ end
 
 function functions_with_safepoint(mod)
     fs = LLVM.Function[]
-    for f in LLVM.functions(mod)
-        isempty(LLVM.blocks(f)) && continue
+    for f in mod.functions
+        isempty(f.blocks) && continue
         calls_julia_safepoint(f) && push!(fs, f)
     end
     return fs
@@ -51,7 +51,7 @@ end
         marked_pure = 0
         for f in functions_with_safepoint(mod)
             if Enzyme.Compiler.has_fn_attr(f, LLVM.StringAttribute("enzyme_math")) &&
-                    Enzyme.Compiler.excludes_safepoint(collect(LLVM.function_attributes(f)))
+                    Enzyme.Compiler.excludes_safepoint(collect(f.function_attributes))
                 marked_pure += 1
             end
         end
@@ -62,7 +62,7 @@ end
         with_safepoint = functions_with_safepoint(mod)
         @test !isempty(with_safepoint)
         for f in with_safepoint
-            @test !Enzyme.Compiler.excludes_safepoint(collect(LLVM.function_attributes(f)))
+            @test !Enzyme.Compiler.excludes_safepoint(collect(f.function_attributes))
             for call in Enzyme.Compiler.calls_of(f)
                 @test !Enzyme.Compiler.excludes_safepoint(Enzyme.Compiler.callsite_function_attributes(call))
             end

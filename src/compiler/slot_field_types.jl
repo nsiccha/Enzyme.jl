@@ -28,19 +28,19 @@ function slot_field_accesses!(
         writes::Vector{Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}},
         @nospecialize(ptr::LLVM.Value), offset::Int, dl::LLVM.DataLayout,
     )::Bool
-    for u in LLVM.uses(ptr)
-        user = LLVM.user(u)
+    for u in ptr.uses
+        user = u.user
         if isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst)
             slot_field_accesses!(loads, writes, user, offset, dl) || return false
-        elseif isa(user, LLVM.GetElementPtrInst) && operands(user)[1] == ptr
+        elseif isa(user, LLVM.GetElementPtrInst) && user.operands[1] == ptr
             off = constant_gep_offset(user)
             off === nothing && return false
             slot_field_accesses!(loads, writes, user, offset + off, dl) || return false
         elseif isa(user, LLVM.LoadInst)
             push!(loads, (user, offset))
-        elseif isa(user, LLVM.StoreInst) && operands(user)[2] == ptr && operands(user)[1] != ptr
-            val = operands(user)[1]
-            len = Int(LLVM.storage_size(dl, value_type(val)))
+        elseif isa(user, LLVM.StoreInst) && user.operands[2] == ptr && user.operands[1] != ptr
+            val = user.operands[1]
+            len = Int(LLVM.storage_size(dl, val.value_type))
             # A stored null pointer (or any all-zero constant) clears the field,
             # as a zero `memset` does.
             push!(writes, (offset, len, isa(val, LLVM.Constant) && LLVM.isnull(val) ? false : val))
@@ -57,7 +57,7 @@ function slot_field_call!(
         writes::Vector{Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}},
         call::LLVM.CallInst, @nospecialize(ptr::LLVM.Value), offset::Int,
     )::Bool
-    callee = called_operand(call)
+    callee = call.called_operand
     callee == ptr && return false
     args = arguments(call)
     if isa(callee, LLVM.Function)
@@ -70,10 +70,10 @@ function slot_field_call!(
         # `constant_slot_load` reads it: renamed lifetime markers and, for a slot it moves
         # to the heap (`enzyme_fromstack`), a write barrier per pointer stored into it,
         # which writes nothing into it, and a call that zeroes it.
-        nm = LLVM.name(callee)
+        nm = callee.name
         (nm == "llvm.enzyme.lifetime_start" || nm == "llvm.enzyme.lifetime_end") && return true
         (nm == "julia.write_barrier" && args[1] == ptr) && return true
-        if haskey(metadata(call), "enzyme_zerostack")
+        if haskey(call.metadata, "enzyme_zerostack")
             (args[1] == ptr && isa(args[3], LLVM.ConstantInt)) || return false
             push!(writes, (offset, convert(Int, args[3]), false))
             return true
@@ -99,11 +99,11 @@ function slot_field_call!(
     for i in positions
         attrs = collect(argument_attributes(call, i))
         if isa(callee, LLVM.Function)
-            append!(attrs, collect(parameter_attributes(callee, i)))
+            append!(attrs, collect(callee.parameter_attributes[i]))
         end
         nocapture = false
         for attr in attrs
-            kind(attr) == NOCAPTURE_ATTR_KIND && (nocapture = true)
+            attr.kind == NOCAPTURE_ATTR_KIND && (nocapture = true)
         end
         nocapture || return false
     end
@@ -161,15 +161,15 @@ end
 function slot_reload_type(
         ld::LLVM.LoadInst, enzyme_ctx::Union{EnzymeContext, Nothing}, seen = Set{LLVM.Instruction}(),
     )
-    is_tracked_pointer(value_type(ld)) || return nothing
-    mod = LLVM.parent(LLVM.parent(LLVM.parent(ld)))
-    haskey(metadata(mod), SLOT_TYPED_MODULE) || return nothing
-    slot, _ = constant_field_pointer(operands(ld)[1])
+    is_tracked_pointer(ld.value_type) || return nothing
+    mod = ld.parent.parent.parent
+    haskey(mod.metadata, SLOT_TYPED_MODULE) || return nothing
+    slot, _ = constant_field_pointer(ld.operands[1])
     is_stack_slot(slot) || return nothing
     slot in seen && return nothing
     loads = Tuple{LLVM.LoadInst, Int}[]
     writes = Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}[]
-    slot_field_accesses!(loads, writes, slot, 0, datalayout(mod)) || return nothing
+    slot_field_accesses!(loads, writes, slot, 0, mod.datalayout) || return nothing
     inner = Set{LLVM.Instruction}(seen)
     push!(inner, slot)
     for (other, off) in loads
@@ -180,17 +180,17 @@ end
 
 function type_slot_field_loads!(mod::LLVM.Module, enzyme_ctx::Union{EnzymeContext, Nothing})
     # From here on a reload without a tag is typed when asked (`slot_reload_type`).
-    metadata(mod)[SLOT_TYPED_MODULE]
-    dl = datalayout(mod)
+    get!(mod.metadata, SLOT_TYPED_MODULE)
+    dl = mod.datalayout
     slots = Tuple{Vector{Tuple{LLVM.LoadInst, Int}}, Vector{Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}}}[]
-    for f in functions(mod), bb in blocks(f), inst in instructions(bb)
+    for f in mod.functions, bb in f.blocks, inst in bb.instructions
         isa(inst, LLVM.AllocaInst) || continue
         loads = Tuple{LLVM.LoadInst, Int}[]
         writes = Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}[]
         slot_field_accesses!(loads, writes, inst, 0, dl) || continue
         pointers = Tuple{LLVM.LoadInst, Int}[]
         for (ld, off) in loads
-            is_tracked_pointer(value_type(ld)) && push!(pointers, (ld, off))
+            is_tracked_pointer(ld.value_type) && push!(pointers, (ld, off))
         end
         isempty(pointers) || push!(slots, (pointers, writes))
     end
@@ -200,11 +200,11 @@ function type_slot_field_loads!(mod::LLVM.Module, enzyme_ctx::Union{EnzymeContex
     while changed
         changed = false
         for (loads, writes) in slots, (ld, off) in loads
-            haskey(metadata(ld), SLOT_FIELD_TYPE) && continue
+            haskey(ld.metadata, SLOT_FIELD_TYPE) && continue
             found = slot_field_type(writes, off, enzyme_ctx)
             found === nothing && continue
             T, byref = found
-            metadata(ld)[SLOT_FIELD_TYPE] = MDNode(
+            ld.metadata[SLOT_FIELD_TYPE] = MDNode(
                 LLVM.Metadata[
                     MDString(string(convert(UInt, unsafe_to_pointer(T)))),
                     MDString(string(Int(byref))),

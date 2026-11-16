@@ -205,30 +205,30 @@ end
 const RETAINED_SHADOW_ENTRY = "enzymejl_retained_shadow_entry"
 
 function mark_retained_shadow_entry!(f::LLVM.Function)
-    push!(function_attributes(f), StringAttribute(RETAINED_SHADOW_ENTRY, ""))
+    push!(f.function_attributes, StringAttribute(RETAINED_SHADOW_ENTRY, ""))
     return nothing
 end
 
 function is_retained_shadow_entry(f::LLVM.Function)::Bool
-    for attr in collect(function_attributes(f))
-        attr isa LLVM.StringAttribute && kind(attr) == RETAINED_SHADOW_ENTRY && return true
+    for attr in collect(f.function_attributes)
+        attr isa LLVM.StringAttribute && attr.kind == RETAINED_SHADOW_ENTRY && return true
     end
     return false
 end
 
 function unmark_retained_shadow_entry!(f::LLVM.Function)
     is_retained_shadow_entry(f) || return nothing
-    delete!(function_attributes(f), StringAttribute(RETAINED_SHADOW_ENTRY, ""))
+    delete!(f.function_attributes, StringAttribute(RETAINED_SHADOW_ENTRY, ""))
     return nothing
 end
 
 function retained_shadow_arg_attr(p::LLVM.Argument, name::String)::Bool
     f = LLVM.Function(LLVM.API.LLVMGetParamParent(p))
-    k = kind(LLVM.EnumAttribute(name))
-    for (i, arg) in enumerate(parameters(f))
+    k = (LLVM.EnumAttribute(Symbol(name))).kind
+    for (i, arg) in enumerate(f.parameters)
         arg == p || continue
-        for attr in collect(parameter_attributes(f, i))
-            attr isa LLVM.EnumAttribute && kind(attr) == k && return true
+        for attr in collect(f.parameter_attributes[i])
+            attr isa LLVM.EnumAttribute && attr.kind == k && return true
         end
     end
     return false
@@ -237,9 +237,9 @@ end
 # The derivative reads `p`, which the primal only wrote.
 function retained_shadow_readable!(p::LLVM.Argument)
     f = LLVM.Function(LLVM.API.LLVMGetParamParent(p))
-    for (i, arg) in enumerate(parameters(f))
+    for (i, arg) in enumerate(f.parameters)
         arg == p || continue
-        delete!(parameter_attributes(f, i), LLVM.EnumAttribute("writeonly"))
+        delete!(f.parameter_attributes[i], LLVM.EnumAttribute(:writeonly))
     end
     return nothing
 end
@@ -247,17 +247,17 @@ end
 function retained_shadow_external_readonly(attrs)::Bool
     for attr in attrs
         attr isa LLVM.EnumAttribute || continue
-        k = kind(attr)
+        k = attr.kind
         if LLVM.version().major <= 15
             if k in (
-                    kind(EnumAttribute("readnone")), kind(EnumAttribute("readonly")),
-                    kind(EnumAttribute("argmemonly")), kind(EnumAttribute("inaccessiblememonly")),
-                    kind(EnumAttribute("inaccessiblemem_or_argmemonly")),
+                    (EnumAttribute(:readnone)).kind, (EnumAttribute(:readonly)).kind,
+                    (EnumAttribute(:argmemonly)).kind, (EnumAttribute(:inaccessiblememonly)).kind,
+                    (EnumAttribute(:inaccessiblemem_or_argmemonly)).kind,
                 )
                 return true
             end
-        elseif k == kind(EnumAttribute("memory"))
-            is_readonly(getModRef(MemoryEffect(value(attr)), Other)) && return true
+        elseif k == (EnumAttribute(:memory)).kind
+            LLVM.MemoryEffects(attr).other in (:none, :read) && return true
         end
     end
     return false
@@ -266,12 +266,12 @@ end
 function retained_shadow_no_argument_memory(attrs)::Bool
     for attr in attrs
         attr isa LLVM.EnumAttribute || continue
-        k = kind(attr)
+        k = attr.kind
         if LLVM.version().major <= 15
-            k in (kind(EnumAttribute("readnone")), kind(EnumAttribute("inaccessiblememonly"))) && return true
-        elseif k == kind(EnumAttribute("memory"))
-            effect = MemoryEffect(value(attr))
-            is_readnone(getModRef(effect, ArgMem)) && is_readnone(getModRef(effect, Other)) && return true
+            k in ((EnumAttribute(:readnone)).kind, (EnumAttribute(:inaccessiblememonly)).kind) && return true
+        elseif k == (EnumAttribute(:memory)).kind
+            effect = LLVM.MemoryEffects(attr)
+            effect.argmem == :none && effect.other == :none && return true
         end
     end
     return false
@@ -281,11 +281,11 @@ end
 function retained_shadow_pointer_free(@nospecialize(ty::LLVM.LLVMType))::Bool
     ty isa LLVM.PointerType && return false
     if ty isa LLVM.StructType
-        for el in elements(ty)
+        for el in ty.elements
             retained_shadow_pointer_free(el) || return false
         end
     elseif ty isa LLVM.ArrayType || ty isa LLVM.VectorType
-        return retained_shadow_pointer_free(eltype(ty))
+        return retained_shadow_pointer_free(ty.element_type)
     end
     return true
 end
@@ -294,10 +294,10 @@ function retained_shadow_global_pointer(@nospecialize(v::LLVM.Value))::Bool
     # Constant data without pointers cannot reach a buffer. Julia 1.12 copies the
     # literal fields of a view, such as its `1:2` indices, from such a global.
     v isa LLVM.GlobalVariable &&
-        return !(isconstant(v) && retained_shadow_pointer_free(global_value_type(v)))
+        return !(v.constant && retained_shadow_pointer_free(v.global_value_type))
     if v isa LLVM.ConstantExpr || v isa LLVM.ConstantAggregate
-        value_type(v) isa LLVM.PointerType && return true
-        for op in operands(v)
+        v.value_type isa LLVM.PointerType && return true
+        for op in v.operands
             retained_shadow_global_pointer(op) && return true
         end
     end
@@ -318,9 +318,9 @@ end
 # `retained_shadow_inert` accepts.
 function retained_shadow_inert_literal(inst::LLVM.LoadInst, enzyme_ctx)::Bool
     enzyme_ctx isa EnzymeContext || return false
-    slot = operands(inst)[1]
+    slot = inst.operands[1]
     slot isa LLVM.GlobalVariable || return false
-    val = slot_value(enzyme_ctx, LLVM.name(slot))
+    val = slot_value(enzyme_ctx, slot.name)
     val === nothing && return false
     return retained_shadow_inert(unbind(val.value))
 end
@@ -334,24 +334,24 @@ function retained_shadow_local_memory(
     f in seen && return true
     push!(seen, f)
     dead = guaranteed_unreachable(f)
-    for bb in blocks(f)
+    for bb in f.blocks
         bb in dead && continue
-        for inst in instructions(bb)
+        for inst in bb.instructions
             inst isa LLVM.IntToPtrInst && return false
             if inst isa LLVM.CallBase
-                callee = LLVM.called_operand(inst)
+                callee = inst.called_operand
                 callee isa LLVM.Function || return false
-                attrs = vcat(collect(function_attributes(callee)), callsite_function_attributes(inst))
-                if isempty(blocks(callee))
+                attrs = vcat(collect(callee.function_attributes), callsite_function_attributes(inst))
+                if isempty(callee.blocks)
                     retained_shadow_external_readonly(attrs) || return false
                 else
                     retained_shadow_local_memory(callee, enzyme_ctx, seen) || return false
                 end
                 retained_shadow_no_argument_memory(attrs) && continue
             end
-            for op in operands(inst)
+            for op in inst.operands
                 retained_shadow_global_pointer(op) || continue
-                inst isa LLVM.LoadInst && op == operands(inst)[1] &&
+                inst isa LLVM.LoadInst && op == inst.operands[1] &&
                     retained_shadow_inert_literal(inst, enzyme_ctx) && continue
                 return false
             end
@@ -376,13 +376,13 @@ function emit_reused_retained_shadow!(
     width == 1 || return nothing
     get_runtime_activity(gutils) && return nothing
     val isa LLVM.StoreInst || return nothing
-    operands(val)[1] == cur || return nothing
-    root, offset = constant_field_pointer(operands(val)[2])
+    val.operands[1] == cur || return nothing
+    root, offset = constant_field_pointer(val.operands[2])
     root isa LLVM.Argument || return nothing
     is_retained_shadow_entry(parent_scope(root)) || return nothing
     API.EnzymeGradientUtilsGetDiffeType(gutils, root, false) in
         (API.DFT_DUP_ARG, API.DFT_DUP_NONEED) || return nothing
-    is_tracked_pointer(value_type(root)) || return nothing
+    is_tracked_pointer(root.value_type) || return nothing
     retained_shadow_arg_attr(root, "writeonly") || return nothing
     retained_shadow_arg_attr(root, "nocapture") || return nothing
     legal, T, byref = abs_typeof(root, enzyme_ctx, true)
@@ -393,8 +393,8 @@ function emit_reused_retained_shadow!(
     legal && C <: Array{<:RetainedSinkElement} || return nothing
     f = parent_scope(root)
     retained_shadow_local_memory(f, enzyme_ctx) || return nothing
-    for p in parameters(f)
-        ty = value_type(p)
+    for p in f.parameters
+        ty = p.value_type
         ty isa LLVM.PointerType || continue
         is_tracked_pointer(ty) || return nothing
         API.EnzymeGradientUtilsGetDiffeType(gutils, p, false) in
@@ -406,8 +406,8 @@ function emit_reused_retained_shadow!(
         invert_pointer(gutils, root, B),
         unsafe_to_llvm(B, Val(path)),
     ]
-    for p in parameters(f)
-        is_tracked_pointer(value_type(p)) || continue
+    for p in f.parameters
+        is_tracked_pointer(p.value_type) || continue
         push!(args, new_from_original(gutils, p))
         p == root && continue
         if API.EnzymeGradientUtilsGetDiffeType(gutils, p, false) in (API.DFT_DUP_ARG, API.DFT_DUP_NONEED)
@@ -417,7 +417,7 @@ function emit_reused_retained_shadow!(
     for p in args
         p isa LLVM.Argument && retained_shadow_readable!(p)
     end
-    return emit_zero_shadows!(B, args, value_type(cur), width, created)
+    return emit_zero_shadows!(B, args, cur.value_type, width, created)
 end
 
 # Differentiating a derivative that contains this call: both results are fresh

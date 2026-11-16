@@ -60,17 +60,17 @@ end
         mod = conditioned_phi_fixture()
         @test Enzyme.Compiler.simplify_conditioned_selects!(mod) == 1
         LLVM.verify(mod)
-        insts = Dict(LLVM.name(inst) => inst for bb in LLVM.blocks(LLVM.functions(mod)["test"]) for inst in LLVM.instructions(bb))
-        @test LLVM.operands(LLVM.operands(insts["readptr"])[1])[1] == insts["scalar"]
-        @test LLVM.operands(insts["unproven"])[1] == insts["payload"]
-        @test LLVM.operands(insts["other"])[1] == insts["payload"]
-        @test count(inst isa LLVM.CallInst for bb in LLVM.blocks(LLVM.functions(mod)["test"]) for inst in LLVM.instructions(bb)) == 4
+        insts = Dict(inst.name => inst for bb in (mod.functions["test"]).blocks for inst in bb.instructions)
+        @test ((insts["readptr"]).operands[1]).operands[1] == insts["scalar"]
+        @test (insts["unproven"]).operands[1] == insts["payload"]
+        @test (insts["other"]).operands[1] == insts["payload"]
+        @test count(inst isa LLVM.CallInst for bb in (mod.functions["test"]).blocks for inst in bb.instructions) == 4
         for options in ((; load_input = true), (; extra_predecessor = true), (; loop_backedge = true), (; unrelated_condition = true))
             mod = conditioned_phi_fixture(; options...)
             @test Enzyme.Compiler.simplify_conditioned_selects!(mod) == 0
             LLVM.verify(mod)
-            insts = Dict(LLVM.name(inst) => inst for bb in LLVM.blocks(LLVM.functions(mod)["test"]) for inst in LLVM.instructions(bb))
-            @test LLVM.operands(insts["readptr"])[1] == insts["payload"]
+            insts = Dict(inst.name => inst for bb in (mod.functions["test"]).blocks for inst in bb.instructions)
+            @test (insts["readptr"]).operands[1] == insts["payload"]
         end
     end
 end
@@ -245,23 +245,23 @@ end
 @testset "Field address phis are unfolded into phis of loads" begin
     LLVM.Context() do ctx
         mod = field_phi_fixture()
-        fn = LLVM.functions(mod)["test"]
+        fn = mod.functions["test"]
         @test Enzyme.Compiler.unfold_field_phi_loads!(fn)
         LLVM.verify(mod)
-        merge = only(bb for bb in LLVM.blocks(fn) if LLVM.name(bb) == "merge")
-        data = only(LLVM.operands(LLVM.terminator(merge)))
+        merge = only(bb for bb in fn.blocks if bb.name == "merge")
+        data = only((merge.terminator).operands)
         @test data isa LLVM.PHIInst
-        @test all(v isa LLVM.LoadInst for (v, _) in LLVM.incoming(data))
+        @test all(v isa LLVM.LoadInst for (v, _) in data.incoming)
         # `original` also branches to `fail`, so its load sits on a new edge block.
-        @test all(length(LLVM.successors(LLVM.terminator(b))) == 1 for (_, b) in LLVM.incoming(data))
-        @test !any(inst isa LLVM.PHIInst && LLVM.addrspace(LLVM.value_type(inst)) == 11 for bb in LLVM.blocks(fn) for inst in LLVM.instructions(bb))
+        @test all(length((b.terminator).successors) == 1 for (_, b) in data.incoming)
+        @test !any(inst isa LLVM.PHIInst && (inst.value_type).addrspace == 11 for bb in fn.blocks for inst in bb.instructions)
         for options in ((; same_offset = true), (; write_first = true), (; other_use = true))
             mod = field_phi_fixture(; options...)
-            fn = LLVM.functions(mod)["test"]
+            fn = mod.functions["test"]
             @test !Enzyme.Compiler.unfold_field_phi_loads!(fn)
             LLVM.verify(mod)
-            merge = only(bb for bb in LLVM.blocks(fn) if LLVM.name(bb) == "merge")
-            @test only(LLVM.operands(LLVM.terminator(merge))) isa LLVM.LoadInst
+            merge = only(bb for bb in fn.blocks if bb.name == "merge")
+            @test only((merge.terminator).operands) isa LLVM.LoadInst
         end
     end
 end
@@ -313,9 +313,9 @@ end
 
 function conditioned_returns(mod)
     result = LLVM.Value[]
-    for bb in LLVM.blocks(LLVM.functions(mod)["test"])
-        inst = LLVM.terminator(bb)
-        inst isa LLVM.RetInst && push!(result, LLVM.operands(inst)[1])
+    for bb in (mod.functions["test"]).blocks
+        inst = bb.terminator
+        inst isa LLVM.RetInst && push!(result, inst.operands[1])
     end
     return result
 end
@@ -340,19 +340,19 @@ end
         )
         @test Enzyme.Compiler.simplify_conditioned_selects!(mod) == 2
         LLVM.verify(mod)
-        instructions = Dict(LLVM.name(inst) => inst for bb in LLVM.blocks(LLVM.functions(mod)["test"]) for inst in LLVM.instructions(bb))
+        instructions = Dict(inst.name => inst for bb in (mod.functions["test"]).blocks for inst in bb.instructions)
         payload = instructions["payload"]
-        @test LLVM.operands(instructions["bits"])[1] == payload
-        @test LLVM.operands(instructions["number"])[1] == payload
-        @test LLVM.operands(LLVM.operands(instructions["known"])[2])[1] == LLVM.parameters(LLVM.functions(mod)["test"])[3]
-        @test LLVM.operands(LLVM.operands(instructions["known"])[3])[1] isa LLVM.ConstantInt
+        @test (instructions["bits"]).operands[1] == payload
+        @test (instructions["number"]).operands[1] == payload
+        @test ((instructions["known"]).operands[2]).operands[1] == (mod.functions["test"]).parameters[3]
+        @test ((instructions["known"]).operands[3]).operands[1] isa LLVM.ConstantInt
 
         # A finite domain through a call, aggregate and cyclic PHI proves both
         # arms. An interposable definition, unknown value or exhausted search
         # must not justify substituting either pointer layout.
         mod = conditioned_tag_fixture()
         @test Enzyme.Compiler.simplify_conditioned_selects!(mod) == 2
-        @test conditioned_returns(mod) == collect(LLVM.parameters(LLVM.functions(mod)["test"]))[2:3]
+        @test conditioned_returns(mod) == collect((mod.functions["test"]).parameters)[2:3]
         LLVM.verify(mod)
         for options in ((; linkage = "weak"), (; third = "%unknown"), (; third = "undef"), (; chain = 300))
             mod = conditioned_tag_fixture(; options...)
@@ -409,7 +409,7 @@ end
             """
         )
         @test Enzyme.Compiler.simplify_conditioned_selects!(mod) > 0
-        @test all(!(inst isa LLVM.CallInst) for bb in LLVM.blocks(LLVM.functions(mod)["test"]) for inst in LLVM.instructions(bb))
+        @test all(!(inst isa LLVM.CallInst) for bb in (mod.functions["test"]).blocks for inst in bb.instructions)
         LLVM.verify(mod)
     end
 end
