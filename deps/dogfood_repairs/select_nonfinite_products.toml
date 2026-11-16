@@ -1,0 +1,3 @@
+summary = "Return zero gradients through select arms that discard nonfinite products"
+libenzyme_build = "cad5bf297b84d58639e2fbdaa0e4724936343bb1"
+tests = ["test/select_strong_zero.jl"]
