@@ -1761,7 +1761,7 @@ function edge_condition(B::LLVM.IRBuilder, term::LLVM.BrInst, @nospecialize(dest
     LLVM.isconditional(term) || return nothing
     iftrue, iffalse = term.successors
     iftrue == iffalse && return nothing
-    cond = LLVM.condition(term)
+    cond = term.condition
     return iftrue == dest ? cond : not!(B, cond)
 end
 

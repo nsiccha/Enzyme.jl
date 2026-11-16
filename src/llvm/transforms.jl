@@ -2226,7 +2226,7 @@ function fold_fresh_array_lengths!(mod::LLVM.Module)
             isempty(allocs) && continue
             catches = catches_exceptions(fn)
             for alloc in allocs
-                n = collect(arguments(alloc))[2]
+                n = collect(alloc.arguments)[2]
                 lengths = fresh_array_length_loads(alloc, catches)
                 lengths === nothing && continue
                 for ld in lengths

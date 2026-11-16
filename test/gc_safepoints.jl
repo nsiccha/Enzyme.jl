@@ -50,7 +50,7 @@ end
         _, mod = Enzyme.Compiler.reflect(tanh_work_sum, Active, Tuple{Duplicated{Vector{Float64}}}; second_stage = false)
         marked_pure = 0
         for f in functions_with_safepoint(mod)
-            if Enzyme.Compiler.has_fn_attr(f, LLVM.StringAttribute("enzyme_math")) &&
+            if haskey(f.function_attributes, "enzyme_math") &&
                     Enzyme.Compiler.excludes_safepoint(collect(f.function_attributes))
                 marked_pure += 1
             end

@@ -215,7 +215,7 @@ function constant_field_callee(cf::ConstantFields, f::LLVM.Function)::Bool
     if ok
         for u in f.uses
             call = u.user
-            if !isa(call, LLVM.CallInst) || call.called_operand != f || f in arguments(call)
+            if !isa(call, LLVM.CallInst) || call.called_operand != f || f in call.arguments
                 ok = false
                 break
             end
@@ -434,7 +434,7 @@ function walk_constant_field_call!(cf::ConstantFields, @nospecialize(base::LLVM.
         end
         # Julia 1.12 zeroes the roots array of a by-reference argument first.
         if intr == LLVM.Intrinsic("llvm.memset").id
-            ops = arguments(call)
+            ops = call.arguments
             if ops[1] == ptr && ops[2] != ptr && isa(ops[2], LLVM.ConstantInt) &&
                     convert(Int, ops[2]) == 0 && isa(ops[3], LLVM.ConstantInt)
                 push!(cf.zeroed[base], (offset, convert(Int, ops[3])))
@@ -452,7 +452,7 @@ function walk_constant_field_call!(cf::ConstantFields, @nospecialize(base::LLVM.
     # `offset` is nonzero when the slot holds the struct the callee takes inline,
     # as a tuple of `Const` arguments holds a view.
     params = callee.parameters
-    for (i, arg) in enumerate(arguments(call))
+    for (i, arg) in enumerate(call.arguments)
         arg == ptr || continue
         constant_field_base!(cf, params[i])
         add_constant_field_edge!(cf, base, params[i], offset)
@@ -485,7 +485,7 @@ function constant_field_data(cf::ConstantFields, @nospecialize(val::LLVM.Value),
         for u in f.uses
             call = u.user::LLVM.CallInst
             in_unreachable(cf, call) && continue
-            constant_field_data(cf, arguments(call)[idx], seen) || return false
+            constant_field_data(cf, call.arguments[idx], seen) || return false
         end
         return true
     end
@@ -779,7 +779,7 @@ function constant_field_call_safe(cf::ConstantFields, call::LLVM.CallInst, @nosp
     nm in OBJECT_ID_FUNCTIONS && return true
     constant_field_callee(cf, callee) || return false
     params = callee.parameters
-    for (i, arg) in enumerate(arguments(call))
+    for (i, arg) in enumerate(call.arguments)
         arg == val || continue
         constant_field_uses_safe(cf, params[i], visited) || return false
     end
@@ -864,7 +864,7 @@ function merge_local_data(cf::ConstantFields, @nospecialize(val::LLVM.Value), se
         for u in f.uses
             call = u.user::LLVM.CallInst
             in_unreachable(cf, call) && continue
-            merge_local_data(cf, arguments(call)[idx], seen) || return false
+            merge_local_data(cf, call.arguments[idx], seen) || return false
         end
         return true
     end
@@ -1463,7 +1463,7 @@ function mark_constant_fields!(mod::LLVM.Module, primalf::LLVM.Function, @nospec
                 for u in f.uses
                     call = u.user::LLVM.CallInst
                     in_unreachable(cf, call) && continue
-                    actual, off = constant_field_pointer(arguments(call)[i])
+                    actual, off = constant_field_pointer(call.arguments[i])
                     if isa(actual, LLVM.AllocaInst) || isa(actual, LLVM.Argument)
                         constant_field_base!(cf, actual)
                         add_constant_field_edge!(cf, actual, p, off)

@@ -59,7 +59,7 @@ function slot_field_call!(
     )::Bool
     callee = call.called_operand
     callee == ptr && return false
-    args = arguments(call)
+    args = call.arguments
     if isa(callee, LLVM.Function)
         intr = LLVM.API.LLVMGetIntrinsicID(callee)
         if intr == LLVM.Intrinsic("llvm.lifetime.start").id ||
@@ -97,7 +97,7 @@ function slot_field_call!(
     isempty(positions) && return false
     decay_args_readonly(call, callee, positions) || return false
     for i in positions
-        attrs = collect(argument_attributes(call, i))
+        attrs = collect(call.argument_attributes[i])
         if isa(callee, LLVM.Function)
             append!(attrs, collect(callee.parameter_attributes[i]))
         end
