@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Sync upstream through `415dce4`, including the LLVM.jl 10 migration and
+  repository formatting. Adapt the dogfood compiler passes, retained
+  derivatives, safepoint attributes, metadata, and regression tests to the
+  new APIs. LLVM.jl now requires 10.4.3 and GPUCompiler 1.23.1 or 2.11;
+  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification
