@@ -243,8 +243,8 @@ function new_address_global!(mod::LLVM.Module, symbols::RetainedSymbols)::String
     symbols.count += 1
     name = symbols.prefix * "addr" * string(symbols.count)
     gv = LLVM.GlobalVariable(mod, LLVM.StructType(LLVM.LLVMType[]), name)
-    API.SetMD(gv, "enzyme_ta_norecur", LLVM.MDNode(LLVM.Metadata[]))
-    API.SetMD(gv, "enzyme_inactive", LLVM.MDNode(LLVM.Metadata[]))
+    gv.metadata["enzyme_ta_norecur"] = LLVM.MDNode(LLVM.Metadata[])
+    gv.metadata["enzyme_inactive"] = LLVM.MDNode(LLVM.Metadata[])
     return name
 end
 
