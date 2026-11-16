@@ -1,4 +1,3 @@
-
 module JIT
 
 using LLVM, LLVM.IR, LLVM.ORC
@@ -15,8 +14,8 @@ struct CompilerInstance
     jit::LLVM.JuliaOJIT
     # the dylib everything is added to, which also defines Enzyme's globals
     jd::LLVM.JITDylib
-    lctm::Union{LLVM.LazyCallThroughManager,Nothing}
-    ism::Union{LLVM.IndirectStubsManager,Nothing}
+    lctm::Union{LLVM.LazyCallThroughManager, Nothing}
+    ism::Union{LLVM.IndirectStubsManager, Nothing}
 end
 
 function LLVM.dispose(ci::CompilerInstance)
@@ -62,7 +61,7 @@ function fix_ptr_lookup(name)
         if startswith(name, "ejlstr\$")
             hnd_cache = handle_cell!(hnd_string_map, String(arg1))
         else
-            arg1 =  parse(Int, arg1)
+            arg1 = parse(Int, arg1)
             hnd_cache = handle_cell!(hnd_int_map, arg1)
             arg1 = reinterpret(Ptr{Cchar}, arg1)
         end
@@ -118,7 +117,7 @@ function setup_globals()
         jit[] = CompilerInstance(lljit, jd_main, nothing, nothing)
     end
 
-    jd_main, lljit
+    return jd_main, lljit
 end
 
 function __init__()
@@ -142,7 +141,7 @@ function __init__()
     end
     define!(jd_main, absolute_symbols(pairs))
 
-    atexit() do
+    return atexit() do
         dispose(tm[])
     end
 end
@@ -162,7 +161,7 @@ function add_trampoline!(jd, (lljit, lctm, ism), entry, target)
     mu = lazy_reexports(lctm, ism, jd, [mangle(lljit, entry) => (mangle(lljit, target), flags)])
     define!(jd, mu)
 
-    LLVM.lookup(lljit, jd, entry)
+    return LLVM.lookup(lljit, jd, entry)
 end
 
 function prepare!(mod)
@@ -191,6 +190,7 @@ function prepare!(mod)
         replace_uses!(f, ptr)
         Compiler.eraseInst(mod, f)
     end
+    return
 end
 
 """
@@ -327,7 +327,7 @@ function lookup(name)
 end
 
 function lookup(jd::JITDylib, name)
-    LLVM.lookup(jit[].jit, jd, name)
+    return LLVM.lookup(jit[].jit, jd, name)
 end
 
 end # module

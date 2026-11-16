@@ -1,31 +1,31 @@
 import GPUCompiler
 
 function get_job(
-    @nospecialize(func),
-    @nospecialize(A),
-    @nospecialize(types);
-    run_enzyme::Bool = true,
-    optimize::Bool = true,
-    mode::API.CDerivativeMode = API.DEM_ReverseModeCombined,
-    dupClosure::Bool = false,
-    argwrap::Bool = true,
-    width::Int = 1,
-    modifiedBetween = nothing,
-    returnPrimal::Bool = false,
-    augmentedInit = false,
-    world = nothing,
-    ABI = DefaultABI,
-    ErrIfFuncWritten = false,
-    RuntimeActivity = false,
-    StrongZero = false,
+        @nospecialize(func),
+        @nospecialize(A),
+        @nospecialize(types);
+        run_enzyme::Bool = true,
+        optimize::Bool = true,
+        mode::API.CDerivativeMode = API.DEM_ReverseModeCombined,
+        dupClosure::Bool = false,
+        argwrap::Bool = true,
+        width::Int = 1,
+        modifiedBetween = nothing,
+        returnPrimal::Bool = false,
+        augmentedInit = false,
+        world = nothing,
+        ABI = DefaultABI,
+        ErrIfFuncWritten = false,
+        RuntimeActivity = false,
+        StrongZero = false,
         AtomicAdd = nothing,
-    kwargs...,
-)
+        kwargs...,
+    )
 
     tt = Tuple{map(eltype, types.parameters)...}
 
     if world isa Nothing
-        world=Base.get_world_counter()
+        world = Base.get_world_counter()
     end
 
     primal = my_methodinstance(mode == API.DEM_ForwardMode ? Forward : Reverse, Core.Typeof(func), tt, world)
@@ -39,7 +39,7 @@ function get_job(
         modifiedBetween = (defaultMod, (defaultMod for _ in types.parameters)...)
     end
     params = Compiler.EnzymeCompilerParams(
-        Tuple{(dupClosure ? Duplicated : Const){Core.Typeof(func)},types.parameters...},
+        Tuple{(dupClosure ? Duplicated : Const){Core.Typeof(func)}, types.parameters...},
         mode,
         width,
         rt,
@@ -56,20 +56,20 @@ function get_job(
         AtomicAdd
     )
     return GPUCompiler.CompilerJob(
-            primal,
-            CompilerConfig(target, params; kernel = false),
-            world,
-        )
+        primal,
+        CompilerConfig(target, params; kernel = false),
+        world,
+    )
 end
 
 function reflect(
-    @nospecialize(func),
-    @nospecialize(A),
-    @nospecialize(types);
-    optimize::Bool = true,
-    second_stage::Bool = true,
-    kwargs...,
-)
+        @nospecialize(func),
+        @nospecialize(A),
+        @nospecialize(types);
+        optimize::Bool = true,
+        second_stage::Bool = true,
+        kwargs...,
+    )
 
     job = get_job(func, A, types; optimize, kwargs...)
     # Run Enzyme's `compile_unhooked` on the job: the primal and every dependency land in
@@ -95,19 +95,19 @@ struct jl_llvmf_dump
 end
 
 function enzyme_code_llvm(
-    io::IO,
-    @nospecialize(func),
-    @nospecialize(A),
-    @nospecialize(types);
-    optimize::Bool = true,
-    run_enzyme::Bool = true,
-    second_stage::Bool = true,
-    raw::Bool = false,
-    debuginfo::Symbol = :default,
-    dump_module::Bool = false,
-    mode = API.DEM_ReverseModeCombined,
-    kwargs...
-)
+        io::IO,
+        @nospecialize(func),
+        @nospecialize(A),
+        @nospecialize(types);
+        optimize::Bool = true,
+        run_enzyme::Bool = true,
+        second_stage::Bool = true,
+        raw::Bool = false,
+        debuginfo::Symbol = :default,
+        dump_module::Bool = false,
+        mode = API.DEM_ReverseModeCombined,
+        kwargs...
+    )
     if mode == API.DEM_ForwardMode
         if A <: Active
             throw(AssertionError("Active not allowed in forward mode"))
@@ -118,7 +118,7 @@ function enzyme_code_llvm(
             end
         end
     end
-    JuliaContext() do ctx
+    return JuliaContext() do ctx
         entry_fn, ir = reflect(func, A, types; optimize, run_enzyme, second_stage, mode, kwargs...)
         ts_mod = LLVM.ThreadSafeModule(ir)
         GC.@preserve entry_fn begin
@@ -141,13 +141,13 @@ enzyme_code_llvm(@nospecialize(func), @nospecialize(A), @nospecialize(types); kw
     enzyme_code_llvm(stdout, func, A, types; kwargs...)
 
 function enzyme_code_native(
-    io::IO,
-    @nospecialize(func),
-    @nospecialize(A),
-    @nospecialize(types);
-    mode = API.DEM_ReverseModeCombined,
-)
-    JuliaContext() do ctx
+        io::IO,
+        @nospecialize(func),
+        @nospecialize(A),
+        @nospecialize(types);
+        mode = API.DEM_ReverseModeCombined,
+    )
+    return JuliaContext() do ctx
         _, mod = reflect(func, A, types; mode)
         str = String(LLVM.emit(JIT.get_tm(), mod, LLVM.CodeGenFileType.Assembly))
         LLVM.dispose(mod)
@@ -158,11 +158,11 @@ enzyme_code_native(@nospecialize(func), @nospecialize(A), @nospecialize(types); 
     enzyme_code_native(stdout, func, A, types; kwargs...)
 
 function enzyme_code_typed(
-    @nospecialize(func),
-    @nospecialize(A),
-    @nospecialize(types);
-    kwargs...,
-)
+        @nospecialize(func),
+        @nospecialize(A),
+        @nospecialize(types);
+        kwargs...,
+    )
     job = get_job(func, A, types; kwargs...)
-    GPUCompiler.code_typed(job; kwargs...)
+    return GPUCompiler.code_typed(job; kwargs...)
 end
