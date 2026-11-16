@@ -826,7 +826,7 @@ function constant_select_load(sel::LLVM.SelectInst)::Union{Nothing, LLVM.LoadIns
     length(uses) == 1 || return nothing
     ld = (only(uses)).user
     isa(ld, LLVM.LoadInst) || return nothing
-    (Bool(LLVM.API.LLVMGetVolatile(ld)) || LLVM.is_atomic(ld)) && return nothing
+    (Bool(LLVM.API.LLVMGetVolatile(ld)) || LLVM.isatomic(ld)) && return nothing
     isa(ld.value_type, LLVM.PointerType) && return nothing
     return ld
 end

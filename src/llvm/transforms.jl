@@ -2173,7 +2173,7 @@ function fresh_array_length_loads(alloc::LLVM.CallInst, catches::Bool)
                 base == alloc || return nothing
                 push!(todo, user)
             elseif isa(user, LLVM.LoadInst)
-                (Bool(LLVM.API.LLVMGetVolatile(user)) || LLVM.is_atomic(user)) && continue
+                (Bool(LLVM.API.LLVMGetVolatile(user)) || LLVM.isatomic(user)) && continue
                 user.value_type == LLVM.IntType(8 * sizeof(Int)) || continue
                 base, off = get_base_and_offset(cur)
                 base == alloc || return nothing
