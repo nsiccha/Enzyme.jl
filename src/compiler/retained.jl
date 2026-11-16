@@ -657,15 +657,15 @@ function materialize_retained(retained::RetainedDerivative)::CompileResult
     started = time()
     lljit = JIT.get_jit()
     jd = JIT.jit[].jd
-    pairs = JIT.symbol_pair_type()[]
+    pairs = Pair{LLVM.LLVMSymbol, Ptr{Cvoid}}[]
     for (symbol, value) in retained.values
-        push!(pairs, JIT.absolute_symbol_pair(LLVM.mangle(lljit, symbol), unsafe_to_ptr(value)))
+        push!(pairs, LLVM.mangle(lljit, symbol) => unsafe_to_ptr(value))
     end
     for (symbol, foreign) in retained.foreign
         ptr = JIT.fix_ptr_lookup("ejlstr\$" * foreign.symbol * "\$" * foreign.library)
-        push!(pairs, JIT.absolute_symbol_pair(LLVM.mangle(lljit, symbol), ptr))
+        push!(pairs, LLVM.mangle(lljit, symbol) => ptr)
     end
-    isempty(pairs) || LLVM.define(jd, LLVM.absolute_symbols(pairs))
+    isempty(pairs) || LLVM.define!(jd, LLVM.absolute_symbols(pairs))
 
     LLVM.add!(lljit, jd, LLVM.MemoryBuffer(retained.object, retained.adjoint, true))
     adjoint = pointer(JIT.lookup(jd, retained.adjoint))
