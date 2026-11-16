@@ -260,6 +260,7 @@ as a noncaptured, readonly raw data pointer. Every argument position receiving
 `val` must be `nocapture` and `readonly` (or `readnone`). The pointee's Julia
 type must not hold references to derivative data: readonly on an array header
 alone does not prevent writing through the data pointer loaded from it.
+For pointer offsets and merges, every possible base must satisfy that proof.
 """
 function is_readonly_call_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospecialize(val::LLVM.Value), world::UInt, enzyme_ctx::EnzymeContext)::Bool
     LLVM.called_operand(call) == val && return false
@@ -291,12 +292,40 @@ function is_readonly_call_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospe
         found = true
     end
     found || return rooted
-    base, _ = get_base_and_offset(val)
-    legal, typ, byref = abs_typeof(base, enzyme_ctx)
-    legal && byref == GPUCompiler.BITS_VALUE || return false
-    (typ <: Ptr || typ <: Core.LLVMPtr) || return false
-    reg = active_reg(ptreltype(typ), world)
-    return reg == ActiveState || reg == AnyState
+    # Pointer offsets and merges need not retain one exact Julia type (a
+    # runtime byte offset in Julia's BLAS wrappers, for example). Prove every
+    # possible base instead. Follow no loads here: loading an inner pointer
+    # needs its own type proof, not the type of the header it came from.
+    todo = LLVM.Value[val]
+    seen = Set{LLVM.Value}()
+    found_base = false
+    while !isempty(todo)
+        cur = pop!(todo)
+        cur in seen && continue
+        push!(seen, cur)
+        if cur isa LLVM.GetElementPtrInst || cur isa LLVM.BitCastInst ||
+                cur isa LLVM.AddrSpaceCastInst || cur isa LLVM.IntToPtrInst ||
+                cur isa LLVM.PtrToIntInst
+            push!(todo, operands(cur)[1])
+            continue
+        elseif cur isa LLVM.PHIInst
+            for (value, _) in LLVM.incoming(cur)
+                push!(todo, value)
+            end
+            continue
+        elseif cur isa LLVM.SelectInst
+            push!(todo, operands(cur)[2], operands(cur)[3])
+            continue
+        end
+        base, _ = get_base_and_offset(cur)
+        legal, typ, byref = abs_typeof(base, enzyme_ctx)
+        legal && byref == GPUCompiler.BITS_VALUE || return false
+        (typ <: Ptr || typ <: Core.LLVMPtr) || return false
+        reg = active_reg(ptreltype(typ), world)
+        (reg == ActiveState || reg == AnyState) || return false
+        found_base = true
+    end
+    return found_base
 end
 
 """
