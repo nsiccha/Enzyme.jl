@@ -4,7 +4,7 @@ using Enzyme: LLVM
 function retained_section_object(asm::String)
     LLVM.@dispose ctx = LLVM.Context() mod = LLVM.Module("retained_sections") begin
         mod.triple = LLVM.triple(Enzyme.Compiler.JIT.get_jit())
-        mod.inline_asm = asm
+        push!(mod.inline_asm, asm)
         return Enzyme.Compiler.emit_retained_object(mod)
     end
 end
