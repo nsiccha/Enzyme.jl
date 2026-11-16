@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Differentiate real `logabsbeta` with scalar partials, removing the recursive
+  reverse tapes reached through `logbeta` and `beta`. Large positive arguments
+  retain the stable log-gamma-ratio derivative, and the sign and nonpositive
+  integer branches keep their existing behavior. Regression tests cover
+  Forward, Reverse, batching, split and nested modes, and loop allocations.
+  `Enzyme.has_dogfood_repair(:logbeta_partials)` reports the repair.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification
