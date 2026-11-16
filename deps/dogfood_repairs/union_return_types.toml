@@ -1,0 +1,2 @@
+summary = "Preserve union return-buffer type facts after an equivalent pointer type has been cached."
+tests = ["test/union_return_types.jl"]
