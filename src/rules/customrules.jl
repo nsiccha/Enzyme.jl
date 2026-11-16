@@ -1772,9 +1772,9 @@ end
 function load_rule_return!(B::LLVM.IRBuilder, ty::LLVM.LLVMType, ptr::LLVM.Value)
     if ty isa LLVM.StructType || ty isa LLVM.ArrayType
         val = LLVM.UndefValue(ty)
-        count = ty isa LLVM.StructType ? length(ty.elements) : length(ty)
+        count = ty isa LLVM.StructType ? length(ty.elements) : ty.length
         for i in 1:count
-            fieldty = ty isa LLVM.StructType ? ty.elements[i] : eltype(ty)
+            fieldty = ty isa LLVM.StructType ? ty.elements[i] : ty.element_type
             fieldptr = inbounds_gep!(
                 B, ty, ptr,
                 LLVM.Value[LLVM.ConstantInt(LLVM.Int32Type(), 0), LLVM.ConstantInt(LLVM.Int32Type(), i - 1)],

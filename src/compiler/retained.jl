@@ -459,8 +459,9 @@ function emit_retained_object(mod::LLVM.Module)::Vector{UInt8}
         opt_level == 2 ? LLVM.API.LLVMCodeGenLevelDefault : LLVM.API.LLVMCodeGenLevelAggressive
     triple = LLVM.triple(JIT.get_jit())
     tm = LLVM.TargetMachine(
-        LLVM.Target(; triple), triple, cpu_name(), cpu_features();
-        optlevel, reloc = LLVM.API.LLVMRelocStatic, code = LLVM.API.LLVMCodeModelLarge,
+        LLVM.Target(; triple), triple;
+        cpu = cpu_name(), features = cpu_features(), opt_level = optlevel,
+        reloc = LLVM.RelocMode.Static, code = LLVM.CodeModel.Large,
     )
     try
         return LLVM.emit(tm, mod, LLVM.API.LLVMObjectFile)

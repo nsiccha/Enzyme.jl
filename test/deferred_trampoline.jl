@@ -1,5 +1,5 @@
 using Enzyme, Test
-using LLVM
+using LLVM, LLVM.IR, LLVM.Build
 
 # `autodiff_deferred` called outside of a differentiated function jumps through a lazy JIT
 # trampoline, whose materializer compiles the derivative and emits its module against a

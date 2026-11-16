@@ -1891,7 +1891,7 @@ with such a reload, although the reload can only hold a float.
 """
 function floating_point_aggregate_type(T::LLVM.LLVMType)
     leaves = if T isa LLVM.ArrayType
-        LLVM.LLVMType[eltype(T)]
+        LLVM.LLVMType[T.element_type]
     elseif T isa LLVM.StructType
         T.elements
     else
