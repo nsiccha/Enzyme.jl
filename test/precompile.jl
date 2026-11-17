@@ -1030,19 +1030,20 @@ end
             @test length(fields) == 6
             if length(fields) == 6 && !("absent" in fields) && !("failed" in fields)
                 default_serial, default_several, forced_serial, forced_several = fields[1:4]
-                # The default: plain accumulation for one thread, and for several the function
-                # and the body of its loop accumulate with locked exchanges.
-                @test default_serial == "0"
+                # The counts include what the primal code of a threaded loop holds itself, which
+                # depends on the Julia version, so they are compared with each other.
                 # `true` settles the function's own accumulation and leaves the loop body to
                 # the number of threads, so there are two variants of it as well. The one for
-                # several threads has the body's locked exchanges on top of the function's, and
-                # is the code the default has for several threads.
-                @test forced_several != "none" && parse(Int, forced_several) > parse(Int, forced_serial) > 0
+                # one thread has the function's locked exchanges on top of the default's, and
+                # the one for several threads the body's on top of those.
+                @test forced_several != "none"
+                @test parse(Int, forced_several) > parse(Int, forced_serial) > parse(Int, default_serial)
+                # For several threads the default is that same code.
                 @test default_several == forced_several
                 # A serial function under `true` is the same code whatever the number of threads.
                 @test fields[6] == "none" && parse(Int, fields[5]) > 0
             else
-                @test fields == ["0", "n", "m", "n", "m", "none"]
+                @test fields == ["k", "n", "m", "n", "m", "none"]
             end
         end
     end

@@ -38,10 +38,12 @@
   Reverse called from several threads that share a shadow. A derivative
   whose own setting settles how it accumulates now has a variant for several
   threads as well when it links such a part in. The body of `Enzyme.pmap`
-  and `Enzyme.@parallel` lost updates the same way: its derivative is taken
-  with the inline ABI, and such a derivative is now compiled for several
-  threads whenever a package image is being written, so in a kept derivative
-  it accumulates atomically with one thread too.
+  and `Enzyme.@parallel` lost updates the same way. Its derivative is taken
+  with the inline ABI, whose code goes wherever the rule's value goes, so
+  the rules now hold a plain and an atomic derivative of the body and take
+  the one for the number of threads of the process that runs the loop. Any
+  other derivative with the inline ABI is compiled for several threads while
+  a package image is written.
   `Enzyme.has_dogfood_repair(:retained_several_threads)` reports the repair;
   `test/precompile.jl` runs these shapes in sessions with one and with two
   threads, and `test/threads.jl` counts the atomic updates of each variant.
