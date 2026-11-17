@@ -253,6 +253,82 @@ function is_inactive_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospeciali
 end
 
 """
+    is_readonly_call_operand(call, fn, val, world, enzyme_ctx)::Bool
+
+Whether `call` only keeps `val` alive in a Julia GC root bundle, or passes it
+as a noncaptured, readonly raw data pointer. Every argument position receiving
+`val` must be `nocapture` and `readonly` (or `readnone`). The pointee's Julia
+type must not hold references to derivative data: readonly on an array header
+alone does not prevent writing through the data pointer loaded from it.
+For pointer offsets and merges, every possible base must satisfy that proof.
+"""
+function is_readonly_call_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospecialize(val::LLVM.Value), world::UInt, enzyme_ctx::EnzymeContext)::Bool
+    LLVM.called_operand(call) == val && return false
+    rooted = false
+    for bundle in LLVM.operand_bundles(call)
+        val in LLVM.inputs(bundle) || continue
+        LLVM.tag(bundle) == "jl_roots" || return false
+        rooted = true
+    end
+    found = false
+    nparms = length(LLVM.parameters(fn))
+    readonly_kind = kind(EnumAttribute("readonly"))
+    readnone_kind = kind(EnumAttribute("readnone"))
+    nocapture_kind = kind(EnumAttribute("nocapture"))
+    for (i, op) in enumerate(arg_operands_view(call))
+        op == val || continue
+        i <= nparms || return false
+        reads_only = false
+        captures_nothing = false
+        for attrs in (parameter_attributes(fn, i), LLVM.argument_attributes(call, i))
+            for attr in collect(attrs)
+                attr isa LLVM.EnumAttribute || continue
+                k = kind(attr)
+                reads_only |= k == readonly_kind || k == readnone_kind
+                captures_nothing |= k == nocapture_kind
+            end
+        end
+        reads_only && captures_nothing || return false
+        found = true
+    end
+    found || return rooted
+    # Pointer offsets and merges need not retain one exact Julia type (a
+    # runtime byte offset in Julia's BLAS wrappers, for example). Prove every
+    # possible base instead. Follow no loads here: loading an inner pointer
+    # needs its own type proof, not the type of the header it came from.
+    todo = LLVM.Value[val]
+    seen = Set{LLVM.Value}()
+    found_base = false
+    while !isempty(todo)
+        cur = pop!(todo)
+        cur in seen && continue
+        push!(seen, cur)
+        if cur isa LLVM.GetElementPtrInst || cur isa LLVM.BitCastInst ||
+                cur isa LLVM.AddrSpaceCastInst || cur isa LLVM.IntToPtrInst ||
+                cur isa LLVM.PtrToIntInst
+            push!(todo, operands(cur)[1])
+            continue
+        elseif cur isa LLVM.PHIInst
+            for (value, _) in LLVM.incoming(cur)
+                push!(todo, value)
+            end
+            continue
+        elseif cur isa LLVM.SelectInst
+            push!(todo, operands(cur)[2], operands(cur)[3])
+            continue
+        end
+        base, _ = get_base_and_offset(cur)
+        legal, typ, byref = abs_typeof(base, enzyme_ctx)
+        legal && byref == GPUCompiler.BITS_VALUE || return false
+        (typ <: Ptr || typ <: Core.LLVMPtr) || return false
+        reg = active_reg(ptreltype(typ), world)
+        (reg == ActiveState || reg == AnyState) || return false
+        found_base = true
+    end
+    return found_base
+end
+
+"""
     readonly_checked_params(primalf, TT, err_if_written, world)::Vector{LLVM.Value}
 
 The parameters of `primalf` whose data the readonly check follows. `err_if_written`

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Differentiate a `ccall` whose library Julia does not resolve while compiling
+  the method. Julia 1.12 leaves a module-qualified library
+  (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
+  `getproperty` call although `Mod.lib` is a constant; a non-constant global
+  and, through Julia 1.12, any other expression are read the first time the
+  call runs. Such a call reached Enzyme as an indirect call through a
+  looked-up address: with `Ref` arguments, as in a hand-written BLAS or LAPACK
+  wrapper, compiling the derivative aborted the process
+  (`Assertion '!gutils->isConstantValue(baseOp)' failed`), and with scalar
+  arguments it raised "No augmented forward pass found for
+  ijl_lazy_load_and_lookup". A library read from a module global is now
+  resolved when the derivative is compiled. Behind any other expression the
+  call is named for its symbol, so a derivative rule for a math function
+  applies; a BLAS or LAPACK routine there, and a native function without a
+  rule, raise `EnzymeNoDerivativeError`.
+  `Enzyme.has_dogfood_repair(:ccall_runtime_library)` reports the repair;
+  `test/ccall_library.jl` covers each spelling of the library for a libm
+  function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
+  Reverse, calls that carry no derivative, and a function without a rule.
+- Accept captured BLAS input buffers in the readonly check for an unannotated
+  function argument. The proof uses per-argument readonly and nocapture
+  attributes only for typed raw data pointers, and ignores uses solely in
+  Julia GC-root bundles. Captured output buffers and aliases in writable
+  positions still raise `EnzymeMutabilityException`.
+  `Enzyme.has_dogfood_repair(:readonly_pointer_operands)` reports the repair.
 - Return zero gradients when a guard rejects a nonfinite product, including
   `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
   The native select repair now protects products whose operands are nonfinite
@@ -9,6 +34,23 @@
   `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
   `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
   Forward over Reverse, and finite inputs whose intermediate products overflow.
+- Clear the adjoint of a BLAS output that the call overwrote. A routine that
+  computes `out := ... + beta * out` does not read `out` when `beta == 0`, and
+  a copy never reads its destination, so the adjoint of what `out` held before
+  is exactly zero. The reverse rules of `gemv`, `symv`, `spmv`, `gemm`, `symm`,
+  `syrk` and `lacpy` multiplied the output's shadow by `beta` instead: a `NaN`
+  or an infinity in the adjoint of the result stayed there (`0 * NaN` is `NaN`),
+  and a later reverse pass over the same shadow, as with a work buffer whose
+  shadow is kept across calls, returned `NaN` gradients. The reverse rule of
+  `copy` did not clear the destination's shadow at all, so two copies into one
+  vector gave a wrong gradient within a single reverse pass, and a shadow used
+  again kept growing. The forward rule of `copy` with a constant source now
+  writes a zero tangent instead of `0 *` the tangent it found.
+  `Enzyme.has_dogfood_repair(:blas_overwritten_output)` reports the repair;
+  `test/blas_overwritten_output.jl` covers every routine with `NaN` and
+  infinite output adjoints, shadows used again, `beta != 0`, the triangle
+  `syrk` writes, strided and reversed copies, batches, split mode, runtime
+  activity, and Forward over Reverse.
 - Compile a function that a Reverse derivative reaches through dynamic dispatch
   (`Base.invokelatest`, a call Julia could not infer, a splat) with the
   caller's `set_atomic_add` setting. Such a callee used to get the
