@@ -400,13 +400,12 @@ atomic_gather_latest(x, c) = Base.invokelatest(atomic_gather, x, c)::Float64
     @test atomics(atomic_sumsq, Inherited) == 0
     @test_throws Enzyme.Compiler.EnzymeAtomicAddError atomics(threaded_sumsq, false)
     @test atomics(threaded_sumsq, Inherited) == atomics(threaded_sumsq, nothing)
-    # The variants a package image keeps for sessions with several threads
+    # The variants a package image keeps for sessions with several threads: the default made
+    # as such a session makes it, also where a callee falls back to it
     @test atomics(atomic_sumsq, ForSeveralThreads(nothing)) == atomics(atomic_sumsq, true)
     @test atomics(atomic_sumsq, ForSeveralThreads(Inherited)) == 0
-    # A callee that runs a threaded loop is compiled with the default, so its variant for
-    # several threads is the default's: the loop body accumulates atomically there too (the
-    # testset below compares it with `true`, which leaves the body to the number of threads)
     @test atomics(threaded_sumsq, ForSeveralThreads(Inherited)) == atomics(threaded_sumsq, ForSeveralThreads(nothing))
+    @test atomics(threaded_sumsq, ForSeveralThreads(Inherited)) > atomics(threaded_sumsq, Inherited) || multithreaded
     # The compile cache is keyed by the hash of a job, which must tell the settings apart
     jobs = [
         Enzyme.Compiler.get_job(atomic_sumsq, Active, VecDup; AtomicAdd = setting)

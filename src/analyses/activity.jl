@@ -158,6 +158,12 @@ Base.@nospecializeinfer @inline function active_reg_inner(
         return AnyState
     end
 
+    # What a tape's pointer points to when its layout is not known may carry derivatives,
+    # which makes the pointer one to duplicate.
+    if T === TapeMemory
+        return DupState
+    end
+
     if T <: Complex && !(T isa UnionAll)
         return active_reg_inner(
             ptreltype(T),

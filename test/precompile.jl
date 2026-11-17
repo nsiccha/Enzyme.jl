@@ -746,8 +746,8 @@ end
 """
 
 # What the image holds of the derivative the run-time rules asked for, for one callee and
-# `AtomicAdd` setting: the number of locked exchanges in its variant for one thread and in
-# the one for several, or `none` where there is no such variant.
+# `AtomicAdd` setting: whether it has a variant for one thread and one for several, and the
+# number of locked exchanges in each. The primal code of a threaded loop may hold some itself.
 const RETAINED_CALLEES_HELD = """
 using Enzyme, EnzymeRetainedCallees
 const C = Enzyme.Compiler
@@ -769,12 +769,12 @@ function held(callee, setting)
     end
     return nothing
 end
-function locked(object)
+function lock_cmpxchgs(object)
     return count(i -> object[i] == 0xf0 && object[i + 2] == 0x0f && object[i + 3] == 0xb1, 1:(length(object) - 3))
 end
 describe(::Nothing) = "none"
 describe(reason::String) = "failed"
-describe(variant::C.RetainedDerivative) = string(locked(variant.object))
+describe(variant::C.RetainedDerivative) = string(lock_cmpxchgs(variant.object))
 for (callee, setting) in (("serial", Enzyme.InheritedPlainAdd), ("serial", nothing), ("threaded", Enzyme.InheritedPlainAdd))
     r = held(callee, setting)
     print(r === nothing ? "absent absent " : describe(r.serial) * " " * describe(r.threaded) * " ")
@@ -828,19 +828,17 @@ print(join(reduce(vcat, results), " "))
             ok, fields = run_child(load_path, RETAINED_CALLEES_HELD)
             @test ok
             @test length(fields) == 6
-            if length(fields) == 6 && !("absent" in fields) && !("failed" in fields)
-                # Plain accumulation inherited by a callee that runs serially: one variant.
-                @test fields[1:2] == ["0", "none"]
-                # The default: one variant for one thread and one for several.
-                @test fields[3] == "0" && fields[4] != "none" && parse(Int, fields[4]) > 0
-                # A callee that runs a threaded loop keeps the default under inherited plain
-                # accumulation, so it has both variants too. The primal code of a threaded
-                # loop holds locked exchanges of its own on newer Julia versions, so the two
-                # are compared with each other.
-                @test fields[5] != "none" && fields[6] != "none" && parse(Int, fields[6]) > parse(Int, fields[5])
-            else
-                @test fields == ["0", "none", "0", "n", "k", "n"]
-            end
+            locked = map(field -> tryparse(Int, field), fields)
+            # Plain accumulation inherited by a callee that runs serially: one variant.
+            @test locked[1] == 0
+            @test fields[2] == "none"
+            # The default: one variant for one thread and one for several, which accumulates
+            # with locked exchanges.
+            @test locked[3] == 0
+            @test locked[4] !== nothing && locked[4] > 0
+            # A callee that runs a threaded loop keeps the default under inherited plain
+            # accumulation, so it has both variants too.
+            @test locked[5] !== nothing && locked[6] !== nothing && locked[6] > locked[5]
         end
     end
 end

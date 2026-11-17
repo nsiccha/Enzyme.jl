@@ -136,10 +136,6 @@ struct ForSeveralThreads
     setting::AtomicAddSetting
 end
 
-# The setting of the variant for several threads of a derivative compiled with `setting`.
-for_several_threads(setting::AtomicAddSetting) = ForSeveralThreads(setting)
-for_several_threads(variant::ForSeveralThreads) = variant
-
 struct EnzymeCompilerParams{Params<:AbstractCompilerParams} <: AbstractEnzymeCompilerParams
     params::Params
 
@@ -208,19 +204,6 @@ function EnzymeCompilerParams(TT, mode, width, rt, run_enzyme, abiwrap,
         strongZero,
         atomicAdd
     )
-end
-
-# `job`, with every choice the number of threads decides made as a process with several
-# makes it.
-function for_several_threads(@nospecialize(job::CompilerJob))
-    p = job.config.params
-    p.atomicAdd isa ForSeveralThreads && return job
-    params = EnzymeCompilerParams(
-        p.params, p.TT, p.mode, p.width, p.rt, p.run_enzyme, p.abiwrap, p.modifiedBetween,
-        p.returnPrimal, p.shadowInit, p.expectedTapeType, p.ABI, p.err_if_func_written,
-        p.runtimeActivity, p.strongZero, for_several_threads(p.atomicAdd),
-    )
-    return CompilerJob(job.source, CompilerConfig(job.config; params), job.world)
 end
 
 DefaultCompilerTarget(; kwargs...) =
@@ -1988,18 +1971,27 @@ end
     if func == typeof(Base.enq_work) &&
        length(sparam_vals) == 1 &&
        first(sparam_vals) <: Task
-        handleCustom(state, custom, k_name, llvmfn, "jl_enq_work", LLVM.Attribute[StringAttribute("enzyme_ta_norecur")])
+        handleCustom(
+            state, custom, k_name, llvmfn, "jl_enq_work",
+            LLVM.Attribute[StringAttribute("enzyme_ta_norecur"), StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+        )
         return
     end
     if func == typeof(Base.wait) || func == typeof(Base._wait)
         if length(sparam_vals) == 1 && first(sparam_vals) <: Task
-            handleCustom(state, custom, k_name, llvmfn, "jl_wait", LLVM.Attribute[StringAttribute("enzyme_ta_norecur")])
+            handleCustom(
+                state, custom, k_name, llvmfn, "jl_wait",
+                LLVM.Attribute[StringAttribute("enzyme_ta_norecur"), StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+            )
         end
         return
     end
     if func == typeof(Base.Threads.threading_run)
         if length(sparam_vals) == 1 || length(sparam_vals) == 2
-            handleCustom(state, custom, k_name, llvmfn, "jl_threadsfor")
+            handleCustom(
+                state, custom, k_name, llvmfn, "jl_threadsfor",
+                LLVM.Attribute[StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+            )
         end
         return
     end
@@ -7099,6 +7091,12 @@ function readonly_walk!(
                     # whether or not the body is walked below (a function
                     # with a custom rule called from several sites).
                     if is_inactive_operand(user, called, cur, world)
+                        continue
+                    end
+                    # Calls such as BLAS read some buffers and write others.
+                    # Prove this operand readonly without following unrelated
+                    # outputs, or treating a GC root as a passed argument.
+                    if is_readonly_call_operand(user, called, cur, world, enzyme_ctx)
                         continue
                     end
                     if is_readonly(called)

@@ -1,0 +1,2 @@
+summary = "The readonly proof accepts noncaptured readonly raw data pointers and Julia GC root operands, including captured BLAS inputs"
+tests = ["test/readonly_blas.jl", "test/readonly_call_operands.jl", "test/readonly_argument.jl"]
