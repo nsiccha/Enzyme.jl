@@ -197,6 +197,84 @@ end
     @test isempty(folded)
 end
 
+# An outer derivative of a loop reaches the body's derivative in split mode: one callable
+# writes its tape, another one reads it later. Split mode on its own, without threads:
+# the tape goes through a function Julia does not inline.
+function nt_overwriting!(x)
+    s = 0.0
+    @inbounds for i in eachindex(x)
+        s += x[i]^2
+        # What the loop read is gone afterwards, so the reverse pass takes it from the tape
+        x[i] = 0.0
+    end
+    return s
+end
+
+@inline nt_split(f::F) where {F} =
+    autodiff_thunk(ReverseSplitNoPrimal, Const{F}, Active, Duplicated{Vector{Float64}})
+
+@noinline function nt_split_reverse(f::F, x, dx, tape) where {F}
+    nt_split(f)[2](Const(f), Duplicated(x, dx), 1.0, tape)
+    return nothing
+end
+
+function nt_split_gradient!(f::F, dx, x0) where {F}
+    x = copy(x0)
+    tape, _, _ = nt_split(f)[1](Const(f), Duplicated(x, dx))
+    nt_split_reverse(f, x, dx, tape)
+    return nothing
+end
+
+@testset "An outer derivative keeps the tangent of a tape" begin
+    x = collect(1.0:6.0)
+    v = collect(6.0:-1.0:1.0)
+    @testset "$f" for f in (nt_sumsq, nt_overwriting!)
+        # A tape that caches numbers is not constant: called constant, its tangent is
+        # dropped, and the second derivative below is zero with no error.
+        TapeType = EnzymeRules.tape_type(nt_split(f)[1])
+        @test !Enzyme.Compiler.guaranteed_const(TapeType)
+
+        dx = zero(x)
+        nt_split_gradient!(f, dx, x)
+        @test dx == 2 .* x
+
+        dx = zero(x)
+        ddx = zero(x)
+        autodiff(Forward, Const(nt_split_gradient!), Const, Const(f), Duplicated(dx, ddx), Duplicated(x, v))
+        @test dx == 2 .* x
+        @test ddx == 2 .* v
+    end
+end
+
+@testset "A tape's pointer to memory of unknown layout" begin
+    Compiler = Enzyme.Compiler
+    LLVM = Compiler.LLVM
+    Memory = Core.LLVMPtr{Compiler.TapeMemory, 0}
+    # It may point to values that carry derivatives
+    @test !Compiler.guaranteed_const(Memory)
+    @test !Compiler.guaranteed_const(Tuple{UInt64, Memory})
+    # A buffer of integers does not
+    @test Compiler.guaranteed_const(Tuple{UInt64, Core.LLVMPtr{UInt64, 0}})
+    # Its type tree says only that it is a pointer. With typed pointers (Julia 1.10) a tape
+    # named the table of a cache's chunks a pointer to pointers to elements, while the
+    # slots after the first one can hold offsets, which the reverse pass reads as integers:
+    # under `--check-bounds=yes` the loop bodies above keep such a cache.
+    ctx = LLVM.Context()
+    dl = string(LLVM.DataLayout(LLVM.JITTargetMachine()))
+    @test string(Enzyme.typetree(Memory, ctx, dl)) == "{[-1]:Pointer}"
+    @test string(Enzyme.typetree(Core.LLVMPtr{Float64, 0}, ctx, dl)) == "{[-1]:Pointer, [-1,-1]:Float@double}"
+    LLVM.Context() do _
+        table = LLVM.PointerType(LLVM.PointerType(LLVM.DoubleType()))
+        buffer = LLVM.PointerType(LLVM.DoubleType())
+        @test Compiler.tape_type(LLVM.StructType([LLVM.Int64Type(), table])) == Tuple{UInt64, Memory}
+        if LLVM.is_opaque(buffer)
+            @test Compiler.tape_type(LLVM.StructType([LLVM.Int64Type(), buffer])) == Tuple{UInt64, Memory}
+        else
+            @test Compiler.tape_type(LLVM.StructType([LLVM.Int64Type(), buffer])) == Tuple{UInt64, Core.LLVMPtr{Float64, 0}}
+        end
+    end
+end
+
 @testset "The loop bodies an outer derivative differentiates" begin
     Compiler = Enzyme.Compiler
     Thunk = Compiler.ForwardModeThunk{Ptr{Cvoid}, Const{typeof(nt_sumsq)}, Const{Nothing}, Tuple{Const{Int}}, 1, false}
