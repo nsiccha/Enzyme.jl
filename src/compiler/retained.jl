@@ -80,6 +80,8 @@ takes to use it in another process.
 - `relocations`: the words of its data to write (a slot holding a Julia value).
 - `values`: symbols that stand for the address of a Julia value.
 - `foreign`: symbols that stand for the address of a C function.
+- `by_threads`: whether the number of threads decided if it accumulates into shadow memory
+  atomically (see `atomic_add_by_threads`).
 """
 struct RetainedDerivative
     conditions::String
@@ -91,6 +93,7 @@ struct RetainedDerivative
     relocations::Vector{RetainedRelocation}
     values::Vector{Pair{String, Any}}
     foreign::Vector{Pair{String, ForeignAddress}}
+    by_threads::Bool
 end
 
 """
@@ -99,8 +102,10 @@ end
 What an image keeps of one derivative, or why it does not. A derivative accumulates into
 shadow memory atomically when it runs with more than one thread (see `atomic_add_for`), and an
 image is written with one thread, so a job that leaves that choice open has two: `serial` and
-`threaded`. Either is a [`RetainedDerivative`](@ref) or the reason there is none. A job that
-settled the choice with `set_atomic_add` has one, in `serial`, and `threaded` is `nothing`.
+`threaded`. Either is a [`RetainedDerivative`](@ref) or the reason there is none. A job whose
+`AtomicAdd` setting settles the choice has one, in `serial`, and `threaded` is `nothing`: one
+compiled with `set_atomic_add`, and a callee that inherits plain accumulation through dynamic
+dispatch and runs no work in parallel itself.
 """
 struct RetainedDerivatives
     serial::Union{RetainedDerivative, String}
@@ -552,6 +557,7 @@ function compile_retained(@nospecialize(job::CompilerJob))::RetainedDerivative
         records,
         symbols.values,
         symbols.foreign,
+        atomic_add_by_threads(meta.callee_atomic_add),
     )
 end
 
@@ -711,12 +717,9 @@ The derivative an image kept for `job`, linked into this process, or `nothing` w
 none that fits this process.
 """
 function retained_result(retained::RetainedDerivatives, @nospecialize(job::CompilerJob))::Union{CompileResult, Nothing}
-    threaded = job.config.params.atomicAdd === nothing && Threads.nthreads() > 1
+    threaded = retained.threaded !== nothing && Threads.nthreads() > 1
     variant = threaded ? retained.threaded : retained.serial
-    if variant === nothing
-        count_retained!(:absent, "compiled without a threaded variant")
-        return nothing
-    elseif variant isa String
+    if variant isa String
         count_retained!(:absent, variant)
         return nothing
     end
@@ -732,16 +735,21 @@ function retained_result(retained::RetainedDerivatives, @nospecialize(job::Compi
     end
 end
 
-# `job`, with the choice `atomic_add_for` leaves to the number of threads made.
-function with_atomic_add(@nospecialize(job::CompilerJob), atomic::Bool)
+# `job` with another `AtomicAdd` setting.
+function with_atomic_add(@nospecialize(job::CompilerJob), setting::Union{AtomicAddSetting, ForSeveralThreads})
     p = job.config.params
     params = EnzymeCompilerParams(
         p.params, p.TT, p.mode, p.width, p.rt, p.run_enzyme, p.abiwrap, p.modifiedBetween,
         p.returnPrimal, p.shadowInit, p.expectedTapeType, p.ABI, p.err_if_func_written,
-        p.runtimeActivity, p.strongZero, atomic,
+        p.runtimeActivity, p.strongZero, setting,
     )
     return CompilerJob(job.source, CompilerConfig(job.config; params), job.world)
 end
+
+# `job`, with the choice `atomic_add_for` leaves to the number of threads made as a process
+# with several makes it.
+for_several_threads(@nospecialize(job::CompilerJob)) =
+    with_atomic_add(job, ForSeveralThreads(job.config.params.atomicAdd))
 
 function retained_variant(@nospecialize(job::CompilerJob))::Union{RetainedDerivative, String}
     ts_ctx = JuliaContext()
@@ -773,11 +781,11 @@ compiles it, and fails there if it has to, as it would have anyway.
 function retained_derivatives!(@nospecialize(job::CompilerJob), edges::Vector{Any})::Union{RetainedDerivatives, Nothing}
     retains_derivatives(job) || return nothing
     serial = retained_variant(job)
-    threaded = if job.config.params.atomicAdd === nothing
-        retained_variant(with_atomic_add(job, true))
-    else
-        nothing
-    end
+    setting = job.config.params.atomicAdd
+    # A variant that did not compile does not say whether the number of threads matters.
+    by_threads = serial isa RetainedDerivative ? serial.by_threads :
+        setting === nothing || setting === InheritedPlainAdd
+    threaded = by_threads ? retained_variant(for_several_threads(job)) : nothing
     if threaded isa RetainedDerivative && serial isa RetainedDerivative && threaded.TapeType !== serial.TapeType
         threaded = "the threaded variant has another tape type"
     end

@@ -1087,7 +1087,7 @@ end
 @testset "Batched inactive" begin
     augres = Enzyme.Compiler.runtime_generic_augfwd(
         Val{(false, false, false)}, Val(false), Val(false), Val(2), Val((true, true, true)),
-        Val(Enzyme.Compiler.AnyArray(2 + Int(2))),
+        Val(nothing), Val(Enzyme.Compiler.AnyArray(2 + Int(2))),
         ==, nothing, nothing,
         :foo, nothing, nothing,
         :bar, nothing, nothing
@@ -1095,7 +1095,7 @@ end
 
     Enzyme.Compiler.runtime_generic_rev(
         Val{(false, false, false)}, Val(false), Val(false), Val(2), Val((true, true, true)),
-        Val(false), augres[end],
+        Val(nothing), Val(false), augres[end],
         ==, nothing, nothing,
         :foo, nothing, nothing,
         :bar, nothing, nothing
@@ -1310,6 +1310,7 @@ end
         Val(false),
         Val(1),
         Val((true, true, true)),
+        Val(nothing),
         Base.Val(NamedTuple{(Symbol("1"), Symbol("2"), Symbol("3")), Tuple{Any, Any, Any}}),
         Base.getindex,
         nothing,
@@ -1329,6 +1330,7 @@ end
         Val(false),
         Val(1),
         Val((true, true, true)),
+        Val(nothing),
         Base.Val(NamedTuple{(Symbol("1"), Symbol("2"), Symbol("3")), Tuple{Any, Any, Any}}),
         Base.getindex,
         nothing,

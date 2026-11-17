@@ -96,6 +96,22 @@
   infinite output adjoints, shadows used again, `beta != 0`, the triangle
   `syrk` writes, strided and reversed copies, batches, split mode, runtime
   activity, and Forward over Reverse.
+- Compile a function that a Reverse derivative reaches through dynamic dispatch
+  (`Base.invokelatest`, a call Julia could not infer, a splat) with the
+  caller's `set_atomic_add` setting. Such a callee used to get the
+  thread-count default whatever the caller set, so `false` left atomic updates
+  in it in a process with several threads, and `true` was ignored in a process
+  with one. A callee reached from `false` that itself runs a threaded loop or
+  tasks is compiled with the default, as before, and so are the functions it
+  calls dynamically; the bodies of threaded loops and tasks keep the default.
+  A derivative kept in a package image for such a callee has one variant when
+  it runs no work in parallel and two otherwise.
+  `Enzyme.has_dogfood_repair(:atomic_add_dynamic_callees)` reports the repair;
+  `test/threads.jl` covers generic, `invokelatest` and splatted calls and
+  calls of a method without a specialized entry point under each setting,
+  nested callees, callees that run threaded loops or tasks, and a shared
+  shadow under contention, and `test/precompile.jl` the variants an image
+  keeps.
 - Leave a `getelementptr` address that names no element of an internal
   constant global alone when loads of the global are replaced by parts of its
   initializer. An address before the first element (index `-1`) with such a

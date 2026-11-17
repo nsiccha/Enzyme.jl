@@ -139,6 +139,20 @@ Base.convert(::Type{API.CDerivativeMode}, ::ForwardMode) = API.DEM_ForwardMode
 function guess_activity end
 
 """
+    InheritedPlainAdd
+
+The `AtomicAdd` setting of a derivative that a caller compiled for plain accumulation
+(`set_atomic_add(mode, false)`) reaches through dynamic dispatch. Such a callee accumulates
+plainly too, unless it runs work on other threads itself: it is then compiled with the default,
+where an explicit `false` is refused (see `Compiler.atomic_add_for`). It never appears in a mode.
+
+The setting is the type itself, like an ABI. The compile cache is keyed by the hash of a job,
+and the `objectid` of a job's parameters does not tell two singleton instances in one field
+apart, so an instance would share a derivative with `nothing`.
+"""
+struct InheritedPlainAdd end
+
+"""
     EnzymeContext
 
 The state one differentiation of one module accumulates: the modules
@@ -152,7 +166,9 @@ from the code it generates (`inserted_values`, keyed by the name of the `ejl_`
 global without the prefix; see `insert_julia_value!`). On GPUCompiler 2.x the
 values of the slots are read straight from the relocation records of the
 modules the compilation emitted (`relocations`), and `bakes` says whether the
-back-end lets their host addresses into the code.
+back-end lets their host addresses into the code. `callee_atomic_add` is the
+`AtomicAdd` setting the derivatives of the callees this compilation reaches
+through dynamic dispatch are compiled with (see `Compiler.atomic_add_for`).
 
 A context belongs to a single `compile_unhooked` invocation, and holds the
 world age that compilation runs in. It is not passed as an argument:
@@ -174,6 +190,7 @@ mutable struct EnzymeContext
     inserted_values::Dict{String, Any}
     relocations::Vector{Any}
     bakes::Bool
+    callee_atomic_add::Union{Bool, Nothing, Type{InheritedPlainAdd}}
     EnzymeContext(world::Integer) = new(
         world,
         LLVM.Module[],
@@ -184,7 +201,8 @@ mutable struct EnzymeContext
         Dict{String, Ptr{Cvoid}}(),
         Dict{String, Any}(),
         Any[],
-        true
+        true,
+        nothing
     )
 end
 
