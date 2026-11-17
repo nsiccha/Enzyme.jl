@@ -9,11 +9,6 @@
   `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
   `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
   Forward over Reverse, and finite inputs whose intermediate products overflow.
-- Sync upstream through `9cc1c3a`, including the LLVM.jl 10 migration and
-  repository formatting. Adapt the dogfood compiler passes, retained
-  derivatives, safepoint attributes, metadata, and regression tests to the
-  new APIs. LLVM.jl now requires 10.4.3 and GPUCompiler 1.23.1 or 2.11;
-  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification
@@ -22,6 +17,11 @@
   `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
   `test/conditional_rule_return.jl` covers early returns, empty arrays,
   combined and split Reverse, batched Reverse, and Forward over Reverse.
+- Sync upstream through `9cc1c3a`, including the LLVM.jl 10 migration and
+  repository formatting. Adapt the dogfood compiler passes, retained
+  derivatives, safepoint attributes, metadata, and regression tests to the
+  new APIs. LLVM.jl now requires 10.4.3 and GPUCompiler 1.23.1 or 2.11;
+  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
 - Limit the runtime `map` wrapper to long-tuple calls. A custom collection's
   `map` with an imprecise return type could otherwise re-enter the wrapper
   indefinitely and overflow the stack during differentiation.
