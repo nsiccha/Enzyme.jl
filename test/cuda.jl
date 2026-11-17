@@ -509,3 +509,65 @@ end
         @test Array(dx) == (name == "view" ? [1.0, 1.0, 0.0, 0.0] : ones(4))
     end
 end
+
+# Infer deferred returns using the device method table: device array reads have
+# throwing host stubs, while these kernels return an active scalar.
+struct DeferredColumnCall{F, C}
+    f::F
+    context::C
+end
+@inline (call::DeferredColumnCall)(x) = call.f(x, call.context...)
+deferred_column_loss(x, scale) = x[1]^2 + scale * sin(x[2])
+
+function deferred_column_reverse!(y, dx, x, call::F, mode::M, ::Val{R}) where {F, M, R}
+    i = Int(threadIdx().x)
+    xi = view(x, :, i)
+    dxi = view(dx, :, i)
+    result = autodiff_deferred(mode, Const(call), R, Duplicated(xi, dxi, false))
+    if mode === ReverseWithPrimal
+        y[i] = result[2]
+    end
+    return nothing
+end
+
+function deferred_column_forward!(y, dy, x, dx, call::F, ::Val{R}) where {F, R}
+    i = Int(threadIdx().x)
+    result = autodiff_deferred(
+        ForwardWithPrimal, Const(call), R,
+        Duplicated(view(x, :, i), view(dx, :, i), false)
+    )
+    dy[i] = result[1]
+    y[i] = result[2]
+    return nothing
+end
+
+@testset "Deferred column views, $T" for T in (Float32, Float64)
+    original = T[0.2 -0.5 1.2 2.0; 0.8 0.4 -0.2 -1.1]
+    x = CuArray(original)
+    y = CUDA.zeros(T, size(x, 2))
+    dx = similar(x)
+    # The context is a runtime field, and changing it must change the derivative.
+    for scale in (T(1.7), T(-0.6))
+        call = DeferredColumnCall(deferred_column_loss, (scale,))
+        expected = original[1, :] .^ 2 + scale .* sin.(original[2, :])
+        gradient = vcat(2 .* original[1:1, :], scale .* cos.(original[2:2, :]))
+        for mode in (Reverse, ReverseWithPrimal), R in (Active, Active{T})
+            fill!(dx, T(0.25))
+            @cuda threads = size(x, 2) deferred_column_reverse!(y, dx, x, call, mode, Val(R))
+            @test Array(dx) ≈ gradient .+ T(0.25)
+            @test Array(x) == original
+            if mode === ReverseWithPrimal
+                @test Array(y) ≈ expected
+            end
+        end
+        for R in (Duplicated, Duplicated{T})
+            fill!(dx, T(0.5))
+            dy = similar(y)
+            @cuda threads = size(x, 2) deferred_column_forward!(y, dy, x, dx, call, Val(R))
+            @test Array(y) ≈ expected
+            @test Array(dy) ≈ vec(sum(gradient; dims = 1)) .* T(0.5)
+            @test Array(x) == original
+            @test Array(dx) == fill(T(0.5), size(original))
+        end
+    end
+end
