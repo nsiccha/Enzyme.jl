@@ -8,6 +8,32 @@
   Julia GC-root bundles. Captured output buffers and aliases in writable
   positions still raise `EnzymeMutabilityException`.
   `Enzyme.has_dogfood_repair(:readonly_pointer_operands)` reports the repair.
+- Return zero gradients when a guard rejects a nonfinite product, including
+  `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
+  The native select repair now protects products whose operands are nonfinite
+  or overflowed, extending the existing guarded-division repair.
+  `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
+  `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
+  Forward over Reverse, and finite inputs whose intermediate products overflow.
+- Leave a `getelementptr` address that names no element of an internal
+  constant global alone when loads of the global are replaced by parts of its
+  initializer. An address before the first element (index `-1`) with such a
+  global as its base stopped the compile of a derivative with
+  `InexactError: trunc(UInt32, 18446744073709551615)`, and a smaller index past
+  the end crashed the process. With opaque pointers (Julia 1.11 and later) an
+  address that indexes the global through another type, such as a struct read
+  as an array, replaced the load by a different element with no error.
+  `Enzyme.has_dogfood_repair(:constant_global_gep_paths)` reports the repair;
+  `test/constant_global_gep.jl` covers addresses before and past arrays,
+  vectors and nested fields, addresses through another type, the element loads
+  that are still replaced, and a table read behind a `-1` sentinel in Reverse,
+  Forward, and Forward over Reverse.
+- Differentiate real `logabsbeta` with scalar partials, removing the recursive
+  reverse tapes reached through `logbeta` and `beta`. Large positive arguments
+  retain the stable log-gamma-ratio derivative, and the sign and nonpositive
+  integer branches keep their existing behavior. Regression tests cover
+  Forward, Reverse, batching, split and nested modes, and loop allocations.
+  `Enzyme.has_dogfood_repair(:logbeta_partials)` reports the repair.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification
@@ -16,12 +42,31 @@
   `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
   `test/conditional_rule_return.jl` covers early returns, empty arrays,
   combined and split Reverse, batched Reverse, and Forward over Reverse.
+- Sync upstream through `580628c`: Julia-zeroed allocations no longer get
+  redundant null stores into their GC fields (#3766), and the
+  `LLVM.OperandBundleDef` compatibility branches are gone (#4064).
+  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
+  Upstream's LLVM.jl 10 migration (#3741) and the formatting commits after it
+  are held back: no Reactant release admits LLVM.jl 10 yet, and Reactant
+  requires Enzyme, so the two could not be installed together.
 - Limit the runtime `map` wrapper to long-tuple calls. A custom collection's
   `map` with an imprecise return type could otherwise re-enter the wrapper
   indefinitely and overflow the stack during differentiation.
   `Enzyme.has_dogfood_repair(:runtime_map_collection)` reports the repair;
   `test/tuple_map.jl` checks direct and splatted calls in Reverse, Forward,
   and batched Forward, alongside the existing long-tuple checks.
+- Infer the return type of `autodiff_deferred` with the compiler of the calling
+  code. The previous host-side query saw only host methods: where device code
+  reads an array, such as a CUDA device array or a view of one, it met a
+  throwing host stub and inferred `Union{}`. A kernel differentiating such a
+  function with an inferred `Active` return then failed to compile, with
+  `InvalidIRError` naming a dynamic `deferred_id_codegen`. Reverse and Forward
+  deferred calls now see the caller's method table. An explicit reverse return
+  annotation such as `Active{Float64}`, which raised an error, is accepted too.
+  `Enzyme.has_dogfood_repair(:deferred_return_inference)` reports the repair;
+  `test/cuda.jl` differentiates column views of device matrices in Reverse and
+  Forward for Float32 and Float64, and `test/core/deferred.jl` covers the
+  explicit annotation.
 - Retain package-image derivatives that call library functions whose selected
   implementation has no exported name, such as glibc's `memchr` reached through
   `findfirst`. Enzyme uses its known foreign-function names and verifies that
