@@ -56,9 +56,12 @@
 - Keep the tangent of a tape that an outer derivative hands from one function to
   another. On Julia 1.11 and later every pointer in a tape had the type
   `Core.LLVMPtr{Cvoid}`, which Enzyme takes for constant data, so Forward over
-  a split-mode Reverse (`autodiff_thunk`, with the reverse pass in a function
-  Julia does not inline) returned a second derivative of zero with no error;
-  the derivative of a `Threads.@threads` loop is such a split-mode derivative.
+  a split-mode Reverse returned a second derivative of zero with no error.
+  Enzyme differentiates a dynamic call and the body of a `Threads.@threads`
+  loop in split mode, so a Hessian-vector product lost everything that flowed
+  through a dynamic call (a method with unused trailing arguments, a call
+  through `Base.inferencebarrier`, type-unstable code); `autodiff_thunk` with
+  the reverse pass in a function Julia does not inline showed it directly.
   On Julia 1.10 a tape named the table of a cache's chunks a pointer to
   pointers to elements, although its later slots can hold offsets, and an outer
   derivative stopped with `IllegalTypeAnalysisException` under
@@ -66,7 +69,9 @@
   memory of unknown layout that may carry derivatives.
   `Enzyme.has_dogfood_repair(:tape_memory_pointers)` reports the repair;
   `test/nested_threads.jl` covers Forward over a split-mode Reverse without
-  threads, for a loop that reads its input and for one that overwrites it.
+  threads, for a loop that reads its input and for one that overwrites it, and
+  the Hessian-vector product through a dynamic call in
+  `test/readonly_argument.jl` is no longer pinned as broken on Julia 1.12.
 - Return zero gradients when a guard rejects a nonfinite product, including
   `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
   The native select repair now protects products whose operands are nonfinite
