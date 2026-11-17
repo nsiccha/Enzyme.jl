@@ -864,6 +864,209 @@ function lazy_lookup_callee_type(inst::LLVM.Instruction)
     return nothing
 end
 
+"""
+    lazy_lookup_cached(inst) -> Bool
+
+Whether the code around the lazy symbol lookup `inst` resolves its library only once: Julia 1.10
+and 1.12 store the pointer found in a slot of the call site (`libname_<function>_<n>`) and call
+through that slot from then on, so a later change of the library is not observed. Julia 1.13
+looks a non-constant library up at every call and keeps no such slot.
+"""
+function lazy_lookup_cached(inst::LLVM.CallInst)::Bool
+    for u in LLVM.uses(inst)
+        st = LLVM.user(u)
+        isa(st, LLVM.StoreInst) || continue
+        LLVM.Value(LLVM.API.LLVMGetOperand(st, 0)) == inst || continue
+        isa(LLVM.Value(LLVM.API.LLVMGetOperand(st, 1)), LLVM.GlobalVariable) && return true
+    end
+    return false
+end
+
+"""
+    library_global_value(lib, enzyme_ctx, mutable_ok, reads) -> Union{Some{Any}, Nothing}
+
+The value of the module global that `lib`, the library operand of a lazy symbol lookup, reads at
+run time; `nothing` if `lib` is not such a read, or its value may not be taken when the
+derivative is compiled.
+
+Julia resolves the library of `ccall((:f, lib), ...)` itself where it can evaluate `lib` while
+compiling. Two spellings reach the lookup as a run-time read of a global instead:
+
+- Julia 1.12 keeps a module-qualified library (`Mod.lib`, `Outer.Inner.lib`) as an uninferred
+  expression inside the `foreigncall`, so it runs as a dynamic call of `getproperty(Mod, :lib)`,
+  one call per dot, although the binding is `const`.
+- Julia 1.12 and 1.13 read a non-constant global through its binding
+  (`jl_get_binding_value_seqcst`).
+
+A `const` binding has one value, so it is taken here. The value of a non-constant global is
+taken only where the code itself resolves the library once (`mutable_ok`, see
+[`lazy_lookup_cached`](@ref)), as it already is for the plain binding load Julia 1.10 emits.
+Every call read through is added to `reads`, the innermost first.
+"""
+function library_global_value(@nospecialize(lib::LLVM.Value), enzyme_ctx::EnzymeContext, mutable_ok::Bool, reads::Vector{LLVM.CallInst})::Union{Some{Any}, Nothing}
+    isa(lib, LLVM.CallInst) || return nothing
+    fn = LLVM.called_operand(lib)
+    isa(fn, LLVM.Function) || return nothing
+    nm = LLVM.name(fn)
+    ops = arg_operands_view(lib)
+    mod = nothing
+    name = nothing
+    if nm == "julia.call" && length(ops) == 4
+        callee = ops[1]
+        isa(callee, LLVM.Function) || return nothing
+        cname = LLVM.name(callee)
+        (cname == "jl_apply_generic" || cname == "ijl_apply_generic") || return nothing
+        legal, f = absint(ops[2], enzyme_ctx)
+        (legal && unbind(f) === Base.getproperty) || return nothing
+        legal, name = absint(ops[4], enzyme_ctx)
+        legal || return nothing
+        name = unbind(name)
+        legal, mod = absint(ops[3], enzyme_ctx)
+        if legal
+            mod = unbind(mod)
+        else
+            # `Outer.Inner.lib`: the module is itself read from a global, which must be constant.
+            outer = library_global_value(ops[3], enzyme_ctx, false, reads)
+            outer === nothing && return nothing
+            mod = something(outer)
+        end
+    elseif (nm == "jl_get_binding_value_seqcst" || nm == "ijl_get_binding_value_seqcst") && length(ops) == 1
+        legal, binding = absint(ops[1], enzyme_ctx, false, true)
+        (legal && isa(binding, Core.Binding)) || return nothing
+        mod = binding.globalref.mod
+        name = binding.globalref.name
+    else
+        return nothing
+    end
+    (isa(mod, Module) && isa(name, Symbol)) || return nothing
+    isdefined(mod, name) || return nothing
+    (isconst(mod, name) || mutable_ok) || return nothing
+    push!(reads, lib)
+    return Some{Any}(getglobal(mod, name))
+end
+
+# Erase the reads of module globals that `library_global_value` saw through, once the lookup
+# they fed is gone: nothing uses them, and reading a defined global has no effect. `calls` is
+# the worklist of `check_ir!`, which must not keep an erased instruction.
+function erase_library_reads!(reads::Vector{LLVM.CallInst}, calls::Vector{LLVM.CallInst})
+    # The outermost read comes last and holds the only use of the one before it.
+    for read in Iterators.reverse(reads)
+        isempty(LLVM.uses(read)) || continue
+        filter!(!=(read), calls)
+        LLVM.API.LLVMInstructionEraseFromParent(read)
+    end
+    return nothing
+end
+
+# The name of the function that stands for the symbol `fname` behind the call-site slot `slot`.
+runtime_lookup_stub_name(slot::LLVM.GlobalVariable, fname::String) = "ejlrt\$" * fname * "\$" * LLVM.name(slot)
+
+"""
+    runtime_lookup_stub!(mod, slot, fname, FT, cc) -> LLVM.Function
+
+The function that stands for the native symbol `fname` behind the call-site slot `slot`: its
+body loads the address the lazy lookup stored there and calls it with its own arguments, in the
+calling convention `cc`. It carries the symbol's name (`enzyme_math`), is not inlined before
+differentiation, and keeps its signature.
+"""
+function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname::String, FT::LLVM.FunctionType, cc)::LLVM.Function
+    name = runtime_lookup_stub_name(slot, fname)
+    funcs = functions(mod)
+    haskey(funcs, name) && return funcs[name]
+    stub = LLVM.Function(mod, name, FT)
+    linkage!(stub, LLVM.API.LLVMInternalLinkage)
+    callconv!(stub, cc)
+    attributes = function_attributes(stub)
+    push!(attributes, StringAttribute("enzyme_math", fname))
+    push!(attributes, StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*"))
+    push!(attributes, EnumAttribute("noinline", 0))
+    builder = IRBuilder()
+    position!(builder, BasicBlock(stub, "entry"))
+    address = load!(builder, LLVM.global_value_type(slot), slot)
+    ordering!(address, LLVM.API.LLVMAtomicOrderingUnordered)
+    callee = address
+    T_callee = LLVM.PointerType(FT)
+    if value_type(callee) != T_callee
+        callee = bitcast!(builder, callee, T_callee)
+    end
+    result = call!(builder, FT, callee, LLVM.Value[p for p in parameters(stub)])
+    callconv!(result, cc)
+    if LLVM.return_type(FT) == LLVM.VoidType()
+        ret!(builder)
+    else
+        ret!(builder, result)
+    end
+    return stub
+end
+
+"""
+    outline_runtime_lookup_calls!(mod, inst, fname)
+
+The lazy lookup `inst` of the symbol `fname` keeps a library that is a run-time value: an
+expression Julia 1.12 and earlier evaluate the first time the call runs. The code stores the
+address it finds in a slot of the call site and calls through that slot from then on.
+
+Each call through the address becomes a call of a function named for the symbol
+([`runtime_lookup_stub!`](@ref)), which makes the same call through the slot. A derivative rule
+Enzyme has for `fname` then applies as it does for a library known when the derivative is
+compiled, where an indirect call through a looked-up address has no name to go by. The slot
+holds the address of native code and no derivative data (`enzyme_inactive`), so a call that
+stays indirect is reported as one without a derivative (`EnzymeNoDerivativeError`) if it
+carries derivative data.
+
+A BLAS or LAPACK routine stays such an indirect call: its rules name the further routines they
+call after the function they differentiate, which has to be a routine of a known library.
+"""
+function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fname::String)
+    slot = nothing
+    for u in LLVM.uses(inst)
+        st = LLVM.user(u)
+        isa(st, LLVM.StoreInst) || continue
+        LLVM.Value(LLVM.API.LLVMGetOperand(st, 0)) == inst || continue
+        dest = LLVM.Value(LLVM.API.LLVMGetOperand(st, 1))
+        if isa(dest, LLVM.GlobalVariable)
+            slot = dest
+            break
+        end
+    end
+    slot === nothing && return nothing
+    API.SetMD(slot, "enzyme_inactive", LLVM.MDNode(LLVM.Metadata[]))
+    FFI.BLASSupport.lookup_blas_symbol(fname) === nothing || return nothing
+
+    # The calls through the address: of the lookup's result or of a load of the slot, which
+    # reach the call through phis and casts. The slot may already have its function, from
+    # another copy of the call site in the module; the load in that function's body is the one
+    # call that must stay a call through the address.
+    stub_name = runtime_lookup_stub_name(slot, fname)
+    through = LLVM.CallInst[]
+    seen = Set{LLVM.Value}()
+    worklist = LLVM.Value[inst]
+    for u in LLVM.uses(slot)
+        ld = LLVM.user(u)
+        isa(ld, LLVM.LoadInst) || continue
+        LLVM.name(LLVM.parent(LLVM.parent(ld))) == stub_name && continue
+        push!(worklist, ld)
+    end
+    while !isempty(worklist)
+        v = pop!(worklist)
+        v in seen && continue
+        push!(seen, v)
+        for u in LLVM.uses(v)
+            user = LLVM.user(u)
+            if isa(user, LLVM.CallInst)
+                called_operand(user) == v && push!(through, user)
+            elseif isa(user, LLVM.PHIInst) || isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst)
+                push!(worklist, user)
+            end
+        end
+    end
+    for call in through
+        stub = runtime_lookup_stub!(mod, slot, fname, called_type(call), LLVM.callconv(call))
+        LLVM.API.LLVMSetOperand(call, LLVM.API.LLVMGetNumOperands(call) - 1, stub)
+    end
+    return nothing
+end
+
 function try_import_llvmbc(mod::LLVM.Module, flib::String, fname::String, imported::Set{String})
     found = false
     inmod = nothing
@@ -1236,6 +1439,16 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
             if isa(flib, GlobalRef) && isdefined(flib.mod, flib.name)
                 flib = getfield(flib.mod, flib.name)
             end
+            # A library that is still a run-time read of a module global: Julia 1.12 leaves a
+            # module-qualified one (`Mod.lib`) to a dynamic `getproperty` call, and a
+            # non-constant global is read through its binding.
+            library_reads = LLVM.CallInst[]
+            if isa(flib, LLVM.CallInst)
+                library = library_global_value(flib, enzyme_ctx, lazy_lookup_cached(inst), library_reads)
+                if library !== nothing
+                    flib = something(library)
+                end
+            end
 
             fname_llvm = LLVM.Value(LLVM.LLVM.API.LLVMGetOperand(inst, 1))
             if isa(fname_llvm, LLVM.ConstantExpr)
@@ -1336,6 +1549,7 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
 
                 replace_uses!(inst, LLVM.const_pointercast(replaceWith, value_type(inst)))
                 LLVM.API.LLVMInstructionEraseFromParent(inst)
+                erase_library_reads!(library_reads, calls)
 
             else
                 res = try
@@ -1438,6 +1652,11 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
                     end
                     replace_uses!(inst, replacement)
                     LLVM.API.LLVMInstructionEraseFromParent(inst)
+                    erase_library_reads!(library_reads, calls)
+                else
+                    # The library stays a run-time value: an expression Julia 1.12 and earlier
+                    # evaluate the first time the call runs.
+                    outline_runtime_lookup_calls!(mod, inst, fname)
                 end
             end
         elseif fn == "julia.call" || fn == "julia.call2"

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Differentiate a `ccall` whose library Julia does not resolve while compiling
+  the method. Julia 1.12 leaves a module-qualified library
+  (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
+  `getproperty` call although `Mod.lib` is a constant; a non-constant global
+  and, through Julia 1.12, any other expression are read the first time the
+  call runs. Such a call reached Enzyme as an indirect call through a
+  looked-up address: with `Ref` arguments, as in a hand-written BLAS or LAPACK
+  wrapper, compiling the derivative aborted the process
+  (`Assertion '!gutils->isConstantValue(baseOp)' failed`), and with scalar
+  arguments it raised "No augmented forward pass found for
+  ijl_lazy_load_and_lookup". A library read from a module global is now
+  resolved when the derivative is compiled. Behind any other expression the
+  call is named for its symbol, so a derivative rule for a math function
+  applies; a BLAS or LAPACK routine there, and a native function without a
+  rule, raise `EnzymeNoDerivativeError`.
+  `Enzyme.has_dogfood_repair(:ccall_runtime_library)` reports the repair;
+  `test/ccall_library.jl` covers each spelling of the library for a libm
+  function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
+  Reverse, calls that carry no derivative, and a function without a rule.
 - Return zero gradients when a guard rejects a nonfinite product, including
   `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
   The native select repair now protects products whose operands are nonfinite
