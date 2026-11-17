@@ -746,8 +746,8 @@ end
 """
 
 # What the image holds of the derivative the run-time rules asked for, for one callee and
-# `AtomicAdd` setting: whether it has a variant for one thread and one for several, and
-# whether each accumulates with a locked exchange.
+# `AtomicAdd` setting: whether it has a variant for one thread and one for several, and the
+# number of locked exchanges in each. The primal code of a threaded loop may hold some itself.
 const RETAINED_CALLEES_HELD = """
 using Enzyme, EnzymeRetainedCallees
 const C = Enzyme.Compiler
@@ -769,12 +769,12 @@ function held(callee, setting)
     end
     return nothing
 end
-function lock_cmpxchg(object)
-    return any(i -> object[i] == 0xf0 && object[i + 2] == 0x0f && object[i + 3] == 0xb1, 1:(length(object) - 3))
+function lock_cmpxchgs(object)
+    return count(i -> object[i] == 0xf0 && object[i + 2] == 0x0f && object[i + 3] == 0xb1, 1:(length(object) - 3))
 end
 describe(::Nothing) = "none"
 describe(reason::String) = "failed"
-describe(variant::C.RetainedDerivative) = lock_cmpxchg(variant.object) ? "locked" : "plain"
+describe(variant::C.RetainedDerivative) = string(lock_cmpxchgs(variant.object))
 for (callee, setting) in (("serial", Enzyme.InheritedPlainAdd), ("serial", nothing), ("threaded", Enzyme.InheritedPlainAdd))
     r = held(callee, setting)
     print(r === nothing ? "absent absent " : describe(r.serial) * " " * describe(r.threaded) * " ")
@@ -828,13 +828,18 @@ print(join(reduce(vcat, results), " "))
         retained && @testset "what the image holds" begin
             ok, fields = run_child(load_path, RETAINED_CALLEES_HELD)
             @test ok
+            @test length(fields) == 6
+            locked = map(field -> tryparse(Int, field), fields)
             # Plain accumulation inherited by a callee that runs serially: one variant.
-            @test fields[1:2] == ["plain", "none"]
-            # The default: one variant for one thread and one for several.
-            @test fields[3:4] == ["plain", "locked"]
+            @test locked[1] == 0
+            @test fields[2] == "none"
+            # The default: one variant for one thread and one for several, which accumulates
+            # with locked exchanges.
+            @test locked[3] == 0
+            @test locked[4] !== nothing && locked[4] > 0
             # A callee that runs a threaded loop keeps the default under inherited plain
             # accumulation, so it has both variants too.
-            @test fields[5:6] == ["plain", "locked"]
+            @test locked[5] !== nothing && locked[6] !== nothing && locked[6] > locked[5]
         end
     end
 end
