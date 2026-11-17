@@ -864,6 +864,25 @@ function threaded(x)
     return sum(out)
 end
 
+# Enzyme's own parallel loops. Their rule takes the derivative of the loop body with the
+# inline ABI, whose code goes wherever the rule's value goes.
+function fill_sumsq!(i, out, x)
+    @inbounds out[i] = sumsq(x)
+    return nothing
+end
+function mapped(x)
+    out = zeros(64)
+    Enzyme.pmap(fill_sumsq!, 64, out, x)
+    return sum(out)
+end
+function paralleled(x)
+    out = zeros(64)
+    Enzyme.@parallel out x for i in 1:64
+        @inbounds out[i] = sumsq(x)
+    end
+    return sum(out)
+end
+
 function gradient_with(setting, f, x)
     dx = zero(x)
     autodiff(set_atomic_add(Reverse, setting), Const(f), Active, Duplicated(x, dx))
@@ -908,6 +927,7 @@ function workload(x)
     return (
         gradient_with(nothing, threaded, x), gradient_with(true, threaded, x),
         gradient_with(true, sumsq, x), split_gradient(x), dx, ddx,
+        gradient_with(nothing, mapped, x), gradient_with(nothing, paralleled, x),
     )
 end
 const WORKLOAD = workload([1.0, 2.0])
@@ -929,6 +949,8 @@ exact = Bool[
     all(_ -> R.split_gradient(x) == 128 .* x, 1:200),
     all(_ -> R.shared_hvps(R.accumulate!, x, v, 2000) == 4000 .* vcat(x, v), 1:5),
     all(_ -> R.shared_hvps(R.accumulate_deferred!, x, v, 2000) == 4000 .* vcat(x, v), 1:5),
+    all(_ -> R.gradient_with(nothing, R.mapped, x) == 128 .* x, 1:200),
+    all(_ -> R.gradient_with(nothing, R.paralleled, x) == 128 .* x, 1:200),
     R.gradient_with(true, R.sumsq, x) == 2 .* x,
 ]
 stats = Enzyme.Compiler.retained_derivative_stats()
@@ -987,15 +1009,16 @@ end
             ok || println(stderr, "Child process failed:\n", String(take!(err)))
             @test ok
             fields = split(String(take!(out)))
-            @test length(fields) == 12 && fields[1] == "1" && fields[2] == "0"
-            if length(fields) == 12
+            @test length(fields) == 14 && fields[1] == "1" && fields[2] == "0"
+            if length(fields) == 14
                 # A threaded loop under the default, under `true` and in split mode; Forward over
                 # Reverse with the inner derivative taken by `autodiff` and by
-                # `autodiff_deferred`; a serial function under `true`.
-                @test fields[7:12] == fill("1", 6)
+                # `autodiff_deferred`; `Enzyme.pmap` and `Enzyme.@parallel`; a serial function
+                # under `true`.
+                @test fields[7:14] == fill("1", 8)
                 if retained
                     @test parse(Int, fields[3]) == 0
-                    @test parse(Int, fields[4]) == 6
+                    @test parse(Int, fields[4]) == 8
                     @test fields[5] == "true" && fields[6] == "true"
                 end
             end

@@ -37,7 +37,11 @@
   `set_atomic_add(mode, true)` and in split mode, and of Forward over
   Reverse called from several threads that share a shadow. A derivative
   whose own setting settles how it accumulates now has a variant for several
-  threads as well when it links such a part in.
+  threads as well when it links such a part in. The body of `Enzyme.pmap`
+  and `Enzyme.@parallel` lost updates the same way: its derivative is taken
+  with the inline ABI, and such a derivative is now compiled for several
+  threads whenever a package image is being written, so in a kept derivative
+  it accumulates atomically with one thread too.
   `Enzyme.has_dogfood_repair(:retained_several_threads)` reports the repair;
   `test/precompile.jl` runs these shapes in sessions with one and with two
   threads, and `test/threads.jl` counts the atomic updates of each variant.

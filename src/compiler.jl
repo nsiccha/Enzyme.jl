@@ -9484,6 +9484,15 @@ end
         StrongZero,
         AtomicAdd,
     )
+    # The code of a derivative with the inline ABI becomes part of whatever calls it. While a
+    # package image is written, that can be a derivative the image keeps for sessions with any
+    # number of threads, or a value such a derivative hands to code Julia compiles later, as
+    # the rule of `Enzyme.pmap` does with the derivative of its loop body. Nothing tells it
+    # apart there, so it is compiled for several threads from the start (see
+    # `ForSeveralThreads`): atomic accumulation is right with any number of threads.
+    if ABI <: InlineABI && generating_output()
+        job = for_several_threads(job)
+    end
 
     compile_result = cached_compilation(job, may_wait)
     if edges !== nothing
