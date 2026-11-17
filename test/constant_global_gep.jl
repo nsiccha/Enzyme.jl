@@ -14,7 +14,8 @@ import LLVM
 # index of `extractvalue`, so compiling threw
 # `InexactError: trunc(UInt32, 18446744073709551615)`. A smaller index past the end fit,
 # and a load through it asked for an element the initializer does not have, which
-# crashed the process. The last testset covers a third way to miss the element.
+# crashed the process. The last testset covers a third way to miss the element, and the
+# one before it reaches the first through `autodiff`.
 
 const GEP_ARRAY = "@g = private unnamed_addr constant [3 x double] [double 1.0, double 2.0, double 3.0]"
 const GEP_STRUCT_TYPE = "{ i64, [2 x double] }"
@@ -187,6 +188,47 @@ end
     @test gep_fold(gep_chained_load, "i64 0") == gep_folded(4.0)
     @test gep_fold(gep_chained_load, "i64 1") == gep_folded(5.0)
     @test gep_fold(gep_vector_load, "i64 1") == gep_folded(9.0)
+end
+
+# The first failure as plain Julia. `slot` counts from zero and `-1` means that the table
+# has no entry, so the element is never read with it. Every call passes the same table and
+# the same slot. The pass puts both into `gep_entry`, whose element address then reads
+# `getelementptr [6 x double], @table, i64 0, i64 -1` on Julia 1.10; later versions index
+# the element type, with one index, and never formed that address.
+const GEP_TABLE = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+
+@noinline function gep_entry(table::NTuple{6, Float64}, slot::Int, x::Float64)
+    slot < 0 && return x * x
+    return x * x * table[slot + 1]
+end
+
+gep_no_entry(x) = gep_entry(GEP_TABLE, -1, x)
+gep_third_entry(x) = gep_entry(GEP_TABLE, 2, x)
+
+function gep_gradient!(dx::Vector{Float64}, f::F, x::Vector{Float64}) where {F}
+    dx[1] = autodiff_deferred(Reverse, Const(f), Active, Active(x[1]))[1][1]
+    return nothing
+end
+
+# The first and second derivative of `f` at `x`, Forward over Reverse.
+function gep_derivatives(f::F, x::Float64) where {F}
+    dx = [0.0]
+    ddx = [0.0]
+    autodiff(Forward, gep_gradient!, Const, Duplicated(dx, ddx), Const(f), Duplicated([x], [1.0]))
+    return dx[1], ddx[1]
+end
+
+@testset "A table read behind a sentinel index" begin
+    @testset "no entry" begin
+        @test autodiff(Reverse, gep_no_entry, Active, Active(3.0))[1][1] == 6.0
+        @test autodiff(Forward, gep_no_entry, Duplicated(3.0, 1.0))[1] == 6.0
+        @test gep_derivatives(gep_no_entry, 3.0) == (6.0, 2.0)
+    end
+    @testset "an entry" begin
+        @test autodiff(Reverse, gep_third_entry, Active, Active(3.0))[1][1] == 18.0
+        @test autodiff(Forward, gep_third_entry, Duplicated(3.0, 1.0))[1] == 18.0
+        @test gep_derivatives(gep_third_entry, 3.0) == (18.0, 6.0)
+    end
 end
 
 if gep_opaque_pointers()

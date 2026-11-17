@@ -19,8 +19,9 @@
   as an array, replaced the load by a different element with no error.
   `Enzyme.has_dogfood_repair(:constant_global_gep_paths)` reports the repair;
   `test/constant_global_gep.jl` covers addresses before and past arrays,
-  vectors and nested fields, addresses through another type, and the element
-  loads that are still replaced.
+  vectors and nested fields, addresses through another type, the element loads
+  that are still replaced, and a table read behind a `-1` sentinel in Reverse,
+  Forward, and Forward over Reverse.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification
