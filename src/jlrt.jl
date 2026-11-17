@@ -307,7 +307,11 @@ function emit_conditional_throw!(B::LLVM.IRBuilder, @nospecialize(cond::LLVM.Val
     T_jlvalue = LLVM.StructType(LLVMType[])
     T_prjlvalue = LLVM.PointerType(T_jlvalue, 10)
     strty = LLVM.PointerType(LLVM.Int8Type())
-    FT = LLVM.FunctionType(T_void, LLVMType[strty, LLVM.IntType(1), map(value_type, fields)...])
+    argtys = LLVMType[strty, LLVM.IntType(1)]
+    for field in fields
+        push!(argtys, field.value_type)
+    end
+    FT = LLVM.FunctionType(T_void, argtys)
 
     name = "jl_conditional_throw_" * string(errty)
     if haskey(mod.functions, name)
