@@ -49,7 +49,24 @@
   directions, runtime activity, the static schedule and an active scalar held
   by the loop body), Reverse over Forward, Forward over Forward and Reverse over
   Reverse against closed forms, with one and with two threads, and a package
-  whose image keeps two of them, run with one, two and four threads.
+  whose image keeps two of them, run with one, two and four threads. Reverse
+  over Reverse works on Julia 1.10; on Julia 1.12 and 1.13 it still stops with
+  an `EnzymeInternalError` ("Illegal address space propagation"), which the
+  tests pin as broken.
+- Keep the tangent of a tape that an outer derivative hands from one function to
+  another. On Julia 1.11 and later every pointer in a tape had the type
+  `Core.LLVMPtr{Cvoid}`, which Enzyme takes for constant data, so Forward over
+  a split-mode Reverse (`autodiff_thunk`, with the reverse pass in a function
+  Julia does not inline) returned a second derivative of zero with no error;
+  the derivative of a `Threads.@threads` loop is such a split-mode derivative.
+  On Julia 1.10 a tape named the table of a cache's chunks a pointer to
+  pointers to elements, although its later slots can hold offsets, and an outer
+  derivative stopped with `IllegalTypeAnalysisException` under
+  `--check-bounds=yes`. Both are now pointers to `Enzyme.Compiler.TapeMemory`,
+  memory of unknown layout that may carry derivatives.
+  `Enzyme.has_dogfood_repair(:tape_memory_pointers)` reports the repair;
+  `test/nested_threads.jl` covers Forward over a split-mode Reverse without
+  threads, for a loop that reads its input and for one that overwrites it.
 - Return zero gradients when a guard rejects a nonfinite product, including
   `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
   The native select repair now protects products whose operands are nonfinite
