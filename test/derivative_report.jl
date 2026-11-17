@@ -364,6 +364,40 @@ end
     @test callee.arguments === Tuple{Active{Float64}}
     @test isempty(returning(callee, :enzyme_runtime_fallback))
     @test isempty(returning(callee, :dynamic_dispatch))
+    @test top.atomic_add === nothing
+    @test callee.atomic_add === nothing
+end
+
+@noinline dispatched_cosine(v) = Base.inferencebarrier(cos)(v)
+function sum_dispatched_cosine(x)
+    s = 0.0
+    for i in eachindex(x)
+        s += dispatched_cosine(x[i])::Float64
+    end
+    return s
+end
+
+# A derivative is reported with the `AtomicAdd` setting it was compiled with. What a call
+# dispatched at run time reaches inherits plain accumulation from its caller.
+@testset "the accumulation setting of a derivative" begin
+    x = [0.3, -0.2, 0.5]
+    dx = zero(x)
+    report = Enzyme.derivative_report() do
+        autodiff(set_atomic_add(Reverse, false), sum_dispatched_cosine, Active, Duplicated(x, dx))
+    end
+    @test dx ≈ -sin.(x)
+    @test derivative_of(report, sum_dispatched_cosine).atomic_add === false
+    callee = derivative_of(report, cos)
+    @test callee.atomic_add === :inherited_plain
+    @test callee.findings !== nothing
+
+    dx .= 0
+    report = Enzyme.derivative_report() do
+        autodiff(set_atomic_add(Reverse, true), sum_dispatched_cosine, Active, Duplicated(x, dx))
+    end
+    @test dx ≈ -sin.(x)
+    @test derivative_of(report, sum_dispatched_cosine).atomic_add === true
+    @test derivative_of(report, cos).atomic_add === true
 end
 
 function sum_squares(x)

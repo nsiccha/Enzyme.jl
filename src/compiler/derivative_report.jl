@@ -828,7 +828,9 @@ One derivative in a [`DerivativeReport`](@ref).
 - `return_annotation`: the annotation of the return value.
 - `width`: the number of derivatives computed at once.
 - `runtime_activity`, `strong_zero`, `atomic_add`: the settings of the mode. `atomic_add` is
-  `nothing` where the number of threads decided it.
+  `nothing` where the number of threads decided it, and `:inherited_plain` for a derivative
+  Enzyme compiled for a call dispatched at run time inside a derivative that accumulates
+  plainly (see [`set_atomic_add`](@ref)): it does so too, unless it runs work in parallel.
 - `origin`: `:compiled` while the report ran, `:cached` for code compiled earlier in the
   session, `:image` for code linked from a package image, or `:inlined` for a derivative
   compiled for inlining into its caller. A split-mode derivative is compiled while Julia
@@ -846,7 +848,7 @@ struct ReportedDerivative
     width::Int
     runtime_activity::Bool
     strong_zero::Bool
-    atomic_add::Union{Nothing, Bool}
+    atomic_add::Union{Nothing, Bool, Symbol}
     origin::Symbol
     findings::Union{Nothing, Vector{DerivativeFinding}}
     note::String
@@ -859,6 +861,10 @@ function reported_mode(mode::API.CDerivativeMode)::Symbol
     return :reverse_split
 end
 
+reported_atomic_add(setting::Union{Nothing, Bool}) = setting
+reported_atomic_add(::Type{InheritedPlainAdd}) = :inherited_plain
+reported_atomic_add(variant::ForSeveralThreads) = reported_atomic_add(variant.setting)
+
 function reported_derivative(record::DerivativeRecord, origin::Symbol, ir::Union{Nothing, Vector{UInt8}})::ReportedDerivative
     params = record.job.config.params
     annotations = params.TT.parameters
@@ -866,7 +872,7 @@ function reported_derivative(record::DerivativeRecord, origin::Symbol, ir::Union
     arguments = Tuple{annotations[2:end]...}
     return ReportedDerivative(
         func, reported_mode(params.mode), arguments, params.rt, params.width,
-        params.runtimeActivity, params.strongZero, params.atomicAdd,
+        params.runtimeActivity, params.strongZero, reported_atomic_add(params.atomicAdd),
         origin, record.findings, record.note, ir,
     )
 end
