@@ -1,0 +1,2 @@
+summary = "A derivative of a derivative of a Threads.@threads loop (Forward over Reverse, Reverse over Forward, Forward over Forward, Reverse over Reverse) differentiates; compiling one aborted the process"
+tests = ["test/nested_threads.jl"]

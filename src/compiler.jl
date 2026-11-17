@@ -1919,18 +1919,27 @@ end
     if func == typeof(Base.enq_work) &&
        length(sparam_vals) == 1 &&
        first(sparam_vals) <: Task
-        handleCustom(state, custom, k_name, llvmfn, "jl_enq_work", LLVM.Attribute[StringAttribute("enzyme_ta_norecur")])
+        handleCustom(
+            state, custom, k_name, llvmfn, "jl_enq_work",
+            LLVM.Attribute[StringAttribute("enzyme_ta_norecur"), StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+        )
         return
     end
     if func == typeof(Base.wait) || func == typeof(Base._wait)
         if length(sparam_vals) == 1 && first(sparam_vals) <: Task
-            handleCustom(state, custom, k_name, llvmfn, "jl_wait", LLVM.Attribute[StringAttribute("enzyme_ta_norecur")])
+            handleCustom(
+                state, custom, k_name, llvmfn, "jl_wait",
+                LLVM.Attribute[StringAttribute("enzyme_ta_norecur"), StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+            )
         end
         return
     end
     if func == typeof(Base.Threads.threading_run)
         if length(sparam_vals) == 1 || length(sparam_vals) == 2
-            handleCustom(state, custom, k_name, llvmfn, "jl_threadsfor")
+            handleCustom(
+                state, custom, k_name, llvmfn, "jl_threadsfor",
+                LLVM.Attribute[StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+            )
         end
         return
     end
