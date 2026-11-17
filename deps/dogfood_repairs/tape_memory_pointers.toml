@@ -1,0 +1,2 @@
+summary = "An outer derivative keeps the tangent of a split-mode tape (Julia 1.11 and later returned a zero second derivative through a dynamic call, a threaded loop body or autodiff_thunk) and types a cache's chunk table as a pointer (Julia 1.10 raised IllegalTypeAnalysisException under forced bounds checks)"
+tests = ["test/nested_threads.jl", "test/readonly_argument.jl"]

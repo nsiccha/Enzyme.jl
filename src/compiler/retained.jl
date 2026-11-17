@@ -735,17 +735,21 @@ function retained_result(retained::RetainedDerivatives, @nospecialize(job::Compi
     end
 end
 
-# `job`, with the choice `atomic_add_for` leaves to the number of threads made as a process
-# with several makes it.
-function for_several_threads(@nospecialize(job::CompilerJob))
+# `job` with another `AtomicAdd` setting.
+function with_atomic_add(@nospecialize(job::CompilerJob), setting::Union{AtomicAddSetting, ForSeveralThreads})
     p = job.config.params
     params = EnzymeCompilerParams(
         p.params, p.TT, p.mode, p.width, p.rt, p.run_enzyme, p.abiwrap, p.modifiedBetween,
         p.returnPrimal, p.shadowInit, p.expectedTapeType, p.ABI, p.err_if_func_written,
-        p.runtimeActivity, p.strongZero, ForSeveralThreads(p.atomicAdd),
+        p.runtimeActivity, p.strongZero, setting,
     )
     return CompilerJob(job.source, CompilerConfig(job.config; params), job.world)
 end
+
+# `job`, with the choice `atomic_add_for` leaves to the number of threads made as a process
+# with several makes it.
+for_several_threads(@nospecialize(job::CompilerJob)) =
+    with_atomic_add(job, ForSeveralThreads(job.config.params.atomicAdd))
 
 function retained_variant(@nospecialize(job::CompilerJob))::Union{RetainedDerivative, String}
     ts_ctx = JuliaContext()
