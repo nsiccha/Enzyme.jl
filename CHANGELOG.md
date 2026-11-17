@@ -9,6 +9,15 @@
   `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
   `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
   Forward over Reverse, and finite inputs whose intermediate products overflow.
+- Leave a `getelementptr` address outside an internal constant global alone
+  when loads of the global are replaced by parts of its initializer. An address
+  before the first element (index `-1`) with such a global as its base stopped
+  the compile of a derivative with
+  `InexactError: trunc(UInt32, 18446744073709551615)`; a smaller index past the
+  end crashed the process instead.
+  `Enzyme.has_dogfood_repair(:constant_global_gep_bounds)` reports the repair;
+  `test/constant_global_gep.jl` covers addresses before and past arrays,
+  vectors and nested fields, and the element loads that are still replaced.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification

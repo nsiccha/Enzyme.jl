@@ -1,0 +1,2 @@
+summary = "Constant getelementptr addresses outside an internal constant global no longer stop the compile"
+tests = ["test/constant_global_gep.jl"]
