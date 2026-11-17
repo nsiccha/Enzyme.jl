@@ -989,7 +989,9 @@ function import_cached_autodiff!(mod::LLVM.Module, ptr::Ptr{Cvoid}, FT::LLVM.Fun
     # number of threads the module is compiled for, and what the number of threads decides in
     # it, it decides in the module (see `ForSeveralThreads`).
     if enzyme_ctx.several_threads
-        cached = cached_autodiff_for_several_threads(cached)
+        # A dynamic call: compiling the thunk again goes through the whole compiler, which
+        # the code that checks a module must not come to depend on (see `in_calling_world`).
+        cached = in_calling_world(cached_autodiff_for_several_threads, cached)::CachedThunk
     end
     enzyme_ctx.by_threads |= cached.by_threads
     pname = cached.entry
