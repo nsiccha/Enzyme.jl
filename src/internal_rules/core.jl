@@ -572,10 +572,10 @@ end
 
 function pmap_reverse(
         config2::ReverseModeSplit,
-    tapes,
-    body::BodyTy,
-    count,
-    args::Vararg{Annotation,N},
+        tapes,
+        body::BodyTy,
+        count,
+        args::Vararg{Annotation, N},
     ) where {BodyTy, N}
     fwd_thunk, rev_thunk =
         autodiff_thunk(config2, BodyTy, Const, typeof(count), map(typeof, args)...)
