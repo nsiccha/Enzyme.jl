@@ -34,6 +34,23 @@
   `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
   `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
   Forward over Reverse, and finite inputs whose intermediate products overflow.
+- Clear the adjoint of a BLAS output that the call overwrote. A routine that
+  computes `out := ... + beta * out` does not read `out` when `beta == 0`, and
+  a copy never reads its destination, so the adjoint of what `out` held before
+  is exactly zero. The reverse rules of `gemv`, `symv`, `spmv`, `gemm`, `symm`,
+  `syrk` and `lacpy` multiplied the output's shadow by `beta` instead: a `NaN`
+  or an infinity in the adjoint of the result stayed there (`0 * NaN` is `NaN`),
+  and a later reverse pass over the same shadow, as with a work buffer whose
+  shadow is kept across calls, returned `NaN` gradients. The reverse rule of
+  `copy` did not clear the destination's shadow at all, so two copies into one
+  vector gave a wrong gradient within a single reverse pass, and a shadow used
+  again kept growing. The forward rule of `copy` with a constant source now
+  writes a zero tangent instead of `0 *` the tangent it found.
+  `Enzyme.has_dogfood_repair(:blas_overwritten_output)` reports the repair;
+  `test/blas_overwritten_output.jl` covers every routine with `NaN` and
+  infinite output adjoints, shadows used again, `beta != 0`, the triangle
+  `syrk` writes, strided and reversed copies, batches, split mode, runtime
+  activity, and Forward over Reverse.
 - Leave a `getelementptr` address that names no element of an internal
   constant global alone when loads of the global are replaced by parts of its
   initializer. An address before the first element (index `-1`) with such a
