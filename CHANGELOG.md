@@ -21,6 +21,12 @@
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
+- Accept captured BLAS input buffers in the readonly check for an unannotated
+  function argument. The proof uses per-argument readonly and nocapture
+  attributes only for typed raw data pointers, and ignores uses solely in
+  Julia GC-root bundles. Captured output buffers and aliases in writable
+  positions still raise `EnzymeMutabilityException`.
+  `Enzyme.has_dogfood_repair(:readonly_pointer_operands)` reports the repair.
 - Return zero gradients when a guard rejects a nonfinite product, including
   `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
   The native select repair now protects products whose operands are nonfinite

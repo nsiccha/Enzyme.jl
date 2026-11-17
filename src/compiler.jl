@@ -7021,6 +7021,12 @@ function readonly_walk!(
                     if is_inactive_operand(user, called, cur, world)
                         continue
                     end
+                    # Calls such as BLAS read some buffers and write others.
+                    # Prove this operand readonly without following unrelated
+                    # outputs, or treating a GC root as a passed argument.
+                    if is_readonly_call_operand(user, called, cur, world, enzyme_ctx)
+                        continue
+                    end
                     if is_readonly(called)
                         slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
                         if slegal
