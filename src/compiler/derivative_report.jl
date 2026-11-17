@@ -666,11 +666,18 @@ DerivativeCollector(keep_ir::Bool, parent::Union{Nothing, DerivativeCollector}) 
 const DERIVATIVE_COLLECTOR = ScopedValues.ScopedValue{Union{Nothing, DerivativeCollector}}(nothing)
 
 # The number of reports running in the process. A call of a derivative reads it and nothing
-# else while it is zero.
-const DERIVATIVE_REPORTS = Threads.Atomic{Int}(0)
+# else while it is zero. It is a field and not a `Threads.Atomic`: with a read of one of those
+# in its code, Julia 1.12 no longer inlined `autodiff` into its caller, and the call then
+# returned its result boxed.
+mutable struct RunningReports
+    @atomic count::Int
+end
+const DERIVATIVE_REPORTS = RunningReports(0)
+
+@inline reports_running()::Bool = (@atomic :acquire DERIVATIVE_REPORTS.count) != 0
 
 @inline function current_derivative_collector()::Union{Nothing, DerivativeCollector}
-    DERIVATIVE_REPORTS[] == 0 && return nothing
+    reports_running() || return nothing
     return DERIVATIVE_COLLECTOR[]
 end
 
@@ -769,7 +776,7 @@ code of every call of a derivative runs this; while no report is running it read
 Code that Enzyme itself differentiates holds no such call: the inner derivative of a nested
 one becomes part of the outer one's code, which is what a report then describes.
 """
-@inline note_derivative_call(fptr::Ptr{Cvoid}) = (Enzyme.within_autodiff() || DERIVATIVE_REPORTS[] == 0) ? nothing : called_derivative(fptr)
+@inline note_derivative_call(fptr::Ptr{Cvoid}) = (Enzyme.within_autodiff() || !reports_running()) ? nothing : called_derivative(fptr)
 @inline note_derivative_call(@nospecialize(fptr)) = nothing
 
 # The addresses of the trampolines of deferred derivatives that were not compiled yet: the
@@ -911,11 +918,11 @@ end
 """
 function derivative_report(f::F; ir::Bool = false) where {F}
     collector = DerivativeCollector(ir, DERIVATIVE_COLLECTOR[])
-    Threads.atomic_add!(DERIVATIVE_REPORTS, 1)
+    @atomic DERIVATIVE_REPORTS.count += 1
     value = try
         @with DERIVATIVE_COLLECTOR => collector f()
     finally
-        Threads.atomic_sub!(DERIVATIVE_REPORTS, 1)
+        @atomic DERIVATIVE_REPORTS.count -= 1
     end
     derivatives = ReportedDerivative[]
     lock(collector.lock)

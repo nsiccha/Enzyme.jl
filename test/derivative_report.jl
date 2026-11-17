@@ -436,9 +436,12 @@ checked_square(x, i) = x[i] * x[i]
     end
     @test dx == [0.0, 4.0, 0.0]
     d = derivative_of(report, checked_square)
+    # Julia 1.10 calls the runtime's bounds error, later versions a function of their own that
+    # raises it, which is only called on the way to the error.
+    bounds_error(f) = occursin("bounds_error", f.callee) || occursin("boundserror", f.in_function)
     errors = [f for f in d.findings if f.throw_only]
-    @test any(f -> occursin("bounds_error", f.callee), errors)
-    @test !any(f -> occursin("bounds_error", f.callee), returning(d))
+    @test any(bounds_error, errors)
+    @test !any(bounds_error, returning(d))
 end
 
 cube_sum(x) = sum(v -> v^3, x)
@@ -474,7 +477,21 @@ cube_sum(x) = sum(v -> v^3, x)
 
     # Without a report nothing is collected, and the counter of running reports is back at zero.
     Enzyme.gradient(Reverse, cube_sum, x)
-    @test Compiler.DERIVATIVE_REPORTS[] == 0
+    @test !Compiler.reports_running()
+end
+
+function sum_squares_gradient!(dx, x)
+    autodiff(Reverse, sum_squares, Active, Duplicated(x, dx))
+    return nothing
+end
+
+# Every call of a derivative asks whether a report is running. That must not keep `autodiff`
+# from being inlined into its caller, where it would return its result boxed.
+@testset "a derivative call allocates nothing while no report runs" begin
+    x = [1.0, 2.0, 3.0]
+    dx = zero(x)
+    sum_squares_gradient!(dx, x)
+    @test (@allocated sum_squares_gradient!(dx, x)) == 0
 end
 
 quartic(x) = sum(v -> v^4, x)
@@ -561,7 +578,7 @@ end
     @test_throws ErrorException Enzyme.derivative_report() do
         error("no derivative today")
     end
-    @test Compiler.DERIVATIVE_REPORTS[] == 0
+    @test !Compiler.reports_running()
 end
 
 @testset "printing" begin
