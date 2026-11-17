@@ -1,0 +1,2 @@
+summary = "Scalar logabsbeta partials avoid recursive reverse tapes while preserving stable large-argument derivatives"
+tests = ["test/ext/logbeta.jl", "test/ext/specialfunctions.jl"]
