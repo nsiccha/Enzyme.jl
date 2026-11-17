@@ -958,6 +958,110 @@ function erase_library_reads!(reads::Vector{LLVM.CallInst}, calls::Vector{LLVM.C
     return nothing
 end
 
+# The name of the function that stands for the symbol `fname` behind the call-site slot `slot`.
+runtime_lookup_stub_name(slot::LLVM.GlobalVariable, fname::String) = "ejlrt\$" * fname * "\$" * LLVM.name(slot)
+
+"""
+    runtime_lookup_stub!(mod, slot, fname, FT, cc) -> LLVM.Function
+
+The function that stands for the native symbol `fname` behind the call-site slot `slot`: its
+body loads the address the lazy lookup stored there and calls it with its own arguments, in the
+calling convention `cc`. It carries the symbol's name (`enzyme_math`), is not inlined before
+differentiation, and keeps its signature.
+"""
+function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname::String, FT::LLVM.FunctionType, cc)::LLVM.Function
+    name = runtime_lookup_stub_name(slot, fname)
+    funcs = functions(mod)
+    haskey(funcs, name) && return funcs[name]
+    stub = LLVM.Function(mod, name, FT)
+    linkage!(stub, LLVM.API.LLVMInternalLinkage)
+    callconv!(stub, cc)
+    attributes = function_attributes(stub)
+    push!(attributes, StringAttribute("enzyme_math", fname))
+    push!(attributes, StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*"))
+    push!(attributes, EnumAttribute("noinline", 0))
+    builder = IRBuilder()
+    position!(builder, BasicBlock(stub, "entry"))
+    address = load!(builder, LLVM.global_value_type(slot), slot)
+    ordering!(address, LLVM.API.LLVMAtomicOrderingUnordered)
+    callee = address
+    T_callee = LLVM.PointerType(FT)
+    if value_type(callee) != T_callee
+        callee = bitcast!(builder, callee, T_callee)
+    end
+    result = call!(builder, FT, callee, LLVM.Value[p for p in parameters(stub)])
+    callconv!(result, cc)
+    if LLVM.return_type(FT) == LLVM.VoidType()
+        ret!(builder)
+    else
+        ret!(builder, result)
+    end
+    return stub
+end
+
+"""
+    outline_runtime_lookup_calls!(mod, inst, fname)
+
+The lazy lookup `inst` of the symbol `fname` keeps a library that is a run-time value: an
+expression Julia 1.12 and earlier evaluate the first time the call runs. The code stores the
+address it finds in a slot of the call site and calls through that slot from then on.
+
+Each call through the address becomes a call of a function named for the symbol
+([`runtime_lookup_stub!`](@ref)), which makes the same call through the slot. A derivative rule
+Enzyme has for `fname` then applies as it does for a library known when the derivative is
+compiled, and a native function without a rule is reported as one, where an indirect call
+through a looked-up address has no name to go by. The slot holds the address of native code and
+no derivative data (`enzyme_inactive`).
+"""
+function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fname::String)
+    slot = nothing
+    for u in LLVM.uses(inst)
+        st = LLVM.user(u)
+        isa(st, LLVM.StoreInst) || continue
+        LLVM.Value(LLVM.API.LLVMGetOperand(st, 0)) == inst || continue
+        dest = LLVM.Value(LLVM.API.LLVMGetOperand(st, 1))
+        if isa(dest, LLVM.GlobalVariable)
+            slot = dest
+            break
+        end
+    end
+    slot === nothing && return nothing
+    API.SetMD(slot, "enzyme_inactive", LLVM.MDNode(LLVM.Metadata[]))
+
+    # The calls through the address: of the lookup's result or of a load of the slot, which
+    # reach the call through phis and casts. The slot may already have its function, from
+    # another copy of the call site in the module; the load in that function's body is the one
+    # call that must stay a call through the address.
+    stub_name = runtime_lookup_stub_name(slot, fname)
+    through = LLVM.CallInst[]
+    seen = Set{LLVM.Value}()
+    worklist = LLVM.Value[inst]
+    for u in LLVM.uses(slot)
+        ld = LLVM.user(u)
+        isa(ld, LLVM.LoadInst) || continue
+        LLVM.name(LLVM.parent(LLVM.parent(ld))) == stub_name && continue
+        push!(worklist, ld)
+    end
+    while !isempty(worklist)
+        v = pop!(worklist)
+        v in seen && continue
+        push!(seen, v)
+        for u in LLVM.uses(v)
+            user = LLVM.user(u)
+            if isa(user, LLVM.CallInst)
+                called_operand(user) == v && push!(through, user)
+            elseif isa(user, LLVM.PHIInst) || isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst)
+                push!(worklist, user)
+            end
+        end
+    end
+    for call in through
+        stub = runtime_lookup_stub!(mod, slot, fname, called_type(call), LLVM.callconv(call))
+        LLVM.API.LLVMSetOperand(call, LLVM.API.LLVMGetNumOperands(call) - 1, stub)
+    end
+    return nothing
+end
+
 function try_import_llvmbc(mod::LLVM.Module, flib::String, fname::String, imported::Set{String})
     found = false
     inmod = nothing
@@ -1544,6 +1648,10 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
                     replace_uses!(inst, replacement)
                     LLVM.API.LLVMInstructionEraseFromParent(inst)
                     erase_library_reads!(library_reads, calls)
+                else
+                    # The library stays a run-time value: an expression Julia 1.12 and earlier
+                    # evaluate the first time the call runs.
+                    outline_runtime_lookup_calls!(mod, inst, fname)
                 end
             end
         elseif fn == "julia.call" || fn == "julia.call2"
