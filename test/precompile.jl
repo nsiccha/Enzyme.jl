@@ -1039,3 +1039,57 @@ end
         @test parse.(Float64, fields[3:5]) == [6.0, 8.0, 10.0]
     end
 end
+
+# What `Enzyme.derivative_report` says about a derivative that a session links from an image.
+# That session has no module to read, so the image carries what the scan of the compiled code
+# found when the image was written. The same function defined in the session is compiled
+# there, and its code makes the same calls on the paths that return. Code for an image names
+# every address, and the paths that end in an error can come out arranged differently.
+const RETAINED_REPORT = """
+using Enzyme, EnzymeRetained
+X = [1.0 2.0 3.0; 4.0 5.0 6.0; 7.0 8.0 10.0; 1.0 0.0 1.0; 0.0 1.0 0.0]
+y = [1.0, 0.0, 1.0, 0.0, 1.0]
+b = [1.0, 2.0, 3.0]
+linked = Enzyme.derivative_report() do
+    EnzymeRetained.least_squares_gradient(b, X, y)
+end
+session_least_squares(b, X, y) = 0.5 * sum(abs2, y .- X * b)
+compiled = Enzyme.derivative_report() do
+    db = zero(b)
+    Enzyme.autodiff(Reverse, session_least_squares, Active, Duplicated(b, db), Const(X), Const(y))
+    db
+end
+calls(d) = sort([(String(f.kind), f.callee, f.in_loop, something(f.bytes, -1), f.count) for f in d.findings if !f.throw_only])
+l = only(linked.derivatives)
+c = only(compiled.derivatives)
+stats = Enzyme.Compiler.retained_derivative_stats()
+print(
+    stats.materialized, " ", l.origin, " ", c.origin, " ", l.findings !== nothing && !isempty(l.findings), " ",
+    any(f -> f.kind === :gc_allocation && !f.throw_only, l.findings), " ",
+    any(f -> occursin("gemv", f.callee) && !f.throw_only, l.findings), " ",
+    calls(l) == calls(c), " ", linked.value == compiled.value, " ", Enzyme.Compiler.unrecorded_derivative_calls[],
+)
+"""
+
+@testset "a report on a derivative linked from an image" begin
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymeRetained.jl"), RETAINED)
+        retained = Enzyme.Compiler.retention_supported()
+        for _ in 1:2
+            ok, fields = run_child(load_path, RETAINED_REPORT)
+            @test ok
+            ok || continue
+            @test length(fields) == 9
+            length(fields) == 9 || continue
+            @test fields[1] == (retained ? "1" : "0")
+            @test fields[2] == (retained ? "image" : "compiled")
+            @test fields[3] == "compiled"
+            # The linked derivative has findings: an allocation and the BLAS product, by name.
+            @test fields[4:6] == ["true", "true", "true"]
+            # On returning paths they are the calls the same code makes when the session compiles it.
+            @test fields[7] == "true"
+            @test fields[8] == "true"
+            @test fields[9] == "0"
+        end
+    end
+end

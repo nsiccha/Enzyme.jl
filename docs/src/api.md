@@ -23,4 +23,8 @@ Order = [:module, :type, :constant, :macro, :function]
 
 ```@docs
 Enzyme.Compiler.CheckNan
+Enzyme.derivative_report
+Enzyme.DerivativeReport
+Enzyme.ReportedDerivative
+Enzyme.DerivativeFinding
 ```

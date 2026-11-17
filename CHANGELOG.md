@@ -21,6 +21,27 @@
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
+- Add `Enzyme.derivative_report(f)`, which runs `f()` and reports the
+  derivatives Enzyme used for it: each one compiled, linked from a package
+  image or called meanwhile, with the calls its compiled code makes at run
+  time. A finding names the kind of call (run-time dispatch, Enzyme's own
+  run-time differentiation of a call it could not resolve, a box, an
+  allocation on Julia's heap, a native allocation such as the tape, or any
+  other call into the runtime or a library), the callee, the compiled function
+  and sweep, the source lines, whether the call is in a loop or only on an
+  error path, and an allocation's size when it is a constant. Until now the
+  code a derivative runs could only be read from the text the `DumpPostOpt`
+  debug flag prints to standard error, or by compiling it a second time with
+  `enzyme_code_llvm`, which does not see a derivative compiled at run time and
+  needs the job's settings repeated by hand. Enzyme now reads the optimized
+  module of every derivative once, before its JIT takes it, and keeps what it
+  found with the compiled code and with the machine code a package image
+  keeps. A report therefore costs no second compile and covers code compiled
+  earlier in the session. `ir = true` also returns the LLVM bitcode of what
+  the block compiled. A call of a derivative reads one counter more while no
+  report is running. `Enzyme.has_dogfood_repair(:derivative_report)` reports
+  the API; `test/derivative_report.jl` covers the scan and the report, and
+  `test/precompile.jl` a derivative linked from an image.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture
   attributes only for typed raw data pointers, and ignores uses solely in

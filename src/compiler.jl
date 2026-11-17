@@ -8871,6 +8871,7 @@ const DumpLLVMCall = Ref(false)
     if !(GPUCompiler.isghosttype(PT) || Core.Compiler.isconstType(PT))
         return quote
             Base.@_inline_meta
+            note_derivative_call(fptr)
             Base.llvmcall(
                 ($ir, $fn),
                 $combinedReturn,
@@ -9068,7 +9069,10 @@ end
 function compile_and_publish(@nospecialize(job::CompilerJob), key::UInt)::CompileResult
     Threads.atomic_add!(compiled_derivatives, 1)
     mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table = _thunk(job)
+    # The JIT takes the module: read what its code calls first (see `derivative_report`).
+    record, ir = compiled_derivative_record(job, mod)
     obj = _link(job, mod, edges, adjoint_name, primal_name, TapeType, prepost)
+    publish_derivative_record!(record, ir, obj.adjoint, obj.primal)
     lock(cache_publish_lock)
     try
         if obj.adjoint isa Ptr{Nothing}
@@ -9123,6 +9127,7 @@ locks of its own, held without blocking.
     end
 end
 
+include("compiler/derivative_report.jl")
 include("compiler/retained.jl")
 
 """
@@ -9155,6 +9160,9 @@ function clear_caches!()
     empty!(Enzyme.captured_constants)
     empty!(Enzyme.captured_addresses)
     empty!(materialized_derivatives)
+    empty!(derivative_records)
+    empty!(pending_derivatives)
+    unrecorded_derivative_calls[] = 0
     compiled_derivatives[] = 0
     reset_retained_statistics!()
 

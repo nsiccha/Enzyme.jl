@@ -82,6 +82,9 @@ takes to use it in another process.
 - `foreign`: symbols that stand for the address of a C function.
 - `by_threads`: whether the number of threads decided if it accumulates into shadow memory
   atomically (see `atomic_add_by_threads`).
+- `findings`: what the code calls (see [`scan_derivative`](@ref)), for a
+  [`derivative_report`](@ref) in the session that links it: that session has no module to
+  read. `nothing` if the scan failed, and `findings_note` then says why.
 """
 struct RetainedDerivative
     conditions::String
@@ -94,6 +97,8 @@ struct RetainedDerivative
     values::Vector{Pair{String, Any}}
     foreign::Vector{Pair{String, ForeignAddress}}
     by_threads::Bool
+    findings::Union{Nothing, Vector{DerivativeFinding}}
+    findings_note::String
 end
 
 """
@@ -526,6 +531,13 @@ function compile_retained(@nospecialize(job::CompilerJob))::RetainedDerivative
 
     post_optimize!(mod, JIT.get_tm(); callconv = false)
 
+    # What the code calls. An address is still the global `symbolic_addresses!` gave it.
+    global_names = Dict{String, String}()
+    for (name, foreign) in symbols.foreign
+        global_names[name] = foreign.symbol
+    end
+    findings, findings_note = scanned_findings(mod, global_names)
+
     # Optimization may fold what it could not before. Nothing but names may be left.
     entries = primal_name === nothing ? [adjoint_name] : [adjoint_name, primal_name]
     records, new_entries = finish_retained_module!(mod, symbols, meta.relocations, entries)
@@ -558,6 +570,8 @@ function compile_retained(@nospecialize(job::CompilerJob))::RetainedDerivative
         symbols.values,
         symbols.foreign,
         atomic_add_by_threads(meta.callee_atomic_add),
+        findings,
+        findings_note,
     )
 end
 
@@ -728,7 +742,9 @@ function retained_result(retained::RetainedDerivatives, @nospecialize(job::Compi
         return nothing
     end
     try
-        return materialize_retained(variant)
+        result = materialize_retained(variant)
+        linked_derivative_record!(job, variant.findings, variant.findings_note, result.adjoint, result.primal)
+        return result
     catch err
         count_retained!(:rejected, sprint(showerror, err))
         return nothing
