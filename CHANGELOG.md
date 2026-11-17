@@ -25,6 +25,22 @@
   nested callees, callees that run threaded loops or tasks, and a shared
   shadow under contention, and `test/precompile.jl` the variants an image
   keeps.
+- Compile everything a derivative kept in a package image links in as a
+  session with several threads compiles it, in the variant the image keeps
+  for such sessions. An image is written by a process with one thread, and
+  that variant held the body of a `Threads.@threads` loop, a derivative
+  taken with `autodiff_deferred` inside the function and the inner
+  derivative of a nested one as compiled for one thread, with plain updates
+  of shadow memory. A session with several threads that linked it lost
+  updates and returned wrong gradients without an error: of a function with
+  a threaded loop under the default setting, under
+  `set_atomic_add(mode, true)` and in split mode, and of Forward over
+  Reverse called from several threads that share a shadow. A derivative
+  whose own setting settles how it accumulates now has a variant for several
+  threads as well when it links such a part in.
+  `Enzyme.has_dogfood_repair(:retained_several_threads)` reports the repair;
+  `test/precompile.jl` runs these shapes in sessions with one and with two
+  threads, and `test/threads.jl` counts the atomic updates of each variant.
 - Leave a `getelementptr` address that names no element of an internal
   constant global alone when loads of the global are replaced by parts of its
   initializer. An address before the first element (index `-1`) with such a

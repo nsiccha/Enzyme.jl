@@ -509,6 +509,67 @@ atomic_gather_latest(x, c) = Base.invokelatest(atomic_gather, x, c)::Float64
     @test callee_settings(typeof(atomic_sumsq)) == Set{Any}((nothing,))
 end
 
+# The inner derivatives of nested ones: taken with `autodiff`, whose thunk is compiled while
+# the outer function is inferred and imported into the outer derivative, and with
+# `autodiff_deferred`, which the outer compilation compiles itself.
+function atomic_inner_gradient!(dx, x)
+    autodiff(Reverse, Const(atomic_sumsq), Active, Duplicated(x, dx))
+    return nothing
+end
+function atomic_deferred_gradient!(dx, x)
+    autodiff_deferred(Reverse, Const(atomic_sumsq), Active, Duplicated(x, dx))
+    return nothing
+end
+
+# A package image is written by a process with one thread and keeps, for sessions with several,
+# a variant of each derivative compiled as such a session compiles it
+# (`Compiler.ForSeveralThreads`). That has to hold for every derivative compiled on its behalf
+# and linked into it as well: the body of a threaded loop, which gets the default under every
+# setting, and the inner derivative of a nested one. This compiles those variants directly, so
+# what it counts does not depend on the number of threads of this process.
+@testset "Derivatives compiled for several threads $(Threads.nthreads())" begin
+    function threaded_sumsq(x)
+        out = zeros(4)
+        Threads.@threads for i in 1:4
+            @inbounds out[i] = i * atomic_sumsq(x)
+        end
+        return sum(out)
+    end
+    function atomics(f, A, TT, setting; mode = Enzyme.API.DEM_ReverseModeCombined)
+        ir = sprint() do io
+            Enzyme.Compiler.enzyme_code_llvm(io, f, A, TT; dump_module = true, AtomicAdd = setting, mode)
+        end
+        return count("atomicrmw", ir)
+    end
+    several = Enzyme.Compiler.ForSeveralThreads
+    multithreaded = Threads.nthreads() > 1
+    VecDup = Tuple{Duplicated{Vector{Float64}}}
+
+    # A serial function for several threads is the function compiled with atomics
+    @test atomics(atomic_sumsq, Active, VecDup, several(nothing)) == atomics(atomic_sumsq, Active, VecDup, true) > 0
+    @test atomics(atomic_sumsq, Active, VecDup, several(false)) == 0
+
+    # The body of a threaded loop is compiled with the default whatever the function's own
+    # setting is, so with one thread `true` leaves it accumulating plainly. For several threads
+    # the body accumulates atomically under either setting, as it does in a process with
+    # several
+    for_several = atomics(threaded_sumsq, Active, VecDup, several(nothing))
+    @test for_several == atomics(threaded_sumsq, Active, VecDup, several(true))
+    @test (for_several > atomics(threaded_sumsq, Active, VecDup, true)) == !multithreaded
+    multithreaded && @test for_several == atomics(threaded_sumsq, Active, VecDup, nothing)
+    @test_throws Enzyme.Compiler.EnzymeAtomicAddError atomics(threaded_sumsq, Active, VecDup, several(false))
+
+    # Forward over Reverse: the inner derivative accumulates into shadows the caller may share
+    # between threads, with the default setting. Forward mode has no accumulation of its own
+    MatDup = Tuple{Duplicated{Vector{Float64}}, Duplicated{Vector{Float64}}}
+    for inner in (atomic_inner_gradient!, atomic_deferred_gradient!)
+        forward(setting) = atomics(inner, Const, MatDup, setting; mode = Enzyme.API.DEM_ForwardMode)
+        @test forward(several(nothing)) > 0
+        @test (forward(nothing) > 0) == multithreaded
+        multithreaded && @test forward(several(nothing)) == forward(nothing)
+    end
+end
+
 @testset "Forward constant captured by threads closure" begin
     function thr_const_capture(x, a)
         y = zeros(length(x))

@@ -320,6 +320,7 @@ end
                 false,
                 get_runtime_activity(gutils),
                 get_strong_zero(gutils),
+                Compiler.linked_default_atomic_add(enzyme_ctx),
             ) #=ErrIfFuncWritten=#
             ejob = Compiler.CompilerJob(
                 mi2,
@@ -381,6 +382,7 @@ end
                 false,
                 get_runtime_activity(gutils),
                 get_strong_zero(gutils),
+                Compiler.linked_default_atomic_add(enzyme_ctx),
             ) #=ErrIfFuncWritten=#
             ejob = Compiler.CompilerJob(
                 mi2,

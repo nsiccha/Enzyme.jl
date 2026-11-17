@@ -120,13 +120,25 @@ abstract type AbstractEnzymeCompilerParams <: AbstractCompilerParams end
 # from a caller that accumulates plainly.
 const AtomicAddSetting = Union{Bool, Nothing, Type{InheritedPlainAdd}}
 
-# `setting`, with the choice it leaves to the number of threads made as a process with
-# several makes it. A package image is written by a process with one thread for sessions with
-# any number, and this is the setting of the variant it keeps for the others (see
+# `setting`, with every choice the number of threads decides made as a process with several
+# makes it. A package image is written by a process with one thread for sessions with any
+# number, and this is the setting of the variant it keeps for the others (see
 # `retained_derivatives!`). The callees inherit what they inherit under `setting`.
+#
+# The choice is not only the one `atomic_add_for` makes for the job itself. A derivative that
+# is compiled on the job's behalf and linked into its module makes its own: the body of a
+# threaded loop, which is compiled with the default under every setting, a derivative taken
+# with `autodiff_deferred` inside the function, and the inner derivative of a nested one. Each
+# is compiled for several threads too (see `for_several_threads`), so that the whole object
+# is what a process with several threads would have compiled. A job that settles its own
+# choice (`true`, `false`) therefore has such a variant as well when it links one of those in.
 struct ForSeveralThreads
-    setting::Union{Nothing, Type{InheritedPlainAdd}}
+    setting::AtomicAddSetting
 end
+
+# The setting of the variant for several threads of a derivative compiled with `setting`.
+for_several_threads(setting::AtomicAddSetting) = ForSeveralThreads(setting)
+for_several_threads(variant::ForSeveralThreads) = variant
 
 struct EnzymeCompilerParams{Params<:AbstractCompilerParams} <: AbstractEnzymeCompilerParams
     params::Params
@@ -161,7 +173,8 @@ struct EnzymeCompilerParams{Params<:AbstractCompilerParams} <: AbstractEnzymeCom
     # Whether to accumulate into shadow memory atomically: `true`, `false`, `nothing` to
     # decide in `codegen`, or `InheritedPlainAdd` for a callee that a caller compiled with
     # `false` reaches through dynamic dispatch (see `atomic_add_for`). A `ForSeveralThreads`
-    # is the variant of one of the last two that a package image keeps.
+    # is the variant of one of them that a package image keeps for sessions with several
+    # threads.
     atomicAdd::Union{AtomicAddSetting, ForSeveralThreads}
 end
 
@@ -195,6 +208,19 @@ function EnzymeCompilerParams(TT, mode, width, rt, run_enzyme, abiwrap,
         strongZero,
         atomicAdd
     )
+end
+
+# `job`, with every choice the number of threads decides made as a process with several
+# makes it.
+function for_several_threads(@nospecialize(job::CompilerJob))
+    p = job.config.params
+    p.atomicAdd isa ForSeveralThreads && return job
+    params = EnzymeCompilerParams(
+        p.params, p.TT, p.mode, p.width, p.rt, p.run_enzyme, p.abiwrap, p.modifiedBetween,
+        p.returnPrimal, p.shadowInit, p.expectedTapeType, p.ABI, p.err_if_func_written,
+        p.runtimeActivity, p.strongZero, for_several_threads(p.atomicAdd),
+    )
+    return CompilerJob(job.source, CompilerConfig(job.config; params), job.world)
 end
 
 DefaultCompilerTarget(; kwargs...) =
@@ -1501,6 +1527,15 @@ atomic_add_for(variant::ForSeveralThreads, mod::LLVM.Module, mi::Core.MethodInst
 # Whether the number of threads made the choice of `atomic_add_for` for a derivative, given
 # the setting its callees got: its code is then another in a process with another number.
 atomic_add_by_threads(callees::AtomicAddSetting)::Bool = callees === nothing
+
+# The `AtomicAdd` setting of a derivative that the compilation of `enzyme_ctx` compiles with
+# the default and links into its module, as it does the body of a threaded loop under every
+# setting. The number of threads decides how that derivative accumulates, so it decides
+# something in the module, and a compilation for several threads has it decided for several.
+function linked_default_atomic_add(enzyme_ctx::EnzymeContext)
+    enzyme_ctx.by_threads = true
+    return enzyme_ctx.several_threads ? ForSeveralThreads(nothing) : nothing
+end
 
 function handleCustom(state::HandlerState, custom, k_name::String, llvmfn::LLVM.Function, name::String, attrs::Vector{LLVM.Attribute} = LLVM.Attribute[], setlink::Bool = true, noinl::Bool = true)
     attributes = function_attributes(llvmfn)
@@ -6762,10 +6797,21 @@ function GPUCompiler.compile_unhooked(output::Symbol, job::CompilerJob{<:EnzymeT
         logger = Base.CoreLogging.SimpleLogger(Core.stderr, level)
         return ScopedValues.with_logger(CompileUnhooked(output, job), logger)
     end
+    # A derivative compiled on behalf of the compilation in progress, for `autodiff_deferred`
+    # in the function that one differentiates, is linked into its module. It is compiled for
+    # the number of threads the module is compiled for, and what the number of threads decides
+    # in it, it decides in the module (see `ForSeveralThreads`).
+    outer = !job.config.toplevel && isassigned(ENZYME_CONTEXT) ? ENZYME_CONTEXT[] : nothing
+    if outer !== nothing && outer.several_threads
+        job = for_several_threads(job)
+    end
     # Every compilation runs under its own context; a nested compilation gets
     # its own and hands the outer one back when it returns.
     mod, meta = @with ENZYME_CONTEXT => EnzymeContext(job.world) begin
         compile_unhooked_impl(output, job)
+    end
+    if outer !== nothing
+        outer.by_threads |= meta.by_threads
     end
     # A host derivative compiled on behalf of another job is linked into that job's module:
     # the module of the compilation in progress, for `autodiff_deferred` in the function it
@@ -7218,6 +7264,8 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     params = config.params
 
     enzyme_ctx = enzyme_context()
+    # Known before anything is compiled on this job's behalf (see `ForSeveralThreads`).
+    enzyme_ctx.several_threads = params.atomicAdd isa ForSeveralThreads
 
     expectedTapeType = params.expectedTapeType
     mode = params.mode
@@ -7531,6 +7579,7 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     device_module = false
     if primal_target isa GPUCompiler.NativeCompilerTarget
         parallel, enzyme_ctx.callee_atomic_add = atomic_add_for(job.config.params.atomicAdd, mod, job.source)
+        enzyme_ctx.by_threads |= atomic_add_by_threads(enzyme_ctx.callee_atomic_add)
     else
         # All other targets are GPU targets
         parallel = true
@@ -8103,7 +8152,8 @@ end
         nothing
     end
     callee_atomic_add = enzyme_ctx.callee_atomic_add
-    return mod, (; adjointf, augmented_primalf, entry, compiled = meta.compiled, TapeType, edges, value_table, relocations, callee_atomic_add)
+    by_threads = enzyme_ctx.by_threads
+    return mod, (; adjointf, augmented_primalf, entry, compiled = meta.compiled, TapeType, edges, value_table, relocations, callee_atomic_add, by_threads)
 end
 
 # Compiler result
@@ -8927,7 +8977,7 @@ const DumpPrePostOpt = Ref(false)
 const DumpPostOpt = Ref(false)
 
 # actual compilation
-function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, String, Union{String, Nothing}, Type, String, JuliaValueTable}
+function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, String, Union{String, Nothing}, Type, String, JuliaValueTable, Bool}
     config = CompilerConfig(job.config; optimize=false)
     job = CompilerJob(job.source, config, job.world)
     mod, meta = compile(:llvm, job)
@@ -8999,7 +9049,7 @@ function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, Stri
     # The module string above keeps the rule declarations symbolic for nested
     # differentiation; the compiled module binds them to their addresses.
     restore_native_invokes!(mod)
-    return (mod, meta.edges, adjoint_name, primal_name, meta.TapeType, prepost, value_table)
+    return (mod, meta.edges, adjoint_name, primal_name, meta.TapeType, prepost, value_table, meta.by_threads)
 end
 
 const cache = Dict{UInt,CompileResult}()
@@ -9011,11 +9061,23 @@ What `autodiff_cache` keeps of a thunk for a later compilation to import (see
 [`import_cached_autodiff!`](@ref)): the name of the function to call (`entry`), the bitcode
 of the module before post-optimization (`bitcode`), which refers to Julia values by name, and
 those values (`value_table`, see [`JuliaValueTable`](@ref)).
+
+The rest is what it takes to import the thunk into a compilation for several threads (see
+[`ForSeveralThreads`](@ref) and [`cached_autodiff_for_several_threads`](@ref)): the job
+that compiled it (`job`), whether the entry is its augmented primal rather than its adjoint
+(`augmented`), its tape type (`TapeType`), whether the number of threads decided anything in
+its code (`by_threads`), and what the job compiled for several threads gave, once something
+asked for it (`several_threads`, which the two thunks of one job share).
 """
 struct CachedThunk
     entry::String
     bitcode::String
     value_table::JuliaValueTable
+    job::CompilerJob
+    augmented::Bool
+    TapeType::Type
+    by_threads::Bool
+    several_threads::Base.RefValue{Any}
 end
 
 # adjoint/primal pointer => the thunk's IR, for nested differentiation
@@ -9047,20 +9109,61 @@ function cached_autodiff(ptr::Ptr{Cvoid})::Union{Nothing, CachedThunk}
     end
 end
 
+"""
+    cached_autodiff_for_several_threads(cached)::CachedThunk
+
+What a compilation for several threads imports in place of `cached` (see
+[`ForSeveralThreads`](@ref)).
+
+A thunk in `autodiff_cache` was compiled for the number of threads of this process. Where
+that number decided nothing in its code, the code is right for any number and `cached` is
+returned. Otherwise its job is compiled again as a process with several threads compiles it,
+once, and nothing but the bitcode is kept: the thunk at the address stays what it was, for
+this process to call.
+"""
+function cached_autodiff_for_several_threads(cached::CachedThunk)::CachedThunk
+    cached.by_threads || return cached
+    lock(cache_publish_lock)
+    compiled = try
+        cached.several_threads[]
+    finally
+        unlock(cache_publish_lock)
+    end
+    if compiled === nothing
+        mod, _, adjoint_name, primal_name, TapeType, prepost, value_table, _ = _thunk(for_several_threads(cached.job))
+        dispose(mod)
+        lock(cache_publish_lock)
+        compiled = try
+            if cached.several_threads[] === nothing
+                cached.several_threads[] = (; adjoint_name, primal_name, TapeType, prepost, value_table)
+            end
+            cached.several_threads[]
+        finally
+            unlock(cache_publish_lock)
+        end
+    end
+    if compiled.TapeType !== cached.TapeType
+        error("the derivative of $(cached.job.source) has another tape type when it is compiled for several threads")
+    end
+    entry = cached.augmented ? compiled.primal_name::String : compiled.adjoint_name
+    return CachedThunk(entry, compiled.prepost, compiled.value_table, cached.job, cached.augmented, cached.TapeType, true, cached.several_threads)
+end
+
 # Compile `job` and publish it under `key`. If another compile of the same job published
 # first, return that one: a compile beside the holder of `cache_lock` (see
 # `cached_compilation`) can finish the same job.
 function compile_and_publish(@nospecialize(job::CompilerJob), key::UInt)::CompileResult
     Threads.atomic_add!(compiled_derivatives, 1)
-    mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table = _thunk(job)
+    mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table, by_threads = _thunk(job)
     obj = _link(job, mod, edges, adjoint_name, primal_name, TapeType, prepost)
+    several_threads = Ref{Any}(nothing)
     lock(cache_publish_lock)
     try
         if obj.adjoint isa Ptr{Nothing}
-            autodiff_cache[obj.adjoint] = CachedThunk(adjoint_name, prepost, value_table)
+            autodiff_cache[obj.adjoint] = CachedThunk(adjoint_name, prepost, value_table, job, false, TapeType, by_threads, several_threads)
         end
         if obj.primal isa Ptr{Nothing} && primal_name isa String
-            autodiff_cache[obj.primal] = CachedThunk(primal_name, prepost, value_table)
+            autodiff_cache[obj.primal] = CachedThunk(primal_name, prepost, value_table, job, true, TapeType, by_threads, several_threads)
         end
         published = get(cache, key, nothing)
         if published !== nothing

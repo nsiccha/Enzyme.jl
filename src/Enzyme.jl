@@ -169,6 +169,11 @@ modules the compilation emitted (`relocations`), and `bakes` says whether the
 back-end lets their host addresses into the code. `callee_atomic_add` is the
 `AtomicAdd` setting the derivatives of the callees this compilation reaches
 through dynamic dispatch are compiled with (see `Compiler.atomic_add_for`).
+`several_threads` says that this compilation makes every choice the number of
+threads decides as a process with several threads makes it, whatever the number
+of the process compiling, and `by_threads` whether the number of threads
+decided anything in the code of its module, the derivatives compiled on its
+behalf and linked into it included (see `Compiler.ForSeveralThreads`).
 
 A context belongs to a single `compile_unhooked` invocation, and holds the
 world age that compilation runs in. It is not passed as an argument:
@@ -191,6 +196,8 @@ mutable struct EnzymeContext
     relocations::Vector{Any}
     bakes::Bool
     callee_atomic_add::Union{Bool, Nothing, Type{InheritedPlainAdd}}
+    several_threads::Bool
+    by_threads::Bool
     EnzymeContext(world::Integer) = new(
         world,
         LLVM.Module[],
@@ -202,7 +209,9 @@ mutable struct EnzymeContext
         Dict{String, Any}(),
         Any[],
         true,
-        nothing
+        nothing,
+        false,
+        false,
     )
 end
 

@@ -1,0 +1,2 @@
+summary = "The variant a package image keeps of a derivative for sessions with several threads holds threaded loop bodies and the inner derivatives of nested ones as such a session compiles them, with atomic shadow updates"
+tests = ["test/precompile.jl", "test/threads.jl"]
