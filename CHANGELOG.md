@@ -30,6 +30,13 @@
   `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
   `test/conditional_rule_return.jl` covers early returns, empty arrays,
   combined and split Reverse, batched Reverse, and Forward over Reverse.
+- Sync upstream through `580628c`: Julia-zeroed allocations no longer get
+  redundant null stores into their GC fields (#3766), and the
+  `LLVM.OperandBundleDef` compatibility branches are gone (#4064).
+  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
+  Upstream's LLVM.jl 10 migration (#3741) and the formatting commits after it
+  are held back: no Reactant release admits LLVM.jl 10 yet, and Reactant
+  requires Enzyme, so the two could not be installed together.
 - Limit the runtime `map` wrapper to long-tuple calls. A custom collection's
   `map` with an imprecise return type could otherwise re-enter the wrapper
   indefinitely and overflow the stack during differentiation.
