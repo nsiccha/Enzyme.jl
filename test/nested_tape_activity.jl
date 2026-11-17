@@ -191,7 +191,7 @@ function nta_second_nested_member_unread(reverse_passes::String; function_name =
     return NTA_LLVM.Context() do ctx
         mod = parse(NTA_LLVM.Module, nta_tape_module(reverse_passes))
         fn = mod.functions["augmented_f"]
-        function_name === nothing || fn.name = function_name
+        function_name === nothing || (fn.name = function_name)
         for inst in (first(fn.blocks)).instructions
             inst.name == "member" && return Enzyme.Compiler.tape_member_never_read(inst)
         end
