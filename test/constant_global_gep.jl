@@ -14,7 +14,7 @@ import LLVM
 # index of `extractvalue`, so compiling threw
 # `InexactError: trunc(UInt32, 18446744073709551615)`. A smaller index past the end fit,
 # and a load through it asked for an element the initializer does not have, which
-# crashed the process.
+# crashed the process. The last testset covers a third way to miss the element.
 
 const GEP_ARRAY = "@g = private unnamed_addr constant [3 x double] [double 1.0, double 2.0, double 3.0]"
 const GEP_STRUCT_TYPE = "{ i64, [2 x double] }"
@@ -113,8 +113,22 @@ function gep_vector_load(typed::Bool, index::String)
     )
 end
 
+# With opaque pointers a `getelementptr` names the type it indexes, which need not be the
+# type of the global. Index 1 of `[2 x double]` is the `double` at byte 8 of this global,
+# while element 1 of its initializer is the second `i32`: the load was replaced by a
+# reload of that `i32` as a `double`, a wrong value with no error.
+function gep_other_type_load(::Bool, global_type::String, initializer::String, indexed::String, index::String)
+    return gep_function(
+        "@g = private unnamed_addr constant $global_type $initializer", """
+          %p = getelementptr $indexed, ptr @g, i64 0, $index
+          %v = load double, ptr %p
+        """
+    )
+end
+
 # Runs the pass on `ir(typed, args...)` and reports the constant `f` then returns, if its
-# load was replaced by one, and the number of loads left in `f`.
+# load was replaced by one, and the numbers of loads and stack slots left in `f`. A load
+# replaced by a part of the initializer of another type is reloaded through a stack slot.
 function gep_fold(ir, args...)
     return LLVM.Context() do ctx
         mod = parse(LLVM.Module, ir(LLVM.supports_typed_pointers(ctx), args...))
@@ -122,20 +136,26 @@ function gep_fold(ir, args...)
         LLVM.verify(mod)
         returned = nothing
         loads = 0
+        slots = 0
         for bb in LLVM.blocks(LLVM.functions(mod)["f"]), inst in LLVM.instructions(bb)
             if inst isa LLVM.LoadInst
                 loads += 1
+            elseif inst isa LLVM.AllocaInst
+                slots += 1
             elseif inst isa LLVM.RetInst
                 val = LLVM.operands(inst)[1]
                 val isa LLVM.ConstantFP && (returned = convert(Float64, val))
             end
         end
-        (; returned, loads)
+        (; returned, loads, slots)
     end
 end
 
-const GEP_KEPT = (; returned = nothing, loads = 1)
-gep_folded(x::Float64) = (; returned = x, loads = 0)
+const GEP_KEPT = (; returned = nothing, loads = 1, slots = 0)
+gep_folded(x::Float64) = (; returned = x, loads = 0, slots = 0)
+gep_opaque_pointers() = LLVM.Context() do ctx
+    !LLVM.supports_typed_pointers(ctx)
+end
 
 @testset "Addresses outside a constant global are left alone" begin
     @testset "the address before the first element" begin
@@ -167,4 +187,20 @@ end
     @test gep_fold(gep_chained_load, "i64 0") == gep_folded(4.0)
     @test gep_fold(gep_chained_load, "i64 1") == gep_folded(5.0)
     @test gep_fold(gep_vector_load, "i64 1") == gep_folded(9.0)
+end
+
+if gep_opaque_pointers()
+    @testset "An address that indexes another type than the global's is left alone" begin
+        mixed = ("{ i32, i32, double }", "{ i32 1, i32 2, double 3.0 }")
+        pair = ("{ double, double }", "{ double 1.0, double 2.0 }")
+        # In range for the global, but a different element than the address names.
+        @test gep_fold(gep_other_type_load, mixed..., "[2 x double]", "i64 1") == GEP_KEPT
+        # The same bytes either way; still not the global's own layout.
+        @test gep_fold(gep_other_type_load, pair..., "[2 x double]", "i64 1") == GEP_KEPT
+        @test gep_fold(gep_other_type_load, pair..., "[2 x double]", "i64 0") == GEP_KEPT
+        # Past the end of the global's own elements.
+        @test gep_fold(gep_other_type_load, pair..., "[4 x double]", "i64 2") == GEP_KEPT
+        # The global's own type still folds.
+        @test gep_fold(gep_other_type_load, pair..., "{ double, double }", "i32 1") == gep_folded(2.0)
+    end
 end

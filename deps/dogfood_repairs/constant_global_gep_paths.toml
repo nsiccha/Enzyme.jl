@@ -1,0 +1,2 @@
+summary = "Constant getelementptr addresses that name no element of an internal constant global no longer stop the compile or fold a load to another element"
+tests = ["test/constant_global_gep.jl"]

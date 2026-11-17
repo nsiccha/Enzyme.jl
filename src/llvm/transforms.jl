@@ -3272,14 +3272,21 @@ The `extractvalue` indices that the `getelementptr` instruction `gep` appends to
 ending at a constant of type `ty`, together with the type they select, or `nothing` when
 `gep` does not address an element of that constant.
 
-It addresses one when every index is a constant, the first is zero, and each of the
-others is in bounds for the aggregate it indexes. A `getelementptr` may step outside
-its object: to the address past the last element, a loop's bound, or to the address
-before the first one (index `-1`, which reads as `2^64 - 1`), from which one-based
-indexing counts. Such an address names no element, so a load through it cannot be
-replaced by a part of the initializer, and the address is left alone.
+It addresses one when it indexes the type of the constant, every index is a constant,
+the first is zero, and each of the others is in bounds for the aggregate it indexes.
+
+- A `getelementptr` may step outside its object: to the address past the last element,
+  a loop's bound, or to the address before the first one (index `-1`, which reads as
+  `2^64 - 1`), from which one-based indexing counts. Such an address names no element.
+- With opaque pointers a `getelementptr` names the type it indexes, and that need not
+  be the type of the constant: a struct of two `i32` and a `double` can be read as an
+  array of two `double`. Its indices then count the elements of another layout.
+
+Either way a load through the address cannot be replaced by the part of the initializer
+the indices select, and the address is left alone.
 """
 function constant_gep_path(@nospecialize(ty::LLVM.LLVMType), gep::LLVM.GetElementPtrInst)
+    LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gep)) == ty || return nothing
     ops = operands(gep)
     path = Cuint[]
     for i in 2:length(ops)
