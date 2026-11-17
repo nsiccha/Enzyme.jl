@@ -27,6 +27,29 @@
   Julia GC-root bundles. Captured output buffers and aliases in writable
   positions still raise `EnzymeMutabilityException`.
   `Enzyme.has_dogfood_repair(:readonly_pointer_operands)` reports the repair.
+- Differentiate the derivative of a `Threads.@threads` loop. Forward over
+  Reverse of a function with such a loop, a Hessian-vector product, aborted the
+  process while compiling: "Call parameter type does not match function
+  signature!", then "LLVM ERROR: function failed verification". Two things
+  stood in the way. The code Enzyme keeps of a derivative for an outer one to
+  differentiate had lost the scheduling flag of its `threading_run` calls,
+  which a dead-argument pass folded into the callee, so the outer rule read
+  the loop body in its place. And the callable that runs the body's derivative
+  on each thread reached it through an address, which an outer derivative
+  cannot differentiate ("No derivative available for indirect call through an
+  inactive function pointer"). Functions whose calls the thread rules
+  differentiate now keep their parameters in that code, and an outer derivative
+  differentiates a callable that asks for the body's derivative, as any nested
+  derivative does. First-order derivatives call the body's derivative as before.
+  While a package image is written, the body's derivative that an outer one
+  compiles accumulates atomically, so what the image keeps is right in sessions
+  with any number of threads.
+  `Enzyme.has_dogfood_repair(:nested_threaded_loops)` reports the repair;
+  `test/nested_threads.jl` covers Forward over Reverse (also with a batch of
+  directions, runtime activity, the static schedule and an active scalar held
+  by the loop body), Reverse over Forward, Forward over Forward and Reverse over
+  Reverse against closed forms, with one and with two threads, and a package
+  whose image keeps two of them, run with one, two and four threads.
 - Return zero gradients when a guard rejects a nonfinite product, including
   `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
   The native select repair now protects products whose operands are nonfinite

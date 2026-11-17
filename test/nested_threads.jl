@@ -220,3 +220,111 @@ end
     @test Compiler.rederived_body(typeof(nt_sumsq)) === typeof(nt_sumsq)
     @test Compiler.rederived_body(Any) === Any
 end
+
+# A package image is usually written by a process with one thread, and what it keeps of a
+# derivative runs in sessions with any number. The packages go into a directory of their
+# own, first on the children's load path, as in test/precompile.jl.
+const NT_KEPT_PACKAGE = """
+module EnzymeNestedThreadsKept
+using Enzyme
+function sumsq(x)
+    s = 0.0
+    @inbounds for i in eachindex(x)
+        s += x[i]^2
+    end
+    return s
+end
+function threaded(x)
+    out = zeros(64)
+    Threads.@threads for i in 1:64
+        @inbounds out[i] = sumsq(x)
+    end
+    return sum(out)
+end
+function gradient!(dx, x)
+    autodiff(Reverse, Const(threaded), Active, Duplicated(x, dx))
+    return nothing
+end
+directional(x, v) = autodiff(Forward, Const(threaded), Duplicated(x, v))[1]
+function forward_over_reverse(x, v)
+    dx = zero(x)
+    ddx = zero(x)
+    autodiff(Forward, Const(gradient!), Const, Duplicated(dx, ddx), Duplicated(x, v))
+    return dx, ddx
+end
+function reverse_over_forward(x, v)
+    hv = zero(x)
+    autodiff(Reverse, Const(directional), Active, Duplicated(x, hv), Const(v))
+    return hv
+end
+const X = collect(1.0:6.0)
+const V = collect(6.0:-1.0:1.0)
+const EXPECTED = ((128 .* X, 128 .* V), 128 .* V)
+const WORKLOAD = (forward_over_reverse(X, V), reverse_over_forward(X, V))
+end
+"""
+
+# Prints: whether the session has package images, whether the values the image holds and
+# the first calls are right, how many derivatives the session compiled, and how many of 300
+# calls of each derivative were wrong.
+const NT_KEPT_SESSION = """
+print(Int(Base.JLOptions().use_pkgimages), " ")
+flush(stdout)
+using Enzyme, EnzymeNestedThreadsKept
+const K = EnzymeNestedThreadsKept
+first_calls = (K.forward_over_reverse(K.X, K.V), K.reverse_over_forward(K.X, K.V))
+compiled = Enzyme.Compiler.retained_derivative_stats().compiled
+wrong = [0, 0]
+for _ in 1:300
+    K.forward_over_reverse(K.X, K.V) == K.EXPECTED[1] || (wrong[1] += 1)
+    K.reverse_over_forward(K.X, K.V) == K.EXPECTED[2] || (wrong[2] += 1)
+end
+print(K.WORKLOAD == K.EXPECTED, " ", first_calls == K.EXPECTED, " ", compiled, " ", wrong[1], " ", wrong[2])
+"""
+
+# Options under which Julia ignores the package images it has, which the test process may
+# be running under.
+function nt_ignores_pkgimages(arg::AbstractString)
+    return startswith(arg, "--check-bounds") || startswith(arg, "--code-coverage") ||
+        startswith(arg, "--track-allocation") || startswith(arg, "--inline") ||
+        startswith(arg, "--pkgimages") || startswith(arg, "--threads") || startswith(arg, "-t")
+end
+
+function nt_kept_session(load_path, threads)
+    exec = String[arg for arg in Base.julia_cmd().exec if !nt_ignores_pkgimages(arg)]
+    cmd = addenv(
+        `$(Cmd(exec)) --pkgimages=yes --threads=$threads --project=$(Base.active_project()) --startup-file=no -e $NT_KEPT_SESSION`,
+        "JULIA_LOAD_PATH" => join([load_path, "@", "@v#.#", "@stdlib"], Sys.iswindows() ? ";" : ":"),
+    )
+    out = IOBuffer()
+    err = IOBuffer()
+    ok = success(pipeline(cmd; stdout = out, stderr = err))
+    ok || println(stderr, "Child process failed:\n", String(take!(err)))
+    return ok, split(String(take!(out)))
+end
+
+@testset "A package image keeps them for any number of threads" begin
+    load_path = mktempdir()
+    try
+        write(joinpath(load_path, "EnzymeNestedThreadsKept.jl"), NT_KEPT_PACKAGE)
+        # The first session, with one thread, is the one that writes the image.
+        @testset "a session with $threads thread(s)" for threads in (1, 2, 4)
+            ok, fields = nt_kept_session(load_path, threads)
+            @test ok
+            @test length(fields) == 6
+            length(fields) == 6 || continue
+            @test fields[1] == "1"
+            @test fields[2] == "true"
+            @test fields[3] == "true"
+            # Where an image keeps derivatives, the session links them and compiles none.
+            Enzyme.Compiler.retention_supported() && @test fields[4] == "0"
+            @test fields[5] == "0"
+            @test fields[6] == "0"
+        end
+    finally
+        try
+            rm(load_path; recursive = true, force = true)
+        catch  # Windows may still hold the image files open
+        end
+    end
+end
