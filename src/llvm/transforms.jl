@@ -3283,18 +3283,20 @@ the first is zero, and each of the others is in bounds for the aggregate it inde
   array of two `double`. Its indices then count the elements of another layout.
 
 Either way a load through the address cannot be replaced by the part of the initializer
-the indices select, and the address is left alone.
+the indices select, and the address is left alone. The one address that is the same in
+every layout is the constant's own: when all indices are zero, the path and the type
+stay as they are, whatever type the instruction indexes.
 """
 function constant_gep_path(@nospecialize(ty::LLVM.LLVMType), gep::LLVM.GetElementPtrInst)
-    LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gep)) == ty || return nothing
     ops = operands(gep)
+    same_type = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gep)) == ty
     path = Cuint[]
     for i in 2:length(ops)
         idx = ops[i]
         isa(idx, LLVM.ConstantInt) || return nothing
         LLVM.width(value_type(idx)) <= 64 || return nothing
         val = LLVM.API.LLVMConstIntGetZExtValue(idx)
-        if i == 2
+        if i == 2 || !same_type
             val == 0 || return nothing
             continue
         end

@@ -117,43 +117,50 @@ end
 # With opaque pointers a `getelementptr` names the type it indexes, which need not be the
 # type of the global. Index 1 of `[2 x double]` is the `double` at byte 8 of this global,
 # while element 1 of its initializer is the second `i32`: the load was replaced by a
-# reload of that `i32` as a `double`, a wrong value with no error.
-function gep_other_type_load(::Bool, global_type::String, initializer::String, indexed::String, index::String)
+# reload of that `i32` as a `double`, a wrong value with no error. Only when every index
+# is zero is the address the same in both layouts.
+function gep_other_type_load(::Bool, global_type::String, initializer::String, indexed::String, indices::String)
     return gep_function(
         "@g = private unnamed_addr constant $global_type $initializer", """
-          %p = getelementptr $indexed, ptr @g, i64 0, $index
+          %p = getelementptr $indexed, ptr @g, $indices
           %v = load double, ptr %p
         """
     )
 end
 
-# Runs the pass on `ir(typed, args...)` and reports the constant `f` then returns, if its
-# load was replaced by one, and the numbers of loads and stack slots left in `f`. A load
-# replaced by a part of the initializer of another type is reloaded through a stack slot.
+# Runs the pass on `ir(typed, args...)` and reports what became of the load `f` returns:
+#
+# - `:kept`: it still reads through its address;
+# - `:folded`: it was replaced by the constant in `value`;
+# - `:reloaded`: it reads a stack slot that holds the whole initializer of the global,
+#   which is how the pass replaces a load of another type at the global's own address;
+# - `:other`: it reads a stack slot that holds something else.
 function gep_fold(ir, args...)
     return LLVM.Context() do ctx
         mod = parse(LLVM.Module, ir(LLVM.supports_typed_pointers(ctx), args...))
         Enzyme.Compiler.propagate_returned!(mod)
         LLVM.verify(mod)
-        returned = nothing
-        loads = 0
-        slots = 0
+        whole = LLVM.initializer(first(LLVM.globals(mod)))
+        insts = LLVM.Instruction[]
         for bb in LLVM.blocks(LLVM.functions(mod)["f"]), inst in LLVM.instructions(bb)
-            if inst isa LLVM.LoadInst
-                loads += 1
-            elseif inst isa LLVM.AllocaInst
-                slots += 1
-            elseif inst isa LLVM.RetInst
-                val = LLVM.operands(inst)[1]
-                val isa LLVM.ConstantFP && (returned = convert(Float64, val))
-            end
+            push!(insts, inst)
         end
-        (; returned, loads, slots)
+        returned = LLVM.operands(last(insts))[1]
+        if returned isa LLVM.ConstantFP
+            (; outcome = :folded, value = convert(Float64, returned))
+        elseif LLVM.operands(returned)[1] isa LLVM.AllocaInst
+            slot = LLVM.operands(returned)[1]
+            stored = [LLVM.operands(i)[1] for i in insts if i isa LLVM.StoreInst && LLVM.operands(i)[2] == slot]
+            (; outcome = stored == [whole] ? :reloaded : :other, value = nothing)
+        else
+            (; outcome = :kept, value = nothing)
+        end
     end
 end
 
-const GEP_KEPT = (; returned = nothing, loads = 1, slots = 0)
-gep_folded(x::Float64) = (; returned = x, loads = 0, slots = 0)
+const GEP_KEPT = (; outcome = :kept, value = nothing)
+const GEP_RELOADED = (; outcome = :reloaded, value = nothing)
+gep_folded(x::Float64) = (; outcome = :folded, value = x)
 gep_opaque_pointers() = LLVM.Context() do ctx
     !LLVM.supports_typed_pointers(ctx)
 end
@@ -236,13 +243,20 @@ if gep_opaque_pointers()
         mixed = ("{ i32, i32, double }", "{ i32 1, i32 2, double 3.0 }")
         pair = ("{ double, double }", "{ double 1.0, double 2.0 }")
         # In range for the global, but a different element than the address names.
-        @test gep_fold(gep_other_type_load, mixed..., "[2 x double]", "i64 1") == GEP_KEPT
+        @test gep_fold(gep_other_type_load, mixed..., "[2 x double]", "i64 0, i64 1") == GEP_KEPT
         # The same bytes either way; still not the global's own layout.
-        @test gep_fold(gep_other_type_load, pair..., "[2 x double]", "i64 1") == GEP_KEPT
-        @test gep_fold(gep_other_type_load, pair..., "[2 x double]", "i64 0") == GEP_KEPT
+        @test gep_fold(gep_other_type_load, pair..., "[2 x double]", "i64 0, i64 1") == GEP_KEPT
         # Past the end of the global's own elements.
-        @test gep_fold(gep_other_type_load, pair..., "[4 x double]", "i64 2") == GEP_KEPT
+        @test gep_fold(gep_other_type_load, pair..., "[4 x double]", "i64 0, i64 2") == GEP_KEPT
         # The global's own type still folds.
-        @test gep_fold(gep_other_type_load, pair..., "{ double, double }", "i32 1") == gep_folded(2.0)
+        @test gep_fold(gep_other_type_load, pair..., "{ double, double }", "i64 0, i32 1") == gep_folded(2.0)
+    end
+    @testset "The global's own address through another type is still replaced" begin
+        pair = ("{ double, double }", "{ double 1.0, double 2.0 }")
+        # All indices are zero, so the address is the global's whatever type is indexed.
+        @test gep_fold(gep_other_type_load, pair..., "[2 x double]", "i64 0, i64 0") == GEP_RELOADED
+        # Julia 1.11 and later address a tuple element with one index of the element type.
+        @test gep_fold(gep_other_type_load, pair..., "double", "i64 0") == GEP_RELOADED
+        @test gep_fold(gep_other_type_load, pair..., "double", "i64 1") == GEP_KEPT
     end
 end
