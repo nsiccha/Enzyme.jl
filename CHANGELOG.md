@@ -9,6 +9,19 @@
   `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
   `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
   Forward over Reverse, and finite inputs whose intermediate products overflow.
+- Leave a `getelementptr` address that names no element of an internal
+  constant global alone when loads of the global are replaced by parts of its
+  initializer. An address before the first element (index `-1`) with such a
+  global as its base stopped the compile of a derivative with
+  `InexactError: trunc(UInt32, 18446744073709551615)`, and a smaller index past
+  the end crashed the process. With opaque pointers (Julia 1.11 and later) an
+  address that indexes the global through another type, such as a struct read
+  as an array, replaced the load by a different element with no error.
+  `Enzyme.has_dogfood_repair(:constant_global_gep_paths)` reports the repair;
+  `test/constant_global_gep.jl` covers addresses before and past arrays,
+  vectors and nested fields, addresses through another type, the element loads
+  that are still replaced, and a table read behind a `-1` sentinel in Reverse,
+  Forward, and Forward over Reverse.
 - Differentiate real `logabsbeta` with scalar partials, removing the recursive
   reverse tapes reached through `logbeta` and `beta`. Large positive arguments
   retain the stable log-gamma-ratio derivative, and the sign and nonpositive

@@ -3247,16 +3247,78 @@ function post_attr!(mod::LLVM.Module, run_attr)
     return nothing
 end
 
+"""
+    constant_aggregate_element(ty, idx)
+
+The type of element `idx` (zero-based) of a constant of type `ty`, or `nothing` when
+the constant has no such element: `idx` is past the end, or `ty` is not an array, a
+vector or a struct.
+"""
+function constant_aggregate_element(@nospecialize(ty::LLVM.LLVMType), idx::UInt64)
+    idx <= typemax(Cuint) || return nothing
+    if isa(ty, LLVM.ArrayType) || isa(ty, LLVM.VectorType)
+        return idx < length(ty) ? eltype(ty) : nothing
+    elseif isa(ty, LLVM.StructType)
+        elems = LLVM.elements(ty)
+        return idx < length(elems) ? elems[idx + 1] : nothing
+    end
+    return nothing
+end
+
+"""
+    constant_gep_path(ty, gep)
+
+The `extractvalue` indices that the `getelementptr` instruction `gep` appends to a path
+ending at a constant of type `ty`, together with the type they select, or `nothing` when
+`gep` does not address an element of that constant.
+
+It addresses one when it indexes the type of the constant, every index is a constant,
+the first is zero, and each of the others is in bounds for the aggregate it indexes.
+
+- A `getelementptr` may step outside its object: to the address past the last element,
+  a loop's bound, or to the address before the first one (index `-1`, which reads as
+  `2^64 - 1`), from which one-based indexing counts. Such an address names no element.
+- With opaque pointers a `getelementptr` names the type it indexes, and that need not
+  be the type of the constant: a struct of two `i32` and a `double` can be read as an
+  array of two `double`. Its indices then count the elements of another layout.
+
+Either way a load through the address cannot be replaced by the part of the initializer
+the indices select, and the address is left alone. The one address that is the same in
+every layout is the constant's own: when all indices are zero, the path and the type
+stay as they are, whatever type the instruction indexes.
+"""
+function constant_gep_path(@nospecialize(ty::LLVM.LLVMType), gep::LLVM.GetElementPtrInst)
+    ops = operands(gep)
+    same_type = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gep)) == ty
+    path = Cuint[]
+    for i in 2:length(ops)
+        idx = ops[i]
+        isa(idx, LLVM.ConstantInt) || return nothing
+        LLVM.width(value_type(idx)) <= 64 || return nothing
+        val = LLVM.API.LLVMConstIntGetZExtValue(idx)
+        if i == 2 || !same_type
+            val == 0 || return nothing
+            continue
+        end
+        ty = constant_aggregate_element(ty, val)
+        ty === nothing && return nothing
+        push!(path, val)
+    end
+    return path, ty
+end
+
 function prop_global!(g::LLVM.GlobalVariable)
     newfns = String[]
     changed = false
-    todo = Tuple{Vector{Cuint}, LLVM.Value}[]
+    # The indices from the initializer down to the constant a pointer addresses, the
+    # type of that constant, and a user of the pointer.
+    todo = Tuple{Vector{Cuint}, LLVM.LLVMType, LLVM.Value}[]
     for u in LLVM.uses(g)
         u = LLVM.user(u)
-        push!(todo, (Cuint[], u))
+        push!(todo, (Cuint[], LLVM.global_value_type(g), u))
     end
     while length(todo) > 0
-        path, var = pop!(todo)
+        path, ty, var = pop!(todo)
         if isa(var, LLVM.LoadInst)
             B = IRBuilder()
             position!(B, var)
@@ -3286,40 +3348,27 @@ function prop_global!(g::LLVM.GlobalVariable)
         if isa(var, LLVM.AddrSpaceCastInst)
             for u in LLVM.uses(var)
                 u = LLVM.user(u)
-                push!(todo, (path, u))
+                push!(todo, (path, ty, u))
             end
             continue
         end
         if isa(var, LLVM.ConstantExpr) && opcode(var) == LLVM.API.LLVMAddrSpaceCast
             for u in LLVM.uses(var)
                 u = LLVM.user(u)
-                push!(todo, (path, u))
+                push!(todo, (path, ty, u))
             end
             continue
         end
         if isa(var, LLVM.GetElementPtrInst)
-            if all(isa(v, LLVM.ConstantInt) for v in operands(var)[2:end])
-                if LLVM.API.LLVMConstIntGetZExtValue(operands(var)[2]) == 0
-                    for u in LLVM.uses(var)
-                        u = LLVM.user(u)
-                        push!(
-                            todo,
-                            (
-                                vcat(
-                                    path,
-                                    collect(
-                                        (
-                                            convert(Cuint, v) for v in operands(var)[3:end]
-                                        )
-                                    ),
-                                ),
-                                u,
-                            ),
-                        )
-                    end
-                end
-                continue
+            element = constant_gep_path(ty, var)
+            element === nothing && continue
+            subpath, subty = element
+            subpath = vcat(path, subpath)
+            for u in LLVM.uses(var)
+                u = LLVM.user(u)
+                push!(todo, (subpath, subty, u))
             end
+            continue
         end
     end
     return changed, newfns
