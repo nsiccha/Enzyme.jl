@@ -1,0 +1,2 @@
+summary = "A ccall whose library is a module-qualified constant or a non-constant global differentiates like one whose library Julia resolves while compiling, and no ccall with a run-time library aborts the process"
+tests = ["test/ccall_library.jl"]

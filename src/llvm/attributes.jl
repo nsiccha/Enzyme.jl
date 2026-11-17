@@ -248,6 +248,10 @@ const nofreefns = Set{String}((
 const inactivefns = Set{String}((
         "jl_dlsym",
         "ijl_dlsym",
+        # The lookup behind a `ccall` whose library is a run-time value. Like `dlsym` it returns
+        # the address of a native function, which holds no derivative data.
+        "jl_lazy_load_and_lookup",
+        "ijl_lazy_load_and_lookup",
     "jl_f__compute_sparams",
     "ijl_f__compute_sparams",
     
