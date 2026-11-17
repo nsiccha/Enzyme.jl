@@ -1,2 +1,2 @@
 summary = "The variant a package image keeps of a derivative for sessions with several threads holds threaded loop bodies, the inner derivatives of nested ones and the bodies of Enzyme.pmap as such a session compiles them, with atomic shadow updates"
-tests = ["test/precompile.jl", "test/threads.jl"]
+tests = ["test/precompile.jl", "test/threads.jl", "test/nested_threads.jl"]

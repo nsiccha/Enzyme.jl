@@ -910,10 +910,22 @@ function accumulate_deferred!(dx, x)
     autodiff_deferred(Reverse, Const(sumsq), Active, Duplicated(x, dx))
     return nothing
 end
+# Add the gradient of `threaded`: the inner derivative runs a threaded loop itself, whose
+# body the outer derivative differentiates again.
+function accumulate_threaded!(dx, x)
+    autodiff(Reverse, Const(threaded), Active, Duplicated(x, dx))
+    return nothing
+end
 # Forward over Reverse: add the gradient to `dx` and the Hessian-vector product to `ddx`.
 function hvp!(inner!, dx, ddx, x, v)
     autodiff(Forward, Const(inner!), Const, Duplicated(dx, ddx), Duplicated(x, v))
     return nothing
+end
+function hvp(inner!, x, v)
+    dx = zero(x)
+    ddx = zero(x)
+    hvp!(inner!, dx, ddx, x, v)
+    return vcat(dx, ddx)
 end
 function shared_hvps(inner!, x, v, calls)
     dx = zero(x)
@@ -933,6 +945,7 @@ function workload(x)
         gradient_with(nothing, threaded, x), gradient_with(true, threaded, x),
         gradient_with(true, sumsq, x), split_gradient(x), dx, ddx,
         gradient_with(nothing, mapped, x), gradient_with(nothing, paralleled, x),
+        hvp(accumulate_threaded!, x, x),
     )
 end
 const WORKLOAD = workload([1.0, 2.0])
@@ -956,19 +969,20 @@ exact = Bool[
     all(_ -> R.shared_hvps(R.accumulate_deferred!, x, v, 2000) == 4000 .* vcat(x, v), 1:5),
     all(_ -> R.gradient_with(nothing, R.mapped, x) == 128 .* x, 1:200),
     all(_ -> R.gradient_with(nothing, R.paralleled, x) == 128 .* x, 1:200),
+    all(_ -> R.hvp(R.accumulate_threaded!, x, v) == 128 .* vcat(x, v), 1:200),
     R.gradient_with(true, R.sumsq, x) == 2 .* x,
 ]
 stats = Enzyme.Compiler.retained_derivative_stats()
 print(stats.compiled, " ", stats.materialized, " ", isempty(stats.rejected), " ", isempty(stats.absent), " ", join(Int.(exact), " "))
 """
 
-# What the image holds of the Reverse derivative `autodiff` asked for, for one function and
-# `AtomicAdd` setting: the number of locked exchanges in the variant for one thread and in the
+# What the image holds of the derivative `autodiff` asked for, for one function, `AtomicAdd`
+# setting and mode: the number of locked exchanges in the variant for one thread and in the
 # one for several, or `none` where there is no such variant.
 const RETAINED_THREADS_HELD = """
 using Enzyme, EnzymeRetainedThreads
 const C = Enzyme.Compiler
-function held(f, setting)
+function held(f, setting, mode)
     for m in methods(C.thunk), mi in Base.specializations(m)
         mi isa Core.MethodInstance || continue
         occursin("typeof(EnzymeRetainedThreads." * f * ")", string(mi.specTypes)) || continue
@@ -982,7 +996,7 @@ function held(f, setting)
         for st in src.code, arg in (st isa Expr ? st.args : ())
             arg isa C.LazyThunk || continue
             params = arg.job.config.params
-            params.mode == Enzyme.API.DEM_ReverseModeCombined && params.atomicAdd === setting || continue
+            params.mode == mode && params.atomicAdd === setting || continue
             return arg.retained
         end
     end
@@ -994,8 +1008,10 @@ end
 describe(::Nothing) = "none"
 describe(reason::String) = "failed"
 describe(variant::C.RetainedDerivative) = string(locked(variant.object))
-for (f, setting) in (("threaded", nothing), ("threaded", true), ("sumsq", true))
-    r = held(f, setting)
+const REVERSE = Enzyme.API.DEM_ReverseModeCombined
+const FORWARD = Enzyme.API.DEM_ForwardMode
+for (f, setting, mode) in (("threaded", nothing, REVERSE), ("threaded", true, REVERSE), ("sumsq", true, REVERSE), ("accumulate_threaded!", nothing, FORWARD))
+    r = held(f, setting, mode)
     print(r === nothing ? "absent absent " : describe(r.serial) * " " * describe(r.threaded) * " ")
 end
 """
@@ -1014,16 +1030,16 @@ end
             ok || println(stderr, "Child process failed:\n", String(take!(err)))
             @test ok
             fields = split(String(take!(out)))
-            @test length(fields) == 14 && fields[1] == "1" && fields[2] == "0"
-            if length(fields) == 14
+            @test length(fields) == 15 && fields[1] == "1" && fields[2] == "0"
+            if length(fields) == 15
                 # A threaded loop under the default, under `true` and in split mode; Forward over
                 # Reverse with the inner derivative taken by `autodiff` and by
-                # `autodiff_deferred`; `Enzyme.pmap` and `Enzyme.@parallel`; a serial function
-                # under `true`.
-                @test fields[7:14] == fill("1", 8)
+                # `autodiff_deferred`; `Enzyme.pmap` and `Enzyme.@parallel`; Forward over
+                # Reverse of a threaded loop; a serial function under `true`.
+                @test fields[7:15] == fill("1", 9)
                 if retained
                     @test parse(Int, fields[3]) == 0
-                    @test parse(Int, fields[4]) == 8
+                    @test parse(Int, fields[4]) == 9
                     @test fields[5] == "true" && fields[6] == "true"
                 end
             end
@@ -1032,8 +1048,8 @@ end
         retained && @testset "what the image holds" begin
             ok, fields = run_child(load_path, RETAINED_THREADS_HELD)
             @test ok
-            @test length(fields) == 6
-            if length(fields) == 6 && !("absent" in fields) && !("failed" in fields)
+            @test length(fields) == 8
+            if length(fields) == 8 && !("absent" in fields) && !("failed" in fields)
                 default_serial, default_several, forced_serial, forced_several = fields[1:4]
                 # The counts include what the primal code of a threaded loop holds itself, which
                 # depends on the Julia version, so they are compared with each other.
@@ -1047,8 +1063,15 @@ end
                 @test default_several == forced_several
                 # A serial function under `true` is the same code whatever the number of threads.
                 @test fields[6] == "none" && parse(Int, fields[5]) > 0
+                # Forward over Reverse of the threaded loop takes the derivative of the loop's
+                # body up a second time. For several threads that one accumulates atomically
+                # too. For one thread nothing does: where the primal code of the loop holds no
+                # locked exchange, the variant holds none.
+                nested_serial, nested_several = fields[7:8]
+                @test nested_several != "none" && parse(Int, nested_several) > parse(Int, nested_serial)
+                @test default_serial != "0" || nested_serial == "0"
             else
-                @test fields == ["k", "n", "m", "n", "m", "none"]
+                @test fields == ["k", "n", "m", "n", "m", "none", "j", "l"]
             end
         end
     end

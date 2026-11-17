@@ -121,9 +121,14 @@ end
 # asks `thunk` for the body's derivative. That one is a constant where it is compiled, so
 # the outer derivative takes its code up like that of any other nested derivative.
 #
-# `S` is `(ModifiedBetween, RuntimeActivity, StrongZero, AtomicAdd)`: the settings of the
-# body's derivative that the type of its thunk does not carry, the last one as
-# `kept_atomic_add` gives it.
+# `S` is `(ModifiedBetween, RuntimeActivity, StrongZero)`: the settings of the body's
+# derivative that the type of its thunk does not carry. Its `AtomicAdd` setting is the
+# default, as for every loop body (`threadsfor_common`). The body runs on every thread, and
+# all of them add into the same shadows, so the number of threads decides how it
+# accumulates. A package image is written with one thread for sessions with any number: the
+# derivative it keeps for sessions with several takes the body's derivative up as such a
+# session compiles it (see `Compiler.ForSeveralThreads`), like everything else that is
+# linked into it.
 struct ForwardPFor{ThunkTy, FT, S, Rederived}
     thunk::ThunkTy
     ft::FT
@@ -140,20 +145,6 @@ struct ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, Rederived}
     ft::FT
     tapes::TT
 end
-
-"""
-    kept_atomic_add()
-
-The `AtomicAdd` setting of a derivative compiled for a loop body that an outer derivative
-differentiates: `nothing`, which leaves it to the number of threads (`atomic_add_for`), or
-`true` while a package image is written.
-
-The body runs on every thread, and all of them add into the same shadows. A process that
-writes an image usually has one thread, which says nothing about the sessions that will run
-what the image keeps of the outer derivative, so there the body accumulates atomically,
-which is right with any number of threads.
-"""
-kept_atomic_add() = generating_output() ? true : nothing
 
 """
     rederived_body(T)
@@ -190,7 +181,7 @@ rederived_body(::Type{ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, false}}) whe
         Val(false),
         Val(S[2]),
         Val(S[3]),
-        Val(S[4]),
+        Val(nothing),
     )
 end
 
@@ -215,7 +206,7 @@ end
         Val(false),
         Val(S[2]),
         Val(S[3]),
-        Val(S[4]),
+        Val(nothing),
     )
 end
 
@@ -556,11 +547,6 @@ end
                 CompilerConfig(etarget, eparams; kernel = false),
                 world,
             )
-            if rederived && kept_atomic_add() === true
-                # The reverse of a loop that an inner derivative runs, itself kept by an
-                # image for any number of threads (see `kept_atomic_add`).
-                ejob = with_atomic_add(ejob, true)
-            end
 
             cmod, edges, adjointnm, augfwdnm, TapeType, _, value_table = _thunk(ejob, false) #=postopt=#
 
@@ -873,7 +859,7 @@ end
     push!(vals, new_from_original(gutils, arg_operands_view(orig)[end]))
 
     # What the body's derivative was compiled with beyond what `thunkTy` says (see `ForwardPFor`).
-    settings = (modifiedBetween, get_runtime_activity(gutils), get_strong_zero(gutils), kept_atomic_add())
+    settings = (modifiedBetween, get_runtime_activity(gutils), get_strong_zero(gutils))
 
     return refed, LLVM.name(subfunc), dfuncT, vals, thunkTy, TapeType, copies, settings
 end

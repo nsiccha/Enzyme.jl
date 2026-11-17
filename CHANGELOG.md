@@ -130,7 +130,11 @@
   the rules now hold a plain and an atomic derivative of the body and take
   the one for the number of threads of the process that runs the loop. Any
   other derivative with the inline ABI is compiled for several threads while
-  a package image is written.
+  a package image is written. The body of a threaded loop that an outer
+  derivative differentiates again, as in Forward over Reverse, follows the
+  same rule in place of accumulating atomically whenever an image is
+  written, so a session with one thread runs the plain variant of such a
+  kept derivative.
   `Enzyme.has_dogfood_repair(:retained_several_threads)` reports the repair;
   `test/precompile.jl` runs these shapes in sessions with one and with two
   threads, and `test/threads.jl` counts the atomic updates of each variant.
