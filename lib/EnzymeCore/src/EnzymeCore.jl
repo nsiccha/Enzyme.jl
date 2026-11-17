@@ -761,9 +761,17 @@ Return a new reverse mode that chooses how derivatives are accumulated into shad
   it the caller promises that no shadow is updated concurrently while the derivative runs.
   A function that itself starts or waits for a task or runs a `Threads.@threads` loop cannot
   make that promise, and Enzyme throws an `EnzymeAtomicAddError` for it instead of compiling
-  it with atomics anyway. The bodies of threaded loops and tasks, and dynamically dispatched
-  callees, are compiled separately with the default setting. `false` applies to CPU code
-  only; GPU code always accumulates atomically.
+  it with atomics anyway. `false` applies to CPU code only; GPU code always accumulates
+  atomically.
+
+A function the derivative reaches through dynamic dispatch (a call Julia resolves at run
+time: `Base.invokelatest`, a call it could not infer, a splat) follows the setting.
+It accumulates atomically under `true` and with plain updates under `false`. The caller
+cannot know which method such a call reaches, so a callee that itself starts or waits for a
+task or runs a `Threads.@threads` loop is not refused under `false`: it is compiled with the
+default setting, and so are the functions it calls dynamically. The bodies of threaded loops
+and tasks are compiled separately with the default setting under every setting, and so is
+what they call dynamically.
 
 See the [FAQ](@ref faq-atomic-add) for more information.
 """

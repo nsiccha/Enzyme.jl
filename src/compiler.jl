@@ -16,6 +16,7 @@ import Enzyme:
     eltype,
     API,
     EnzymeContext,
+    InheritedPlainAdd,
     ENZYME_CONTEXT,
     enzyme_context,
     enzyme_world,
@@ -113,6 +114,20 @@ GPUCompiler.dwarf_version(target::EnzymeTarget) = GPUCompiler.dwarf_version(targ
 module Runtime end
 
 abstract type AbstractEnzymeCompilerParams <: AbstractCompilerParams end
+
+# The `AtomicAdd` settings a derivative is compiled with: those of a mode (see
+# `EnzymeCore.set_atomic_add`), and the one a callee reached through dynamic dispatch inherits
+# from a caller that accumulates plainly.
+const AtomicAddSetting = Union{Bool, Nothing, Type{InheritedPlainAdd}}
+
+# `setting`, with the choice it leaves to the number of threads made as a process with
+# several makes it. A package image is written by a process with one thread for sessions with
+# any number, and this is the setting of the variant it keeps for the others (see
+# `retained_derivatives!`). The callees inherit what they inherit under `setting`.
+struct ForSeveralThreads
+    setting::Union{Nothing, Type{InheritedPlainAdd}}
+end
+
 struct EnzymeCompilerParams{Params<:AbstractCompilerParams} <: AbstractEnzymeCompilerParams
     params::Params
 
@@ -143,9 +158,11 @@ struct EnzymeCompilerParams{Params<:AbstractCompilerParams} <: AbstractEnzymeCom
     # Whether to enforce that a zero derivative propagates as a zero (and never a nan)
     strongZero::Bool
 
-    # Whether to accumulate into shadow memory atomically: `true`, `false`, or `nothing` to
-    # decide in `codegen` (see `atomic_add_for`)
-    atomicAdd::Union{Bool, Nothing}
+    # Whether to accumulate into shadow memory atomically: `true`, `false`, `nothing` to
+    # decide in `codegen`, or `InheritedPlainAdd` for a callee that a caller compiled with
+    # `false` reaches through dynamic dispatch (see `atomic_add_for`). A `ForSeveralThreads`
+    # is the variant of one of the last two that a package image keeps.
+    atomicAdd::Union{AtomicAddSetting, ForSeveralThreads}
 end
 
 # FIXME: Should this take something like PTXCompilerParams/CUDAParams?
@@ -1450,23 +1467,40 @@ function parallel_work_in(mod::LLVM.Module)
     return nothing
 end
 
-# Whether a CPU derivative accumulates into shadow memory atomically, given the mode's
-# `AtomicAdd` setting (see `EnzymeCore.set_atomic_add`). By default it does whenever Julia runs
-# more than one thread, because a shadow may then be updated from several threads at once,
-# for instance by `autodiff` calls on different threads that share one shadow. `false` is the
-# caller's promise that this does not happen. It cannot hold for a function that runs work in
-# parallel itself, since the reverse of a task runs while the caller's reverse pass continues,
-# so that is refused rather than compiled with atomics anyway. The bodies of threaded loops
-# and tasks are compiled as their own jobs, which do not carry the caller's setting.
-function atomic_add_for(setting::Union{Bool, Nothing}, mod::LLVM.Module, mi::Core.MethodInstance)
-    setting === true && return true
-    if setting === false
-        call = parallel_work_in(mod)
-        call === nothing && return false
-        throw(EnzymeAtomicAddError(call, mi))
-    end
-    return Base.Threads.nthreads() > 1
+# Whether a CPU derivative accumulates into shadow memory atomically, given its `AtomicAdd`
+# setting, and the setting the callees it reaches through dynamic dispatch are compiled with.
+# By default it does whenever Julia runs more than one thread (`threads`), because a shadow may
+# then be updated from several threads at once, for instance by `autodiff` calls on different
+# threads that share one shadow. `false` is the caller's promise that this does not happen. It
+# cannot hold for a function that runs work in parallel itself, since the reverse of a task
+# runs while the caller's reverse pass continues, so that is refused rather than compiled with
+# atomics anyway. The bodies of threaded loops and tasks are compiled as their own jobs, which
+# do not carry the caller's setting.
+#
+# A callee reached through dynamic dispatch runs within its caller's derivative, so it is
+# compiled with the caller's setting. One reached from plain accumulation gets
+# `InheritedPlainAdd` rather than `false`: the caller cannot know which method the call
+# reaches, so a callee that runs work in parallel is compiled with the default instead of
+# refused. Its own callees get the default too, since they may run while its tasks do.
+#
+# The callees get `nothing` exactly when the number of threads made the choice (see
+# `atomic_add_by_threads`).
+function atomic_add_for(setting::AtomicAddSetting, threads::Bool, mod::LLVM.Module, mi::Core.MethodInstance)
+    setting === true && return (true, true)
+    setting === nothing && return (threads, nothing)
+    call = parallel_work_in(mod)
+    call === nothing && return (false, InheritedPlainAdd)
+    setting === false && throw(EnzymeAtomicAddError(call, mi))
+    return (threads, nothing)
 end
+atomic_add_for(setting::AtomicAddSetting, mod::LLVM.Module, mi::Core.MethodInstance) =
+    atomic_add_for(setting, Base.Threads.nthreads() > 1, mod, mi)
+atomic_add_for(variant::ForSeveralThreads, mod::LLVM.Module, mi::Core.MethodInstance) =
+    atomic_add_for(variant.setting, true, mod, mi)
+
+# Whether the number of threads made the choice of `atomic_add_for` for a derivative, given
+# the setting its callees got: its code is then another in a process with another number.
+atomic_add_by_threads(callees::AtomicAddSetting)::Bool = callees === nothing
 
 function handleCustom(state::HandlerState, custom, k_name::String, llvmfn::LLVM.Function, name::String, attrs::Vector{LLVM.Attribute} = LLVM.Attribute[], setlink::Bool = true, noinl::Bool = true)
     attributes = function_attributes(llvmfn)
@@ -7475,7 +7509,7 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     process_module = false
     device_module = false
     if primal_target isa GPUCompiler.NativeCompilerTarget
-        parallel = atomic_add_for(job.config.params.atomicAdd, mod, job.source)
+        parallel, enzyme_ctx.callee_atomic_add = atomic_add_for(job.config.params.atomicAdd, mod, job.source)
     else
         # All other targets are GPU targets
         parallel = true
@@ -8047,7 +8081,8 @@ end
     else
         nothing
     end
-    return mod, (; adjointf, augmented_primalf, entry, compiled = meta.compiled, TapeType, edges, value_table, relocations)
+    callee_atomic_add = enzyme_ctx.callee_atomic_add
+    return mod, (; adjointf, augmented_primalf, entry, compiled = meta.compiled, TapeType, edges, value_table, relocations, callee_atomic_add)
 end
 
 # Compiler result
@@ -9172,7 +9207,7 @@ function thunk_job(
         ErrIfFuncWritten::Union{Bool, Tuple},
         RuntimeActivity::Bool,
         StrongZero::Bool,
-        AtomicAdd::Union{Bool, Nothing},
+        AtomicAdd::AtomicAddSetting,
     )
     target = Compiler.EnzymeTarget()
     params = Compiler.EnzymeCompilerParams(
@@ -9304,7 +9339,7 @@ end
         ErrIfFuncWritten::Union{Bool, Tuple},
         RuntimeActivity::Bool,
         StrongZero::Bool,
-        AtomicAdd::Union{Bool, Nothing},
+        AtomicAdd::AtomicAddSetting,
         edges::Union{Nothing, Vector{Any}},
         may_wait::Bool = true,
     )
@@ -9809,18 +9844,18 @@ function keeps_split_thunks_lazy(Mode::API.CDerivativeMode, @nospecialize(ABI::T
     return !Interpreter.in_enzyme_inference()
 end
 
-function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
+function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::AtomicAddSetting, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
     @nospecialize
     return thunk_codeinfo(thunk, false, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero, AtomicAdd)
 end
 
-function runtime_thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
+function runtime_thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::AtomicAddSetting, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
     @nospecialize
     return thunk_codeinfo(runtime_thunk, true, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero, AtomicAdd)
 end
 
 # The body of the generators of `thunk` and `runtime_thunk`.
-function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing})
+function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::AtomicAddSetting)
     
     slotnames = Core.svec(Symbol("#self#"), 
                     :fakeworld, :fa, :a, :tt, :mode, :width,
