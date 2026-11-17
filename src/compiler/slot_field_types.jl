@@ -98,7 +98,8 @@ function slot_field_call!(
     decay_args_readonly(call, callee, positions) || return false
     for i in positions
         attrs = collect(call.argument_attributes[i])
-        if isa(callee, LLVM.Function)
+        # vararg arguments only have call site attributes
+        if isa(callee, LLVM.Function) && i <= length(callee.parameters)
             append!(attrs, collect(callee.parameter_attributes[i]))
         end
         nocapture = false
