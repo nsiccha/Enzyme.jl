@@ -23,7 +23,8 @@
   `test/threads.jl` covers generic, `invokelatest` and splatted calls and
   calls of a method without a specialized entry point under each setting,
   nested callees, callees that run threaded loops or tasks, and a shared
-  shadow under contention.
+  shadow under contention, and `test/precompile.jl` the variants an image
+  keeps.
 - Leave a `getelementptr` address that names no element of an internal
   constant global alone when loads of the global are replaced by parts of its
   initializer. An address before the first element (index `-1`) with such a

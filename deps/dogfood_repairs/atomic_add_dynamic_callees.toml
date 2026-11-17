@@ -1,2 +1,2 @@
 summary = "A function a Reverse derivative reaches through dynamic dispatch is compiled with the caller's set_atomic_add setting; one that runs threaded loops or tasks keeps the default"
-tests = ["test/threads.jl"]
+tests = ["test/threads.jl", "test/precompile.jl"]
