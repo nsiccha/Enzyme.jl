@@ -2722,6 +2722,23 @@ function create_recursive_stores(B::LLVM.IRBuilder, @nospecialize(Ty::DataType),
     end
 end
 
+# Since julia#60924 (1.14.0-DEV.1697, backported to 1.13.4) codegen attaches
+# these operand bundles to `julia.gc_alloc_obj`, and late-gc-lowering uses them
+# to zero the GC pointer fields of the object right where it is allocated.
+# Enzyme copies them onto shadow allocations, so such allocations need no
+# explicit null stores. A Julia that does not lower the bundles never emits
+# them, so no version check is needed.
+function has_gc_zeroing_bundle(@nospecialize(inst::LLVM.Value))::Bool
+    isa(inst, LLVM.CallInst) || return false
+    for bundle in operand_bundles(inst)
+        tag = LLVM.tag(bundle)
+        if tag == "julia.gc_alloc_ptr_offsets" || tag == "julia.gc_alloc_zeroinit"
+            return true
+        end
+    end
+    return false
+end
+
 function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, Orig::LLVM.API.LLVMValueRef, idx::UInt64, prev::API.LLVMValueRef, used::UInt8)
     enzyme_ctx = enzyme_context()
     used = used != 0
@@ -2836,10 +2853,12 @@ function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradie
 
         # Reverse mode will do similarly, except doing the shadow first
         prev = LLVM.Instruction(prev)
-        B = LLVM.IRBuilder()
-        position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(prev)))
+        if !has_gc_zeroing_bundle(prev)
+            B = LLVM.IRBuilder()
+            position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(prev)))
 
-	create_recursive_stores(B, Ty, prev, count)
+            create_recursive_stores(B, Ty, prev, count)
+        end
     end
     if (mode == API.DEM_ReverseModePrimal || mode == API.DEM_ReverseModeCombined) && used
         # Zero any jlvalue_t inner elements of preceeding allocation.
@@ -2861,10 +2880,12 @@ function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradie
         #   store orig[0] = jlvaluet
         #
         # Julia could decide to dead store eliminate the memset (not being read before the store of jlvaluet'), resulting in an error
-        B = LLVM.IRBuilder()
-        position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(V)))
-	
-	create_recursive_stores(B, Ty, V, count)
+        if !has_gc_zeroing_bundle(V)
+            B = LLVM.IRBuilder()
+            position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(V)))
+
+            create_recursive_stores(B, Ty, V, count)
+        end
     end
 
     nothing
@@ -6998,6 +7019,12 @@ function readonly_walk!(
                     # whether or not the body is walked below (a function
                     # with a custom rule called from several sites).
                     if is_inactive_operand(user, called, cur, world)
+                        continue
+                    end
+                    # Calls such as BLAS read some buffers and write others.
+                    # Prove this operand readonly without following unrelated
+                    # outputs, or treating a GC root as a passed argument.
+                    if is_readonly_call_operand(user, called, cur, world, enzyme_ctx)
                         continue
                     end
                     if is_readonly(called)

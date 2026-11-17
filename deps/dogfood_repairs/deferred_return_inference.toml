@@ -1,0 +1,2 @@
+summary = "Deferred GPU differentiation infers scalar returns through device method tables, including reads from device array views"
+tests = ["test/cuda.jl", "test/core/deferred.jl"]

@@ -861,14 +861,14 @@ code, as well as high-order differentiation.
     A2 = A
 
     if A isa UnionAll
-        rt = Compiler.primal_return_type(Reverse, FTy, tt)
+        rt = Compiler.deferred_return_type(FTy, tt)
         A2 = A{rt}
         if rt == Union{}
             rt = Nothing
         end
     else
         @assert A isa DataType
-        rt = A
+        rt = eltype(A)
         if rt == Union{}
 	    throw(ErrorException("Return type inferred to be Union{}. Giving up."))
         end
@@ -938,7 +938,7 @@ code, as well as high-order differentiation.
 
     adjoint_ptr = Compiler.deferred_codegen(
         FA,
-        A,
+        A2,
         tt′,
         Val(API.DEM_ReverseModeCombined),
         Val(width),
@@ -1021,7 +1021,7 @@ code, as well as high-order differentiation.
     FT = Core.Typeof(f.val)
 
     if RT isa UnionAll
-        rt = Compiler.primal_return_type(Forward, FT, tt)
+        rt = Compiler.deferred_return_type(FT, tt)
 	if rt == Union{}
 	   rt = Nothing
 	end

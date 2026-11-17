@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Differentiate a `ccall` whose library Julia does not resolve while compiling
+  the method. Julia 1.12 leaves a module-qualified library
+  (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
+  `getproperty` call although `Mod.lib` is a constant; a non-constant global
+  and, through Julia 1.12, any other expression are read the first time the
+  call runs. Such a call reached Enzyme as an indirect call through a
+  looked-up address: with `Ref` arguments, as in a hand-written BLAS or LAPACK
+  wrapper, compiling the derivative aborted the process
+  (`Assertion '!gutils->isConstantValue(baseOp)' failed`), and with scalar
+  arguments it raised "No augmented forward pass found for
+  ijl_lazy_load_and_lookup". A library read from a module global is now
+  resolved when the derivative is compiled. Behind any other expression the
+  call is named for its symbol, so a derivative rule for a math function
+  applies; a BLAS or LAPACK routine there, and a native function without a
+  rule, raise `EnzymeNoDerivativeError`.
+  `Enzyme.has_dogfood_repair(:ccall_runtime_library)` reports the repair;
+  `test/ccall_library.jl` covers each spelling of the library for a libm
+  function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
+  Reverse, calls that carry no derivative, and a function without a rule.
+- Accept captured BLAS input buffers in the readonly check for an unannotated
+  function argument. The proof uses per-argument readonly and nocapture
+  attributes only for typed raw data pointers, and ignores uses solely in
+  Julia GC-root bundles. Captured output buffers and aliases in writable
+  positions still raise `EnzymeMutabilityException`.
+  `Enzyme.has_dogfood_repair(:readonly_pointer_operands)` reports the repair.
 - Return zero gradients when a guard rejects a nonfinite product, including
   `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
   The native select repair now protects products whose operands are nonfinite
@@ -53,12 +78,31 @@
   `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
   `test/conditional_rule_return.jl` covers early returns, empty arrays,
   combined and split Reverse, batched Reverse, and Forward over Reverse.
+- Sync upstream through `580628c`: Julia-zeroed allocations no longer get
+  redundant null stores into their GC fields (#3766), and the
+  `LLVM.OperandBundleDef` compatibility branches are gone (#4064).
+  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
+  Upstream's LLVM.jl 10 migration (#3741) and the formatting commits after it
+  are held back: no Reactant release admits LLVM.jl 10 yet, and Reactant
+  requires Enzyme, so the two could not be installed together.
 - Limit the runtime `map` wrapper to long-tuple calls. A custom collection's
   `map` with an imprecise return type could otherwise re-enter the wrapper
   indefinitely and overflow the stack during differentiation.
   `Enzyme.has_dogfood_repair(:runtime_map_collection)` reports the repair;
   `test/tuple_map.jl` checks direct and splatted calls in Reverse, Forward,
   and batched Forward, alongside the existing long-tuple checks.
+- Infer the return type of `autodiff_deferred` with the compiler of the calling
+  code. The previous host-side query saw only host methods: where device code
+  reads an array, such as a CUDA device array or a view of one, it met a
+  throwing host stub and inferred `Union{}`. A kernel differentiating such a
+  function with an inferred `Active` return then failed to compile, with
+  `InvalidIRError` naming a dynamic `deferred_id_codegen`. Reverse and Forward
+  deferred calls now see the caller's method table. An explicit reverse return
+  annotation such as `Active{Float64}`, which raised an error, is accepted too.
+  `Enzyme.has_dogfood_repair(:deferred_return_inference)` reports the repair;
+  `test/cuda.jl` differentiates column views of device matrices in Reverse and
+  Forward for Float32 and Float64, and `test/core/deferred.jl` covers the
+  explicit annotation.
 - Retain package-image derivatives that call library functions whose selected
   implementation has no exported name, such as glibc's `memchr` reached through
   `findfirst`. Enzyme uses its known foreign-function names and verifies that
