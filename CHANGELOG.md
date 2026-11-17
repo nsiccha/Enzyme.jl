@@ -42,6 +42,18 @@
   `Enzyme.has_dogfood_repair(:runtime_map_collection)` reports the repair;
   `test/tuple_map.jl` checks direct and splatted calls in Reverse, Forward,
   and batched Forward, alongside the existing long-tuple checks.
+- Infer the return type of `autodiff_deferred` with the compiler of the calling
+  code. The previous host-side query saw only host methods: where device code
+  reads an array, such as a CUDA device array or a view of one, it met a
+  throwing host stub and inferred `Union{}`. A kernel differentiating such a
+  function with an inferred `Active` return then failed to compile, with
+  `InvalidIRError` naming a dynamic `deferred_id_codegen`. Reverse and Forward
+  deferred calls now see the caller's method table. An explicit reverse return
+  annotation such as `Active{Float64}`, which raised an error, is accepted too.
+  `Enzyme.has_dogfood_repair(:deferred_return_inference)` reports the repair;
+  `test/cuda.jl` differentiates column views of device matrices in Reverse and
+  Forward for Float32 and Float64, and `test/core/deferred.jl` covers the
+  explicit annotation.
 - Retain package-image derivatives that call library functions whose selected
   implementation has no exported name, such as glibc's `memchr` reached through
   `findfirst`. Enzyme uses its known foreign-function names and verifies that
