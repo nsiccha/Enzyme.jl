@@ -3711,6 +3711,7 @@ include("compiler/constant_fields.jl")
 include("compiler/empty_array_types.jl")
 include("compiler/retained_shadows.jl")
 include("compiler/slot_field_types.jl")
+include("compiler/memory_lengths.jl")
 
 function enzyme!(
     job::CompilerJob,
@@ -4131,6 +4132,7 @@ function enzyme!(
     end
     run!(DCEPass(), mod)
     fix_decayaddr!(mod)
+    store_empty_memory_lengths!(mod)
     adjointf = adjointf == nothing ? nothing : functions(mod)[adjointfname]
     augmented_primalf =
         augmented_primalf == nothing ? nothing : functions(mod)[augmented_primalfname]
