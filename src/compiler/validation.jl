@@ -1009,9 +1009,13 @@ address it finds in a slot of the call site and calls through that slot from the
 Each call through the address becomes a call of a function named for the symbol
 ([`runtime_lookup_stub!`](@ref)), which makes the same call through the slot. A derivative rule
 Enzyme has for `fname` then applies as it does for a library known when the derivative is
-compiled, and a native function without a rule is reported as one, where an indirect call
-through a looked-up address has no name to go by. The slot holds the address of native code and
-no derivative data (`enzyme_inactive`).
+compiled, where an indirect call through a looked-up address has no name to go by. The slot
+holds the address of native code and no derivative data (`enzyme_inactive`), so a call that
+stays indirect is reported as one without a derivative (`EnzymeNoDerivativeError`) if it
+carries derivative data.
+
+A BLAS or LAPACK routine stays such an indirect call: its rules name the further routines they
+call after the function they differentiate, which has to be a routine of a known library.
 """
 function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fname::String)
     slot = nothing
@@ -1027,6 +1031,7 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
     end
     slot === nothing && return nothing
     API.SetMD(slot, "enzyme_inactive", LLVM.MDNode(LLVM.Metadata[]))
+    FFI.BLASSupport.lookup_blas_symbol(fname) === nothing || return nothing
 
     # The calls through the address: of the lookup's result or of a load of the slot, which
     # reach the call through phis and casts. The slot may already have its function, from
