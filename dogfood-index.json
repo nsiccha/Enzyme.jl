@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "83ff174ab9466aa7de5090dfec6cab9d2d3d4731"
+    "sha": "bab1bb45ed21538e0f918ed1595923a6020e7a70"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
     "sha": "01265672787661ba298b7baf0643a154049ba4bd"
   },
-  "prepared_at": "2026-11-18T11:50:54.357442Z",
+  "prepared_at": "2026-11-18T14:40:03Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -49,7 +49,7 @@
       ],
       "draft": {
         "title": "Julia 1.10 reverse compilation caches a reloaded Const array data pointer",
-        "body": "On Julia 1.10.12, reverse compilation can fail with `Illegal cached pointer` when a loop reads a `Const` array on both sides of an uninlined call that may throw.\n\n```julia\nusing Enzyme, SpecialFunctions\n@noinline g(x::Float64) = loggamma(x)\nfunction h(x::Vector{Float64}, y::Vector{Float64})\n    s = 0.0\n    for k in eachindex(x)\n        @inbounds if y[k] > 0\n            s += g(y[k])\n        end\n        @inbounds s += y[k] * x[k]\n    end\n    return s\nend\nx = [0.1, -0.2, 0.3, 0.4, -0.5]\ny = [0.0, 2.0, 1.0, 4.0, 3.0]\ndx = zero(x)\nautodiff(Reverse, h, Active, Duplicated(x, dx), Const(y))\n@assert dx \u2248 y\n```\n\nExpected: compilation succeeds and `dx == y`. The existing report reproduces the compilation error with Enzyme 0.13.216 / Enzyme_jll 0.0.303 and upstream `6932801964f3140e53ca0e88d2fe867b9d47ace6`; Julia 1.12.7 passes that example.\n\nAfter the call, LLVM reloads the array's data pointer. `nodecayed_phis!` reconstructs it through cyclic parent/offset phis that all represent the same object and offset. Folding those redundant phis lets reverse mode recompute the pointer instead of caching a GC-derived pointer.\n\nThe fold must check that the replacement value **dominates each replaced phi**. Ignoring undef/poison incoming values does not establish this: forced bounds checking exposes paths where the value is unavailable. The dominance follow-up belongs with the initial fix.\n\nAlready reported in https://github.com/EnzymeAD/Enzyme.jl/issues/3822; existing fix proposal: https://github.com/EnzymeAD/Enzyme.jl/pull/3886.\n",
+        "body": "On Julia 1.10.12, reverse compilation can fail with `Illegal cached pointer` when a loop reads a `Const` array on both sides of an uninlined call that may throw.\n\n```julia\nusing Enzyme, SpecialFunctions\n@noinline g(x::Float64) = loggamma(x)\nfunction h(x::Vector{Float64}, y::Vector{Float64})\n    s = 0.0\n    for k in eachindex(x)\n        @inbounds if y[k] > 0\n            s += g(y[k])\n        end\n        @inbounds s += y[k] * x[k]\n    end\n    return s\nend\nx = [0.1, -0.2, 0.3, 0.4, -0.5]\ny = [0.0, 2.0, 1.0, 4.0, 3.0]\ndx = zero(x)\nautodiff(Reverse, h, Active, Duplicated(x, dx), Const(y))\n@assert dx ≈ y\n```\n\nExpected: compilation succeeds and `dx == y`. The existing report reproduces the compilation error with Enzyme 0.13.216 / Enzyme_jll 0.0.303 and upstream `6932801964f3140e53ca0e88d2fe867b9d47ace6`; Julia 1.12.7 passes that example.\n\nAfter the call, LLVM reloads the array's data pointer. `nodecayed_phis!` reconstructs it through cyclic parent/offset phis that all represent the same object and offset. Folding those redundant phis lets reverse mode recompute the pointer instead of caching a GC-derived pointer.\n\nThe fold must check that the replacement value **dominates each replaced phi**. Ignoring undef/poison incoming values does not establish this: forced bounds checking exposes paths where the value is unavailable. The dominance follow-up belongs with the initial fix.\n\nAlready reported in https://github.com/EnzymeAD/Enzyme.jl/issues/3822; existing fix proposal: https://github.com/EnzymeAD/Enzyme.jl/pull/3886.\n",
         "prepared_at": "2026-11-18T11:03:10.384467+00:00"
       },
       "depends_on": [],
@@ -134,7 +134,7 @@
             "test/small_typetag_boxes.jl"
           ],
           "result": "passed",
-          "detail": "77/77 passed; exit 0. Julia build 6822c3c. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+          "detail": "77/77 passed; exit 0. Julia build 6822c3c. Recorded November 18, 2026."
         },
         {
           "base": "01265672787661ba298b7baf0643a154049ba4bd",
@@ -145,7 +145,7 @@
             "test/small_typetag_boxes.jl"
           ],
           "result": "passed",
-          "detail": "77/77 passed; exit 0. Julia build 6822c3c. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+          "detail": "77/77 passed; exit 0. Julia build 6822c3c. Recorded November 18, 2026."
         },
         {
           "base": "01265672787661ba298b7baf0643a154049ba4bd",
@@ -156,7 +156,7 @@
             "test/small_typetag_boxes.jl"
           ],
           "result": "passed",
-          "detail": "77/77 passed; exit 0. Julia build 6d172b025e4. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+          "detail": "77/77 passed; exit 0. Julia build 6d172b025e4. Recorded November 18, 2026."
         },
         {
           "base": "01265672787661ba298b7baf0643a154049ba4bd",
@@ -167,7 +167,7 @@
             "test/small_typetag_boxes.jl"
           ],
           "result": "passed",
-          "detail": "77/77 passed; exit 0. Julia build 6d172b025e4. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+          "detail": "77/77 passed; exit 0. Julia build 6d172b025e4. Recorded November 18, 2026."
         }
       ],
       "fix": {
@@ -183,6 +183,236 @@
         ],
         "why_together": "One commit fixes runtime tag encoding, Bool singleton reuse, union-return boxing and custom-rule tape boxing, with focused regressions. It needs no other review group. The fork-only registry assertion stays on dogfood and is omitted from this upstream candidate."
       }
+    },
+    {
+      "id": "module-lookup",
+      "role": "fix",
+      "title": "Differentiate through a global module binding that can be reassigned",
+      "summary": "A function can read a module from a mutable global binding and dispatch through a name in that module. Differentiation must use the current binding, including after the caller replaces the module.",
+      "repairs": [
+        {
+          "id": "dynamic_module_lookup",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/1910",
+          "relation": "related"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/1912",
+          "relation": "related"
+        }
+      ],
+      "draft": {
+        "title": "Differentiate through a global module binding that can be reassigned",
+        "body": "A global variable can hold different modules with identically named functions. Differentiating a call through that variable should preserve the behavior of an ordinary Julia call.\n\n```julia\nusing Enzyme\nmodule SquareOps\n    op(x) = x * x\nend\nmodule CubeOps\n    op(x) = x * x * x\nend\nops = SquareOps\nf(x) = ops.op(x)\n@assert only(Enzyme.gradient(Reverse, f, 3.0)) == 6.0\nops = CubeOps\n@assert only(Enzyme.gradient(Reverse, f, 3.0)) == 27.0\n```\n\nOn the affected code path the derivative compiler cannot handle the dynamic module lookup. The same lookup can return a scalar or an array as well as a function. The regression test covers rebinding, undefined names, explicit memory ordering, and independent shadows for batched calls.",
+        "prepared_at": "2026-11-18T14:40:03Z"
+      },
+      "fix": {
+        "branch": "rebase/module-lookup",
+        "commits": [
+          {
+            "sha": "cd88f572f96ef7cffd683c600753e9e8d3ccdb6b",
+            "title": "Differentiate dynamic module global lookups",
+            "original": [
+              "8b672541c919fb8111844100e9fa2f223abf8319"
+            ]
+          }
+        ],
+        "why_together": "One commit handles the module lookup in the derivative rules and runtime fallback, with tests that rebind the module and differentiate through the returned value. It applies directly to the listed upstream base."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/module_lookup.jl"
+          ],
+          "result": "passed",
+          "detail": "114 of 114 passed on Julia build 2d331aa."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/module_lookup.jl"
+          ],
+          "result": "passed",
+          "detail": "114 of 114 passed on Julia build 2d331aa."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/module_lookup.jl"
+          ],
+          "result": "passed",
+          "detail": "114 of 114 passed on Julia build 6d172b025e4."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/module_lookup.jl"
+          ],
+          "result": "passed",
+          "detail": "114 of 114 passed on Julia build 6d172b025e4."
+        }
+      ]
+    },
+    {
+      "id": "wide-active-calls",
+      "role": "fix",
+      "title": "Forward and reverse AD fail for a wide tuple splat with an active Ref",
+      "summary": "On Julia 1.12, placing an active Ref beside 32 or 40 constant vectors in a splatted call leaves a generic call with an unsupported calling convention. The same derivative works with 31 constant vectors.",
+      "repairs": [
+        {
+          "id": "wide_active_calls",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3994",
+          "relation": "fixes"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3104",
+          "relation": "related"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3544",
+          "relation": "related"
+        }
+      ],
+      "draft": {
+        "title": "Forward and reverse AD fail for a wide tuple splat with an active Ref",
+        "body": "On Julia 1.12 a wide argument tuple can leave a call to `ijl_apply_generic` during derivative compilation and raise an unexpected-calling-convention error. The following case puts an active reference at the end of 32 constant vectors.\n\n```julia\nusing Enzyme\n@inline wide_read(r::Base.RefValue) = r[]\n@inline wide_read(v::AbstractVector) = sum(v)\n@inline wide_sum(::Tuple{}) = 0.0\n@inline wide_sum(xs::Tuple) = wide_read(first(xs)) + wide_sum(Base.tail(xs))\n@noinline inner(x, xs::Vararg{Any,N}) where N = wide_sum(xs) * x[1]\nfunction outer(x, xs::Vararg{Any,N}) where N\n    last(xs)[] = x[2]\n    return inner(x, xs...)\nend\nvs = ntuple(j -> fill(Float64(j), 3), 32)\nx, dx = [0.3, 0.7], zeros(2)\nautodiff(ReverseWithPrimal, outer, Active, Duplicated(x, dx),\n         map(Const, vs)..., Duplicated(Ref(0.0), Ref(0.0)))\n@assert dx ≈ [3 * sum(1:32) + x[2], x[1]]\n```\n\nThe same case with 31 vectors works. Forward mode and placing the reference first exercise the same boundary. PR #3994 supplies the inference change. The focused regression checks the gradients and the mutation in both positions.",
+        "prepared_at": "2026-11-18T14:40:03Z"
+      },
+      "fix": {
+        "branch": "rebase/wide-active-calls",
+        "commits": [
+          {
+            "sha": "f85e65a5b3ee2402772d1457fef02afe5b603af5",
+            "title": "Keep wide active-argument splats typed during differentiation",
+            "original": [
+              "7c18ff8596927d25e7e236d554590b4fe893ea2f"
+            ]
+          }
+        ],
+        "why_together": "One commit combines the tuple-splat inference and optimization limits from upstream PR #3994 with the active-Ref and recursive-splat regression tests. The separate runtime tuple-map change is outside this fix."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/wide_active_args.jl"
+          ],
+          "result": "passed",
+          "detail": "48 of 48 passed on Julia build 6822c3c."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/applyiter.jl"
+          ],
+          "result": "passed",
+          "detail": "276 of 276 passed on Julia build 6822c3c."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/wide_active_args.jl"
+          ],
+          "result": "passed",
+          "detail": "48 of 48 passed on Julia build 6822c3c."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/applyiter.jl"
+          ],
+          "result": "passed",
+          "detail": "276 of 276 passed on Julia build 6822c3c."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/wide_active_args.jl"
+          ],
+          "result": "passed",
+          "detail": "48 of 48 passed on Julia build 6d172b025e4."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/applyiter.jl"
+          ],
+          "result": "passed",
+          "detail": "276 of 276 passed on Julia build 6d172b025e4."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/wide_active_args.jl"
+          ],
+          "result": "passed",
+          "detail": "48 of 48 passed on Julia build 6d172b025e4."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/applyiter.jl"
+          ],
+          "result": "passed",
+          "detail": "276 of 276 passed on Julia build 6d172b025e4."
+        }
+      ]
     }
   ]
 }
