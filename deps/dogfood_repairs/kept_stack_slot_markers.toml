@@ -1,0 +1,2 @@
+summary = "Reverse over Reverse through a Threads.@threads loop compiles on Julia 1.12 and 1.13; it stopped with EnzymeInternalError (Illegal address space propagation), because the code kept for an outer derivative carried libEnzyme's marks of stack slots it had moved to the heap"
+tests = ["test/nested_threads.jl"]

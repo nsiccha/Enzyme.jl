@@ -1,105 +1,3 @@
-function runtime_newtask_fwd(
-        fn::FT1,
-        dfn::FT2,
-        post::Any,
-        ssize::Int,
-        runtimeActivity::Val{RuntimeActivity},
-        strongZero::Val{StrongZero},
-        ::Val{width},
-    ) where {FT1, FT2, width, RuntimeActivity, StrongZero}
-    FT = Core.Typeof(fn)
-    ghos = guaranteed_const(FT)
-    forward = thunk(
-        Val(0),
-        (ghos ? Const : Duplicated){FT},
-        Const,
-        Tuple{},
-        Val(API.DEM_ForwardMode),
-        Val(Int(width)),
-        Val((false,)),
-        Val(true),
-        Val(false),
-        FFIABI,
-        Val(false),
-        runtimeActivity,
-        strongZero
-    ) #=erriffuncwritten=#
-    ft = ghos ? Const(fn) : Duplicated(fn, dfn)
-    function fclosure()
-        res = forward(ft)
-        return res[1]
-    end
-
-    return ccall(:jl_new_task, Ref{Task}, (Any, Any, Int), fclosure, post, ssize)
-end
-
-struct Return2
-    ret1::Any
-    ret2::Any
-end
-
-function runtime_newtask_augfwd(
-        fn::FT1,
-        dfn::FT2,
-        post::Any,
-        ssize::Int,
-        runtimeActivity::Val{RuntimeActivity},
-        strongZero::Val{StrongZero},
-        ::Val{width},
-        ::Val{ModifiedBetween},
-    ) where {FT1, FT2, width, ModifiedBetween, RuntimeActivity, StrongZero}
-    # TODO make this AD subcall type stable
-    FT = Core.Typeof(fn)
-    ghos = guaranteed_const(FT)
-    FA = if ghos
-        Const{FT}
-    elseif dfn isa Base.RefValue && !(fn isa Base.RefValue)
-        MixedDuplicated{FT}
-    else
-        Duplicated{FT}
-    end
-    forward, adjoint = runtime_thunk(
-        Val(0),
-        FA,
-        Const,
-        Tuple{},
-        Val(API.DEM_ReverseModePrimal),
-        Val(Int(width)),
-        Val(ModifiedBetween),
-        Val(true),
-        Val(false),
-        FFIABI,
-        Val(false),
-        runtimeActivity,
-        strongZero
-    ) #=erriffuncwritten=#
-    ft = if ghos
-        Const(fn)
-    elseif dfn isa Base.RefValue && !(fn isa Base.RefValue)
-        MixedDuplicated(fn, dfn)
-    else
-        Duplicated(fn, dfn)
-    end
-    taperef = Ref{Any}()
-
-    function fclosure()
-        res = forward(ft)
-        taperef[] = res[1]
-        return res[2]
-    end
-
-    ftask = ccall(:jl_new_task, Ref{Task}, (Any, Any, Int), fclosure, post, ssize)
-
-    function rclosure()
-        adjoint(ft, taperef[])
-        return 0
-    end
-
-    rtask = ccall(:jl_new_task, Ref{Task}, (Any, Any, Int), rclosure, post, ssize)
-
-    return Return2(ftask, rtask)
-end
-
 
 function referenceCaller(fn::Ref{Clos}, args...) where {Clos}
     fval = fn[]
@@ -164,8 +62,8 @@ rederived_body(::Type{ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, false}}) whe
 # The forward derivative of a loop body, for the thunk type and settings the loop's
 # derivative holds it with.
 @inline function rederived_forward(
-        ::Type{<:ForwardModeThunk{<:Any, FA, <:Any, TT, Width}}, ::Val{S},
-    ) where {FA, TT, Width, S}
+        ::Type{<:ForwardModeThunk{<:Any, FA, <:Any, TT, Width, ReturnPrimal}}, ::Val{S},
+    ) where {FA, TT, Width, ReturnPrimal, S}
     return thunk(
         Val(0),
         FA,
@@ -174,7 +72,7 @@ rederived_body(::Type{ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, false}}) whe
         Val(API.DEM_ForwardMode),
         Val(Width),
         Val(S[1]),
-        Val(false),
+        Val(ReturnPrimal),
         Val(false),
         FFIABI,
         Val(false),
@@ -186,11 +84,13 @@ end
 
 # The augmented forward and the reverse derivative of a loop body, likewise. Both callables
 # of one loop get them from this one compilation, so the tape the first writes is the tape
-# the second reads.
+# the second reads. The type of an adjoint thunk does not say whether the augmented forward
+# pass compiled with it returns the primal result, so the caller does.
 @inline function rederived_split(
         ::Type{<:Union{AugmentedForwardThunk{<:Any, FA, <:Any, TT, Width}, AdjointThunk{<:Any, FA, <:Any, TT, Width}}},
         ::Val{S},
-    ) where {FA, TT, Width, S}
+        ::Val{ReturnPrimal} = Val(false),
+    ) where {FA, TT, Width, S, ReturnPrimal}
     return thunk(
         Val(0),
         FA,
@@ -199,7 +99,7 @@ end
         Val(API.DEM_ReverseModePrimal),
         Val(Width),
         Val(S[1]),
-        Val(false),
+        Val(ReturnPrimal),
         Val(false),
         FFIABI,
         Val(false),
@@ -210,13 +110,13 @@ end
 end
 
 # The tapes of a loop are stored as the loop's derivative allocated them, for the tape
-# type of the body's derivative it was compiled with. A rederived body has to write that
-# same type.
+# type of the body's derivative it was compiled with, and so is the tape of a task
+# (`AugmentedTask`). A rederived body has to write that same type.
 @inline rederived_tape_check(
-    ::AbstractThunk, ::Type{<:Union{Vector{TapeType}, Ptr{TapeType}}},
+    ::AbstractThunk, ::Type{<:Union{Vector{TapeType}, Ptr{TapeType}, Base.RefValue{TapeType}}},
 ) where {TapeType} = throw(
     AssertionError(
-        "The derivative of a Threads.@threads loop body, compiled again for an outer derivative, keeps another tape than the $TapeType the loop's derivative stores",
+        "The derivative of the body of a Threads.@threads loop or of a task, compiled again for an outer derivative, keeps another tape than the $TapeType the first derivative stores",
     ),
 )
 @inline rederived_tape_check(
@@ -224,7 +124,7 @@ end
         AugmentedForwardThunk{<:Any, <:Any, <:Any, <:Any, <:Any, <:Any, TapeType},
         AdjointThunk{<:Any, <:Any, <:Any, <:Any, <:Any, TapeType},
     },
-    ::Type{<:Union{Vector{TapeType}, Ptr{TapeType}}},
+    ::Type{<:Union{Vector{TapeType}, Ptr{TapeType}, Base.RefValue{TapeType}}},
 ) where {TapeType} = nothing
 
 @inline function pfor_forward(thunk, ft, tid_args...)
@@ -348,6 +248,207 @@ function runtime_pfor_rev(
         Libc.free(tapes)
     end
     return nothing
+end
+
+# The derivative of a task (`Threads.@spawn`) starts tasks that run the derivative of the
+# task's body, which takes no arguments: one for its forward derivative, or one for its
+# augmented forward pass and one for its reverse pass, which the derivative's reverse pass
+# runs. `ForwardTask`, `AugmentedTask` and `ReverseTask` are the callables it starts them
+# with. Like those of a `Threads.@threads` loop (see `ForwardPFor`), they hold the body's
+# derivative by its address, so an outer derivative differentiates them with
+# `Rederived = true` (`rederived_task`), whose methods ask `thunk` for it. `S` holds the
+# same settings as for a loop. The body's derivative returns its primal result.
+struct ForwardTask{ThunkTy, FT, S, Rederived}
+    thunk::ThunkTy
+    ft::FT
+end
+
+# `tape` holds the tape that the augmented forward pass writes and the reverse pass reads.
+struct AugmentedTask{ThunkTy, FT, TapeRef, S, Rederived}
+    thunk::ThunkTy
+    ft::FT
+    tape::TapeRef
+end
+
+struct ReverseTask{ThunkTy, FT, TapeRef, S, Rederived}
+    thunk::ThunkTy
+    ft::FT
+    tape::TapeRef
+end
+
+# A task whose body has no derivative holds a `PrimalErrorThunk`, which is not rederived.
+rederived_body(::Type{ForwardTask{ThunkTy, FT, S, false}}) where {ThunkTy <: ForwardModeThunk, FT, S} =
+    ForwardTask{ThunkTy, FT, S, true}
+rederived_body(::Type{AugmentedTask{ThunkTy, FT, TapeRef, S, false}}) where {ThunkTy <: AugmentedForwardThunk, FT, TapeRef, S} =
+    AugmentedTask{ThunkTy, FT, TapeRef, S, true}
+rederived_body(::Type{ReverseTask{ThunkTy, FT, TapeRef, S, false}}) where {ThunkTy <: AdjointThunk, FT, TapeRef, S} =
+    ReverseTask{ThunkTy, FT, TapeRef, S, true}
+
+@inline task_fields(st::ForwardTask) = (st.thunk, st.ft)
+@inline task_fields(st::Union{AugmentedTask, ReverseTask}) = (st.thunk, st.ft, st.tape)
+
+"""
+    rederived_task(fn, dfn)
+
+The callable that an outer derivative starts a task with, and its shadow, in place of the
+callable `fn` of a task and its shadow `dfn`: for one of the callables Enzyme's own
+derivative of a task starts (`ForwardTask`, `AugmentedTask`, `ReverseTask`), the same data
+in the type `rederived_body` gives; for anything else, `fn` and `dfn` themselves.
+"""
+rederived_task(fn, dfn) = (fn, dfn)
+function rederived_task(fn::T, dfn::T) where {T <: Union{ForwardTask, AugmentedTask, ReverseTask}}
+    R = rederived_body(T)
+    R === T && return (fn, dfn)
+    return (R(task_fields(fn)...), R(task_fields(dfn)...))
+end
+
+# The derivative of a task's body is compiled with `ReturnPrimal` (`runtime_newtask_augfwd`).
+@inline task_split(::Type{ThunkTy}, ::Val{S}) where {ThunkTy, S} = rederived_split(ThunkTy, Val(S), Val(true))
+
+@inline task_forward(thunk, ft) = thunk(ft)[1]
+
+@inline function task_augmented(thunk, ft, tape)
+    res = thunk(ft)
+    tape[] = res[1]
+    return res[2]
+end
+
+@inline function task_reverse(thunk, ft, tape)
+    thunk(ft, tape[])
+    return 0
+end
+
+function (st::ForwardTask{ThunkTy, FT, S, false})() where {ThunkTy, FT, S}
+    return task_forward(st.thunk, st.ft)
+end
+
+function (st::ForwardTask{ThunkTy, FT, S, true})() where {ThunkTy, FT, S}
+    return task_forward(rederived_forward(ThunkTy, Val(S)), st.ft)
+end
+
+function (st::AugmentedTask{ThunkTy, FT, TapeRef, S, false})() where {ThunkTy, FT, TapeRef, S}
+    return task_augmented(st.thunk, st.ft, st.tape)
+end
+
+function (st::AugmentedTask{ThunkTy, FT, TapeRef, S, true})() where {ThunkTy, FT, TapeRef, S}
+    augmented = task_split(ThunkTy, Val(S))[1]
+    rederived_tape_check(augmented, TapeRef)
+    return task_augmented(augmented, st.ft, st.tape)
+end
+
+function (st::ReverseTask{ThunkTy, FT, TapeRef, S, false})() where {ThunkTy, FT, TapeRef, S}
+    return task_reverse(st.thunk, st.ft, st.tape)
+end
+
+function (st::ReverseTask{ThunkTy, FT, TapeRef, S, true})() where {ThunkTy, FT, TapeRef, S}
+    adjoint = task_split(ThunkTy, Val(S))[2]
+    rederived_tape_check(adjoint, TapeRef)
+    return task_reverse(adjoint, st.ft, st.tape)
+end
+
+function runtime_newtask_fwd(
+        fn::FT1,
+        dfn::FT2,
+        post::Any,
+        ssize::Int,
+        runtimeActivity::Val{RuntimeActivity},
+        strongZero::Val{StrongZero},
+        ::Val{width},
+    ) where {FT1, FT2, width, RuntimeActivity, StrongZero}
+    tfn, tdfn = rederived_task(fn, dfn)
+    FT = Core.Typeof(tfn)
+    ghos = guaranteed_const(FT)
+    forward = thunk(
+        Val(0),
+        (ghos ? Const : Duplicated){FT},
+        Const,
+        Tuple{},
+        Val(API.DEM_ForwardMode),
+        Val(Int(width)),
+        Val((false,)),
+        Val(true),
+        Val(false),
+        FFIABI,
+        Val(false),
+        runtimeActivity,
+        strongZero
+    ) #=erriffuncwritten=#
+    ft = ghos ? Const(tfn) : Duplicated(tfn, tdfn)
+    S = ((false,), RuntimeActivity, StrongZero)
+    st = ForwardTask{Core.Typeof(forward), Core.Typeof(ft), S, false}(forward, ft)
+    return ccall(:jl_new_task, Ref{Task}, (Any, Any, Int), st, post, ssize)
+end
+
+struct Return2
+    ret1::Any
+    ret2::Any
+end
+
+function runtime_newtask_augfwd(
+        fn::FT1,
+        dfn::FT2,
+        post::Any,
+        ssize::Int,
+        runtimeActivity::Val{RuntimeActivity},
+        strongZero::Val{StrongZero},
+        ::Val{width},
+        ::Val{ModifiedBetween},
+    ) where {FT1, FT2, width, ModifiedBetween, RuntimeActivity, StrongZero}
+    # TODO make this AD subcall type stable
+    tfn, tdfn = rederived_task(fn, dfn)
+    FT = Core.Typeof(tfn)
+    ghos = guaranteed_const(FT)
+    FA = if ghos
+        Const{FT}
+    elseif tdfn isa Base.RefValue && !(tfn isa Base.RefValue)
+        MixedDuplicated{FT}
+    else
+        Duplicated{FT}
+    end
+    forward, adjoint = runtime_thunk(
+        Val(0),
+        FA,
+        Const,
+        Tuple{},
+        Val(API.DEM_ReverseModePrimal),
+        Val(Int(width)),
+        Val(ModifiedBetween),
+        Val(true),
+        Val(false),
+        FFIABI,
+        Val(false),
+        runtimeActivity,
+        strongZero
+    ) #=erriffuncwritten=#
+    ft = if ghos
+        Const(tfn)
+    elseif tdfn isa Base.RefValue && !(tfn isa Base.RefValue)
+        MixedDuplicated(tfn, tdfn)
+    else
+        Duplicated(tfn, tdfn)
+    end
+    return newtask_split(forward, adjoint, ft, post, ssize, Val((ModifiedBetween, RuntimeActivity, StrongZero)))
+end
+
+# The tape of a task's body, which `runtime_thunk` only knows once it has compiled the body's
+# derivative, so `runtime_newtask_augfwd` gets the thunks untyped and calls this with them.
+task_tape_type(::Type{T}) where {T <: AugmentedForwardThunk} = EnzymeRules.tape_type(T)
+task_tape_type(::Type) = Any
+
+function newtask_split(
+        forward::AugT, adjoint::AdjT, ft::FT, post::Any, ssize::Int, ::Val{S},
+    ) where {AugT, AdjT, FT, S}
+    tape = Ref{task_tape_type(AugT)}()
+    TapeRef = Core.Typeof(tape)
+    ftask = ccall(
+        :jl_new_task, Ref{Task}, (Any, Any, Int),
+        AugmentedTask{AugT, FT, TapeRef, S, false}(forward, ft, tape), post, ssize,
+    )
+    rtask = ccall(
+        :jl_new_task, Ref{Task}, (Any, Any, Int),
+        ReverseTask{AdjT, FT, TapeRef, S, false}(adjoint, ft, tape), post, ssize,
+    )
+    return Return2(ftask, rtask)
 end
 
 @inline function threadsfor_common(orig, gutils, B, mode, enzyme_ctx, tape = nothing)

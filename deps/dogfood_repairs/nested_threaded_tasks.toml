@@ -1,0 +1,2 @@
+summary = "A derivative of a derivative of a function that runs part of its work in a task (Threads.@spawn ... wait) differentiates (Forward over Reverse, Reverse over Forward, Forward over Forward, Reverse over Reverse); the outer derivative raised TaskFailedException around EnzymeNoDerivativeError (indirect call through an inactive function pointer)"
+tests = ["test/nested_threads.jl"]
