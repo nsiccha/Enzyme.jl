@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "38e0256cd28bc52013dab9174c080d71c0429631"
+    "sha": "ef0b4ab4545fdea0a4ab1933e71c7fca043d4df2"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T18:02:18Z",
+  "prepared_at": "2026-11-18T18:18:32Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -985,9 +985,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "e515811e introduces load splitting at Const/active selects and phis. Other original changes in the same series refine path and field reasoning. A minimal set on current upstream remains under review."
+        "why_together": "e515811e introduces load splitting at Const/active selects and phis. Other original changes in the same series refine path and field reasoning. A minimal set on current upstream remains under review. The original modifies the constant-field proof introduced by the by-reference shadow fix."
       },
-      "depends_on": [],
+      "depends_on": [
+        "byref-const-field-shadow"
+      ],
       "requires": [],
       "validation": []
     },
@@ -3927,6 +3929,117 @@
         "why_together": "The original commits identify the historical literal-load-tests topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified. Original source: [c23cd5bb](https://github.com/nsiccha/Enzyme.jl/commit/c23cd5bb10f4bf3819287e7182a83ded5d1c1767)."
       },
       "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "byref-const-field-shadow",
+      "role": "fix",
+      "title": "Reverse mode copies a read-only array held beside active data in a by-reference struct",
+      "summary": "An immutable struct passed to a non-inlined helper holds a read-only array alongside an active one. Reverse mode allocates a derivative array proportional to the entire constant field on each call.",
+      "upstream_refs": [],
+      "repairs": [],
+      "draft": {
+        "title": "Reverse mode copies a read-only array held beside active data in a by-reference struct",
+        "body": "Differentiate a scalar loss that reads a few entries of an immutable wrapper with a large constant base array and a small active array. Pass the wrapper by reference through a non-inlined function. Static reverse mode can allocate a zero-filled shadow for the entire base at each store, so increasing the base length increases allocation even when the same entries are read. The original report measured 277,776 bytes per call on Julia 1.10.12 with 34,626 base elements. For fields proved read-only and used only as constant data, the derivative can retain the original array and give the same gradient.\n\nThe original fork changes, in application order, are [dc7758fd](https://github.com/nsiccha/Enzyme.jl/commit/dc7758fd6dc5ff9814cf89b9f0860c5248b78e4c). Regression coverage is in [test/const_element_store.jl](https://github.com/nsiccha/Enzyme.jl/blob/ef0b4ab4545fdea0a4ab1933e71c7fca043d4df2/test/const_element_store.jl).",
+        "prepared_at": "2026-11-18T18:18:32Z"
+      },
+      "fix": {
+        "commits": [],
+        "why_together": "This commit introduces the constant-field proof for by-reference structs and tests the allocation behavior. The fork has subsequent extensions. The isolated set on the current upstream base still needs verification."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "constant-field-cached-offsets",
+      "role": "fix",
+      "title": "Forward over reverse copies a constant array when its MemoryRef byte offsets are cached",
+      "summary": "On Julia 1.12 and later, caching an integer byte offset in the inner derivative can cause the outer derivative to copy an entire constant array.",
+      "upstream_refs": [],
+      "repairs": [
+        {
+          "id": "constant_field_cached_offsets",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "draft": {
+        "title": "Forward over reverse copies a constant array when its MemoryRef byte offsets are cached",
+        "body": "An overlay holds a read-only base array and active data. Differentiate a reduction over the overlay using forward over reverse. When the inner derivative caches the byte offset between a MemoryRef and its backing memory, the outer derivative can allocate a zero-filled copy of the base array. With 100,000 Float64 elements the copy takes about 800 KB per call. The derivative should match the runtime-activity result and avoid an allocation proportional to the constant base length. Forced bounds checking on Julia 1.13 exercises a second case where control flow selects the address used in the offset.\n\nThe original fork changes, in application order, are [c3849dda](https://github.com/nsiccha/Enzyme.jl/commit/c3849ddaf643b70d9ff8fbc3ae5a43405e32c177), [be6b8545](https://github.com/nsiccha/Enzyme.jl/commit/be6b854561097ab3fbd35bbecb0557bbe973c3c0). Regression coverage is in [test/const_element_store.jl](https://github.com/nsiccha/Enzyme.jl/blob/ef0b4ab4545fdea0a4ab1933e71c7fca043d4df2/test/const_element_store.jl).",
+        "prepared_at": "2026-11-18T18:18:32Z"
+      },
+      "fix": {
+        "commits": [],
+        "why_together": "The first commit extends the constant-field proof to recognize a difference between two addresses. The second handles addresses combined by a phi or select, which the forced-bounds regression exercises. The proof itself was introduced in the prerequisite. Additional intervening changes may be needed to apply the originals to upstream."
+      },
+      "depends_on": [
+        "byref-const-field-shadow"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "nested-threaded-tasks",
+      "role": "fix",
+      "title": "Nested differentiation of a task fails on the derivative of its body",
+      "summary": "A second differentiation through Threads.@spawn and wait can throw TaskFailedException when the outer derivative encounters an indirect call in the task body.",
+      "upstream_refs": [],
+      "repairs": [
+        {
+          "id": "nested_threaded_tasks",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "draft": {
+        "title": "Nested differentiation of a task fails on the derivative of its body",
+        "body": "Run one sum of squares in a spawned task and another in the caller, wait for the task, then add them. The function is twice the sum of squares, so its gradient is 4x and its Hessian-vector product is 4v. First-order differentiation can succeed while an outer derivative raises TaskFailedException around EnzymeNoDerivativeError. The four forward/reverse combinations should agree with the analytic results.\n\nThe original fork changes, in application order, are [c755757a](https://github.com/nsiccha/Enzyme.jl/commit/c755757a51eddd14d794f2d0afd07e3368db8539). Regression coverage is in [test/nested_threads.jl](https://github.com/nsiccha/Enzyme.jl/blob/ef0b4ab4545fdea0a4ab1933e71c7fca043d4df2/test/nested_threads.jl).",
+        "prepared_at": "2026-11-18T18:18:32Z"
+      },
+      "fix": {
+        "commits": [],
+        "why_together": "The commit changes the generated task callables and adds numerical regressions together. It uses rederived_forward and rederived_split from the nested threaded-loop change to recover the derivative of the body. That helper dependency is explicit in the original source."
+      },
+      "depends_on": [
+        "nested-threaded-loops"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "kept-stack-slot-markers",
+      "role": "fix",
+      "title": "Reverse over reverse of a threaded loop fails to compile on Julia 1.12 and 1.13",
+      "summary": "Saving a differentiated loop body for reuse by an outer derivative can leave compilation metadata that is no longer valid for the saved code.",
+      "upstream_refs": [],
+      "repairs": [
+        {
+          "id": "kept_stack_slot_markers",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "draft": {
+        "title": "Reverse over reverse of a threaded loop fails to compile on Julia 1.12 and 1.13",
+        "body": "For a threaded sum of squares, reverse over reverse should return the same second derivative under dynamic and static scheduling. On Julia 1.12 and 1.13, compilation of the outer derivative stopped before it could return the analytical result. The fork repair clears transient stack-slot metadata after differentiation and checks the saved derivative code. The numerical regression covers both scheduling choices.\n\nThe original fork changes, in application order, are [4cf1fc17](https://github.com/nsiccha/Enzyme.jl/commit/4cf1fc174bbf19d2911bf26048774aaebf4cef4d). Regression coverage is in [test/nested_threads.jl](https://github.com/nsiccha/Enzyme.jl/blob/ef0b4ab4545fdea0a4ab1933e71c7fca043d4df2/test/nested_threads.jl).",
+        "prepared_at": "2026-11-18T18:18:32Z"
+      },
+      "fix": {
+        "commits": [],
+        "why_together": "This commit contains the compiler change and the analytical and saved-code assertions. Its existing regression uses the nested threaded-loop and retained-derivative facilities. The follow-up 06ad8a01 only clarifies comments."
+      },
+      "depends_on": [
+        "nested-threaded-loops",
+        "retained-derivatives"
+      ],
       "requires": [],
       "validation": []
     }
