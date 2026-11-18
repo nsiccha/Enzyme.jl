@@ -25,6 +25,20 @@
   `Enzyme.has_dogfood_repair(:sizehint_reserved_shadow)` reports both repairs.
   `test/array_storage.jl` grows into reserved storage after leaving freed
   storage nonzero, and `test/nested_unalias_view.jl` covers the original case.
+- Stop Forward over Reverse from copying a `Const` array that a struct holds
+  beside active data on Julia 1.12 and later. Since the inner reverse pass
+  caches the byte offsets of a `MemoryRef` (the `filter!` and `sizehint!`
+  repair), the outer derivative stores integers computed from the `Const`
+  array's data pointer into its caches and tape, and the constant-field proof
+  took such a store as a possible pointer. It then made a zero-filled copy of
+  the whole array per call, 800 KB for 100,000 `Float64` in
+  `test/const_element_store.jl`. A difference of two addresses holds no
+  address, so the proof now accepts it. The same caching repaired Forward over
+  Reverse of that generator `sum` with runtime activity, whose
+  `EnzymeNoDerivativeError` ("cannot handle unknown binary operator: sub i64")
+  the test no longer marks broken.
+  `Enzyme.has_dogfood_repair(:constant_field_cached_offsets)` reports the
+  repair.
 - Keep the type facts of a union return buffer independent of what compiled
   earlier in the process. A function returning, for example,
   `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct

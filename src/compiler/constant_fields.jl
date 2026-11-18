@@ -745,14 +745,48 @@ function constant_field_uses_safe(cf::ConstantFields, @nospecialize(val::LLVM.Va
     return true
 end
 
-# Whether an integer, and everything computed from it, stays an integer.
+# Whether the integer `v` is an address: a `ptrtoint`, an address plus or minus an
+# integer that is not one, or a phi or select of addresses only. A phi met again on
+# the way (`path`) counts as no address.
+function address_integer(@nospecialize(v::LLVM.Value), path::Vector{LLVM.Value} = LLVM.Value[])::Bool
+    isa(v, LLVM.PtrToIntInst) && return true
+    (v in path || length(path) >= 16) && return false
+    push!(path, v)
+    result = if isa(v, LLVM.AddInst)
+        a, b = operands(v)
+        address_integer(a, path) != address_integer(b, path)
+    elseif isa(v, LLVM.SubInst)
+        a, b = operands(v)
+        address_integer(a, path) && !address_integer(b, path)
+    elseif isa(v, LLVM.PHIInst)
+        every = true
+        for (x, _) in LLVM.incoming(v)
+            address_integer(x, path) || (every = false; break)
+        end
+        every
+    elseif isa(v, LLVM.SelectInst)
+        address_integer(operands(v)[2], path) && address_integer(operands(v)[3], path)
+    else
+        false
+    end
+    pop!(path)
+    return result
+end
+
+# Whether an integer, and everything computed from it, stays an integer. The
+# difference of two addresses is a byte offset, which holds no address: Julia 1.12
+# computes a `MemoryRef`'s offset from its data pointer that way, and the reverse
+# pass of an inner derivative caches it (`cache_memoryref_pointer_integers`), so a
+# nested derivative stores it into a cache or inserts it into its tape.
 function never_pointer_again(@nospecialize(val::LLVM.Value), seen::Set{LLVM.Value})::Bool
     val in seen && return true
     push!(seen, val)
     for u in LLVM.uses(val)
         user = LLVM.user(u)
         isa(user, LLVM.Instruction) || return false
-        if isa(value_type(user), LLVM.IntegerType)
+        if isa(user, LLVM.SubInst) && all(address_integer, operands(user))
+            continue
+        elseif isa(value_type(user), LLVM.IntegerType)
             never_pointer_again(user, seen) || return false
         elseif isa(user, LLVM.GetElementPtrInst)
             # An index: the GEP's activity is its pointer operand's (the byte offsets
