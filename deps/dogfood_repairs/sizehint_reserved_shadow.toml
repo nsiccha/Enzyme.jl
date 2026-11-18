@@ -1,0 +1,2 @@
+summary = "Julia 1.11 and later: sizehint! on a Float32 or Float64 vector in Reverse and nested modes zeroes the derivative's reserved storage, and returns the adjoints of the elements it kept to the old storage even after pushfirst! or a reallocating push!"
+tests = ["test/array_storage.jl", "test/nested_unalias_view.jl"]
