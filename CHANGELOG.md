@@ -45,7 +45,11 @@
   `Enzyme.has_dogfood_repair(:memory_header_init)` reports the repair;
   `test/memory_header_init.jl` checks the stores in the derivative's code and
   takes derivatives while fresh `Memory` objects land on cells without a valid
-  header.
+  header. The same repair was found independently from repeated batched
+  Forward through `[a, b]` of structs that hold arrays, which aborted on
+  Julia 1.13.1 within seconds; `test/forward_memory_shadow.jl` repeats that
+  under automatic collection, and `Enzyme.has_dogfood_repair(:forward_memory_shadow_init)`
+  reports the repair under that name too.
 - Differentiate a `ccall` whose library Julia does not resolve while compiling
   the method. Julia 1.12 leaves a module-qualified library
   (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
