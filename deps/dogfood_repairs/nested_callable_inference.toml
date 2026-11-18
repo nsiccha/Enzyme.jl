@@ -1,0 +1,2 @@
+summary = "Nested result-type queries retain concrete types when a higher-order helper calls a different kind of callable"
+tests = ["test/inference_recursion.jl"]

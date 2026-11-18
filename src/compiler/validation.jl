@@ -472,6 +472,22 @@ function plt_got(fn_got::LLVM.GlobalVariable, fname::String, initfn::LLVM.Functi
     return PLTGot(arg1, sym)
 end
 
+"""
+    looked_up_by_plain_name(lib::Ptr{Cvoid})::Bool
+
+Whether a PLT stub that looks its symbol up in `lib` (a `PLTGot` whose library is a handle) finds
+the function its plain name resolves to where a derivative is linked: `lib` is libjulia-internal
+(Julia's `JL_LIBJULIA_INTERNAL_DL_LIBNAME`, 3), or no library at all, which Julia looks up in the
+process's global scope (`jl_RTLD_DEFAULT_handle`), as the JIT does a plain name. A `ccall` without
+a library gets the latter since Julia 1.13: its `jl_dlfind` no longer counts a function of a
+library libjulia-internal depends on, such as libc's `memchr`, as one of libjulia-internal's own,
+where Julia 1.10 and 1.12 gave the former. The plain name is also what libEnzyme knows such a
+function by; under any other name it is an unknown declaration that it cannot differentiate.
+"""
+function looked_up_by_plain_name(lib::Ptr{Cvoid})::Bool
+    return lib == C_NULL || lib == reinterpret(Ptr{Cvoid}, UInt(0x03))
+end
+
 function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRError}, mod::LLVM.Module, enzyme_ctx::EnzymeContext)
     imported = Set(String[])
     if haskey(functions(mod), "malloc")
@@ -701,7 +717,7 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
                                 fused_name = if arg1 isa AbstractString
                                     "ejlstr\$$fname\$$arg1"
                                 else
-                                    if arg1 == reinterpret(Ptr{Nothing}, UInt(0x03))
+                                    if looked_up_by_plain_name(arg1)
                                         fname
                                     else
                                         arg1 = reinterpret(UInt, arg1)

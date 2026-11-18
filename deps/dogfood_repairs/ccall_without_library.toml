@@ -1,0 +1,2 @@
+summary = "A ccall that names no library, such as the memchr call behind findfirst on a String, differentiates on Julia 1.13, which no longer resolves such a C library function to libjulia-internal while compiling"
+tests = ["test/ccall_library.jl", "test/precompile.jl"]
