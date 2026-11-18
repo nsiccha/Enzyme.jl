@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T20:30:37Z",
+  "prepared_at": "2026-11-18T20:50:19Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -4309,12 +4309,34 @@
           ],
           "result": "failed",
           "detail": "The direct forward tangent matched 1.375. The full file had 20,440 passing assertions, 8 errors in static forward-over-reverse Hessian-vector tests and 12 marked broken. The eight errors raised EnzymeRuntimeActivityError while differentiating generic triangular division with a constant matrix. Julia build 96ca370cf0e."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.13.1",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 72555a7568142c5448b7d67541e922db147c5515",
+          "result": "passed",
+          "tests": [
+            "Nine targeted triangular Hessian-vector cases with runtime activity"
+          ],
+          "detail": "The gradient and Hessian-vector product matched their analytical references in all nine cases with set_runtime_activity(Forward). Upstream and the LAPACK helper alone raised EnzymeNoDerivativeError in all nine with both activity settings."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.13.1",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 72555a7568142c5448b7d67541e922db147c5515",
+          "result": "failed",
+          "tests": [
+            "Nine targeted triangular Hessian-vector cases with static activity"
+          ],
+          "detail": "The three-argument UpperTriangular ldiv! case matched both analytical references. The eight other cases raised EnzymeRuntimeActivityError: adjoint, transpose and in-place solves for LowerTriangular and UnitLowerTriangular, plus ordinary solves for UpperTriangular and UnitUpperTriangular."
         }
       ],
       "draft": {
         "title": "Forward differentiation cannot compute the tangent of a LAPACK triangular solve",
-        "body": "Forward differentiation of a two-by-two upper-triangular solve raises `EnzymeNoDerivativeError` at `LAPACK.trtrs!` on upstream `1ee9a6f8` with Enzyme_jll 0.0.311+0. This occurs on Julia 1.10.12 and 1.12.7.\n\n```julia\nusing Enzyme, LinearAlgebra\n\nobjective(A, b) = sum(LAPACK.trtrs!('U', 'N', 'N', A, copy(b)))\nA = [2.0 1.0; 0.0 3.0]\ndA = [0.5 -1.0; 9.0 0.25]\nb, db = [5.0, 6.0], [2.0, -1.0]\nautodiff(Forward, objective, Duplicated(A, dA), Duplicated(b, db))\n```\n\nThe solution is `x = [1.5, 2.0]`. Differentiating `A*x = b` gives `A*dx = db - dA*x`, using only the upper triangle. The expected derivative of the sum is `1.375`. The patched rule returns that value, including when the unused lower triangle of `dA` is nonzero.\n\nOn Julia 1.13.1 the two-commit patch also gives the expected first derivative. Eight static forward-over-reverse cases in the full test file raise `EnzymeRuntimeActivityError`.\n\n[Shared helper](https://github.com/nsiccha/Enzyme.jl/commit/a17f475adf8f46679740d19feac022a079a70fce) · [Rule and numerical regression](https://github.com/nsiccha/Enzyme.jl/commit/7394520b66b5a8be57f6146b1f2be8c572e37684)",
-        "prepared_at": "2026-11-18T20:30:37Z"
+        "body": "Forward differentiation of a two-by-two upper-triangular solve raises `EnzymeNoDerivativeError` at `LAPACK.trtrs!` on upstream `1ee9a6f8` with Enzyme_jll 0.0.311+0. This occurs on Julia 1.10.12 and 1.12.7.\n\n```julia\nusing Enzyme, LinearAlgebra\n\nobjective(A, b) = sum(LAPACK.trtrs!('U', 'N', 'N', A, copy(b)))\nA = [2.0 1.0; 0.0 3.0]\ndA = [0.5 -1.0; 9.0 0.25]\nb, db = [5.0, 6.0], [2.0, -1.0]\nautodiff(Forward, objective, Duplicated(A, dA), Duplicated(b, db))\n```\n\nThe solution is `x = [1.5, 2.0]`. Differentiating `A*x = b` gives `A*dx = db - dA*x`, using only the upper triangle. The expected derivative of the sum is `1.375`. The patched rule returns that value, including when the unused lower triangle of `dA` is nonzero.\n\nOn Julia 1.13.1 the two-commit patch also gives the expected first derivative. Eight static forward-over-reverse cases raise `EnzymeRuntimeActivityError`. With `set_runtime_activity(Forward)`, all eight and a three-argument `ldiv!` control give the analytical gradient and Hessian-vector product under default bounds. The control also passes with static activity. Upstream and the helper alone lack a derivative for all nine cases in either mode.\n\n[Shared helper](https://github.com/nsiccha/Enzyme.jl/commit/a17f475adf8f46679740d19feac022a079a70fce) · [Rule and numerical regression](https://github.com/nsiccha/Enzyme.jl/commit/7394520b66b5a8be57f6146b1f2be8c572e37684)",
+        "prepared_at": "2026-11-18T20:50:19Z"
       }
     },
     {
