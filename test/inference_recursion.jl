@@ -36,11 +36,44 @@ recursion_sum_loss(xs, w) = sum(w .* recursion_nested_sum(xs))
     @test w == [2.0, 3.0]
 end
 
+struct RecursionOuterCell
+    scale::Float64
+end
+struct RecursionInnerCell
+    scale::Float64
+end
+
+function recursion_cell(f, args...)
+    T = Base.promote_op(f, map(typeof, args)...)
+    return zero(T) + f(args...)
+end
+
+(f::RecursionInnerCell)(x, y, z) = f.scale * (x + y + z)
+(f::RecursionOuterCell)(x, y) = x > 0 ? recursion_cell(RecursionInnerCell(f.scale), x, x, y) : 0.0
+recursion_cell_loss(scale, x, y) = recursion_cell(RecursionOuterCell(scale), x, y)
+
+@testset "Nested result-type queries for different callables" begin
+    interp = recursion_fresh_interp()
+    @test only(Base.code_typed(recursion_cell_loss, (Float64, Float64, Float64); interp, optimize = false))[2] === Float64
+
+    report = Enzyme.derivative_report() do
+        autodiff(ReverseWithPrimal, recursion_cell_loss, Active, Active(0.5), Const(2.0), Const(3.0))
+    end
+    @test report.value == ((7.0, nothing, nothing), 3.5)
+    findings = only(report.derivatives).findings
+    @test !any(f -> !f.throw_only && f.kind in (:dynamic_dispatch, :enzyme_runtime_fallback), findings)
+end
+
 recursion_fixed(n) = n <= 0 ? 1 : recursion_fixed(n - 1) + 1
 recursion_growing_type(x, n) = n <= 0 ? length(x) : recursion_type_step((x,), n - 1)
 recursion_type_step(x, n) = recursion_growing_type(x, n)
 recursion_growing_value(::Val{N}, n) where {N} = n <= 0 ? N : recursion_value_step(Val(N + 1), n - 1)
 recursion_value_step(x, n) = recursion_growing_value(x, n)
+recursion_other_cell(f::RecursionOuterCell) = RecursionInnerCell(f.scale)
+recursion_other_cell(f::RecursionInnerCell) = RecursionOuterCell(f.scale)
+function recursion_growing_arity(f, n, args...)
+    return n <= 0 ? length(args) : recursion_growing_arity(recursion_other_cell(f), n - 1, args..., n)
+end
 
 @testset "Recursive inference still converges" begin
     interp = recursion_fresh_interp()
@@ -50,6 +83,7 @@ recursion_value_step(x, n) = recursion_growing_value(x, n)
     for (f, types) in (
             (recursion_growing_type, (Tuple{Int}, Int)),
             (recursion_growing_value, (Val{1}, Int)),
+            (recursion_growing_arity, (RecursionOuterCell, Int)),
         )
         interp = recursion_fresh_interp()
         @test only(Base.code_typed(f, types; interp, optimize = false))[2] in (Int, Any)
@@ -57,4 +91,5 @@ recursion_value_step(x, n) = recursion_growing_value(x, n)
     @test recursion_fixed(3) == 4
     @test recursion_growing_type((1,), 3) == 1
     @test recursion_growing_value(Val(1), 3) == 4
+    @test recursion_growing_arity(RecursionOuterCell(1.0), 3) == 3
 end
