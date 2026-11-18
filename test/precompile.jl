@@ -63,6 +63,24 @@ print(Int(Base.JLOptions().use_pkgimages), " ", Int(Base.JLOptions().code_covera
 flush(stdout)
 """
 
+# For a child that reads the code a `MethodInstance` was inferred to: that of the first
+# `CodeInstance` in its cache that holds any, compressed into a `String` or as a `CodeInfo`, which
+# Julia 1.13 keeps for some code it loads from an image. `nothing` where none holds code.
+const INFERRED_CODE = """
+function inferred_code(mi::Core.MethodInstance)
+    isdefined(mi, :cache) || return nothing
+    ci = mi.cache
+    while true
+        # Before Julia 1.12 the field is undefined where the JIT dropped the code.
+        src = isdefined(ci, :inferred) ? ci.inferred : nothing
+        src isa String && return Base._uncompressed_ir(ci, src)
+        src isa Core.CodeInfo && return src
+        isdefined(ci, :next) || return nothing
+        ci = ci.next
+    end
+end
+"""
+
 function child_command(load_path, code)
     return addenv(
         `$(child_julia_cmd()) --project=$(Base.active_project()) --startup-file=no -e $code`,
@@ -660,17 +678,15 @@ print(stats.compiled, " ", stats.materialized, " ", reason, " ", join(g, " "))
             code = """
             using Enzyme, EnzymeRetained
             const C = Enzyme.Compiler
+            $INFERRED_CODE
             function cells()
                 found = Any[]
                 for m in methods(C.thunk), mi in Base.specializations(m)
                     mi === nothing && continue
                     occursin("EnzymeRetained.through_callee", string(mi.specTypes)) || continue
                     occursin("DEM_ReverseModeCombined", string(mi.specTypes)) || continue
-                    ci = mi.cache
-                    while !(ci.inferred isa String) && isdefined(ci, :next)
-                        ci = ci.next
-                    end
-                    src = Base._uncompressed_ir(ci, ci.inferred)
+                    src = inferred_code(mi)
+                    src === nothing && continue
                     for st in src.code, arg in (st isa Expr ? st.args : ())
                         arg isa C.LazyThunk && push!(found, arg)
                         if arg isa Expr
@@ -751,16 +767,13 @@ end
 const RETAINED_CALLEES_HELD = """
 using Enzyme, EnzymeRetainedCallees
 const C = Enzyme.Compiler
+$INFERRED_CODE
 function held(callee, setting)
     for m in methods(C.runtime_thunk), mi in Base.specializations(m)
         mi isa Core.MethodInstance || continue
         occursin("EnzymeRetainedCallees." * callee, string(mi.specTypes)) || continue
-        isdefined(mi, :cache) || continue
-        ci = mi.cache
-        while !(ci.inferred isa String) && isdefined(ci, :next)
-            ci = ci.next
-        end
-        src = Base._uncompressed_ir(ci, ci.inferred)
+        src = inferred_code(mi)
+        src === nothing && continue
         for st in src.code, arg in (st isa Expr ? st.args : ())
             arg isa C.LazySplitThunks || continue
             arg.job.config.params.atomicAdd === setting || continue
@@ -982,17 +995,13 @@ print(stats.compiled, " ", stats.materialized, " ", isempty(stats.rejected), " "
 const RETAINED_THREADS_HELD = """
 using Enzyme, EnzymeRetainedThreads
 const C = Enzyme.Compiler
+$INFERRED_CODE
 function held(f, setting, mode)
     for m in methods(C.thunk), mi in Base.specializations(m)
         mi isa Core.MethodInstance || continue
         occursin("typeof(EnzymeRetainedThreads." * f * ")", string(mi.specTypes)) || continue
-        isdefined(mi, :cache) || continue
-        ci = mi.cache
-        while !(ci.inferred isa String) && isdefined(ci, :next)
-            ci = ci.next
-        end
-        ci.inferred isa String || continue
-        src = Base._uncompressed_ir(ci, ci.inferred)
+        src = inferred_code(mi)
+        src === nothing && continue
         for st in src.code, arg in (st isa Expr ? st.args : ())
             arg isa C.LazyThunk || continue
             params = arg.job.config.params
