@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "ef0b4ab4545fdea0a4ab1933e71c7fca043d4df2"
+    "sha": "c9fc29483fe6cf1dd2b3de23f0d4b1df5a4d434d"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T20:50:19Z",
+  "prepared_at": "2026-11-18T21:07:04Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -4732,6 +4732,109 @@
         "retained-derivatives"
       ],
       "requires": [],
+      "validation": []
+    },
+    {
+      "id": "boxed-constant-argument",
+      "role": "fix",
+      "title": "Reverse mode loses constant input activity across a dynamic call",
+      "summary": "Dynamic calls preserve the activity of a constant argument copied into an immutable box.",
+      "repairs": [
+        {
+          "id": "boxed_constant_argument",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse mode loses constant input activity across a dynamic call",
+        "body": "Consider a callable holding an immutable record with data `[3.0]`, a dynamically typed scale `2.0`, and an offset `1.0`. Its dynamically dispatched score computes `scale*x + data[1]*x + offset`. Ordinary reverse mode must keep those captured fields constant when passing the record through a fresh box. At `x = 0.4` the score is 3 and the derivative is 5.\n\nIf the caller instead constructs the record from the active input, with `data = [x]` and `offset = x`, the derivative is 3.8. The regression exercises both calls so classifying every fresh box as constant would fail.\n\n[Regression test](https://github.com/nsiccha/Enzyme.jl/blob/c9fc29483fe6cf1dd2b3de23f0d4b1df5a4d434d/test/typeunstable.jl) · [Original fork change](https://github.com/nsiccha/Enzyme.jl/commit/3f73daf610caef6b8f97688be251b8d9bf7030d9)",
+        "prepared_at": "2026-11-18T21:07:04Z"
+      },
+      "fix": {
+        "originals": [
+          "3f73daf610caef6b8f97688be251b8d9bf7030d9"
+        ],
+        "commits": [],
+        "why_together": "The original changes the activity check for boxed arguments in dynamic dispatch and tests both captured constant fields and fields constructed from the active input."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "boxed-memory-read",
+      "role": "fix",
+      "title": "Reverse mode loses adjoints of repeated reads from boxed Julia collections",
+      "summary": "Reverse accumulates the derivative of a dynamically dispatched immutable element into its original Array or Memory slot.",
+      "repairs": [
+        {
+          "id": "boxed_memory_read",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse mode loses adjoints of repeated reads from boxed Julia collections",
+        "body": "On Julia 1.11 and later, an element of a `Vector` or `Memory` can be an immutable record stored in a box. Read a record with fields `(3.0, 4.0)` twice through a dynamically selected score `r.first + 2*r.second`. The primal is 22. With the destination adjoint initially `(1.0, 3.0)`, reverse mode should leave `(3.0, 7.0)` in that same collection slot.\n\nThe fork regression also checks batched seeds, a record holding a mutable vector and an array whose first element was removed.\n\n[Regression test](https://github.com/nsiccha/Enzyme.jl/blob/c9fc29483fe6cf1dd2b3de23f0d4b1df5a4d434d/test/boxed_storage.jl) · [Original fork change](https://github.com/nsiccha/Enzyme.jl/commit/0e64c92ce595d219f3e3eb7e279d88c1d4509f36)",
+        "prepared_at": "2026-11-18T21:07:04Z"
+      },
+      "fix": {
+        "originals": [
+          "0e64c92ce595d219f3e3eb7e279d88c1d4509f36"
+        ],
+        "commits": [],
+        "why_together": "The indexing and adjoint rules and their regression are in 0e64c92c. That commit also includes the persistent-storage repair. The boxed-read part has yet to be verified separately on upstream."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "boxed-storage-layouts",
+      "role": "fix",
+      "title": "Reverse mode confuses field layouts across nodes of a persistent collection",
+      "summary": "Reverse preserves the field layout of inline records and distinct boxed objects in persistent collections.",
+      "repairs": [
+        {
+          "id": "boxed_storage_layouts",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse mode confuses field layouts across nodes of a persistent collection",
+        "body": "Gen 0.4.9 stores observations in a persistent tree. A static `Gen.Map` with four observations fits in one leaf. Forty observations exercise a second leaf. When reverse mode copies inline records or follows boxed nodes of different types, it must keep the integer counts and floating-point rates distinct.\n\nFor a normal prior on `a` and Poisson observations with log rates `a*t[i]`, the expected score derivative is `-a + sum(t .* (counts .- exp.(a .* t)))`. The linked fixture fixes all observations and checks both tree sizes. It separately checks that updating a normal-model trace preserves the original trace.\n\n[Regression test](https://github.com/nsiccha/Enzyme.jl/blob/c9fc29483fe6cf1dd2b3de23f0d4b1df5a4d434d/test/integration/Gen/runtests.jl) · [Original fork change](https://github.com/nsiccha/Enzyme.jl/commit/0e64c92ce595d219f3e3eb7e279d88c1d4509f36)",
+        "prepared_at": "2026-11-18T21:07:04Z"
+      },
+      "fix": {
+        "originals": [
+          "0e64c92ce595d219f3e3eb7e279d88c1d4509f36"
+        ],
+        "commits": [],
+        "why_together": "The Gen fixture and Julia layout handling share 0e64c92c with the boxed-read fix. Apply the boxed constant-argument change first to reproduce the fork's two-commit series. The native prerequisite retains distinct boxed layouts during type analysis. A smaller set for the static Map alone has yet to be verified."
+      },
+      "depends_on": [
+        "boxed-constant-argument"
+      ],
+      "requires": [
+        {
+          "name": "libEnzyme boxed-layout repair",
+          "repo": "nsiccha/Enzyme",
+          "sha": "c423e860eed0bc541955463fc6ded3b81cd82660",
+          "build": "53d288ebbf8c47ff2fc6403458c88c3eb60329b7",
+          "why": "The repair record names the original native build. The package selects the cherry-pick of that change on the published native branch."
+        }
+      ],
       "validation": []
     }
   ]
