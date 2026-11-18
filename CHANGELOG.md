@@ -7,6 +7,24 @@
   `zero(Base.promote_op(f, ...))` can now differentiate the addition
   statically when the cell itself queries another callable's result type.
 
+- Fix two defects in the reverse rule for `sizehint!` on a `Float32` or
+  `Float64` vector, on Julia 1.11 and later. The rule repeats the call on the
+  derivative vector, which allocates the new storage uninitialized, but zeroed
+  only the vector's current length. Elements that `push!`, `pushfirst!`,
+  `append!` or `resize!` later grew into the reserved storage started with
+  whatever the allocator had left there. So a Reverse gradient or a nested
+  derivative through, for example, `sizehint!(Float64[], n)` followed by `push!`
+  returned `NaN` or huge values in some calls and correct values in others,
+  more often after heavy allocation. The rule now zeroes all of the new storage.
+  Separately, the rule moved the adjoints of the elements the vector held at
+  the call back through the derivative vector's header as the reverse pass
+  found it. After `pushfirst!` into storage reserved with `first = true`, or a
+  `push!` past the reserved storage that reallocated, that header pointed
+  elsewhere and those adjoints were lost: the gradient of the retained elements
+  came back zero. The rule now reads them where the call put them.
+  `Enzyme.has_dogfood_repair(:sizehint_reserved_shadow)` reports both repairs.
+  `test/array_storage.jl` grows into reserved storage after leaving freed
+  storage nonzero, and `test/nested_unalias_view.jl` covers the original case.
 - Keep the type facts of a union return buffer independent of what compiled
   earlier in the process. A function returning, for example,
   `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct
