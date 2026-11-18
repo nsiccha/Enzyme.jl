@@ -3170,7 +3170,7 @@ end
 """
     constant_gep_path(ty, gep)
 
-The `extractvalue` indices that the `getelementptr` instruction `gep` appends to a path
+The element indices that the `getelementptr` instruction `gep` appends to a path
 ending at a constant of type `ty`, together with the type they select, or `nothing` when
 `gep` does not address an element of that constant.
 
@@ -3226,7 +3226,11 @@ function prop_global!(g::LLVM.GlobalVariable)
             position!(B, LLVM.before(var))
             res = g.initializer
             for p in path
-                res = extract_value!(B, res, p)
+                res = if res.value_type isa LLVM.VectorType
+                    extract_element!(B, res, LLVM.ConstantInt(p))
+                else
+                    extract_value!(B, res, p)
+                end
             end
             changed = true
             for u in var.users
