@@ -3860,8 +3860,10 @@ function enzyme!(
     end
     @assert length(args_typeInfo) == length(collect(parameters(primalf)))
 
+    type_inline_memory_copies!(mod, enzyme_ctx, dl, ctx, seen)
     if !runtimeActivity
         type_slot_field_loads!(mod, enzyme_ctx)
+        restore_boxed_reference_copies!(mod, enzyme_ctx)
         mark_constant_fields!(mod, primalf, args_activity)
     end
 
@@ -6925,6 +6927,89 @@ function memtransfer_truetype(world::UInt, @nospecialize(ptr::LLVM.Value), @nosp
     return fullmd_entries_to_md(entries)
 end
 
+# After Julia's optimizer combines adjacent field copies, a single load can
+# cover parts of several fields. For example, [3 x i64] can hold two Float64s
+# and an Int. Slice the inline element layout at the actual byte offset.
+function type_inline_memory_copies!(mod, enzyme_ctx, dl, ctx, seen)
+    haskey(functions(mod), "julia.gc_loaded") || return
+    layout = datalayout(mod)
+    for f in functions(mod), bb in blocks(f), ld in instructions(bb)
+        ld isa LLVM.LoadInst || continue
+        ty = value_type(ld)
+        ty isa Union{LLVM.ArrayType, LLVM.StructType} || continue
+        ptr = operands(ld)[1]
+        addrspace(value_type(ptr)) == 13 && !haskey(metadata(ld), "enzyme_type") || continue
+        base, offset = get_base_and_offset(ptr)
+        known, PT, cc = abs_typeof(base, enzyme_ctx)
+        known && cc == GPUCompiler.BITS_VALUE && PT <: Ptr && isconcretetype(PT) || continue
+        ET = eltype(PT)
+        width = LLVM.sizeof(layout, ty)
+        isconcretetype(ET) && allocatedinline(ET) && 0 <= offset && offset + width <= sizeof(ET) || continue
+        tree = copy(typetree_in_world(enzyme_ctx.world, ET, ctx, dl, seen))
+        shift!(tree, dl, offset, width, 0)
+        metadata(ld)["enzyme_type"] = to_md(tree, ctx)
+        LLVM.dispose(tree)
+    end
+    return nothing
+end
+
+# When an inline array element is assembled on several control-flow paths,
+# LLVM can move its scalar fields into phi nodes, keeping even a floating-point
+# field in an integer register. The destination still has its Julia layout.
+# Describe just the stored field: the next field can have a different type.
+function type_numeric_field_store!(st::LLVM.StoreInst, enzyme_ctx, layout, dl, ctx, seen)
+    val, ptr = operands(st)
+    val isa LLVM.PHIInst && ptr isa LLVM.GetElementPtrInst || return
+    ty = value_type(val)
+    ty isa Union{LLVM.IntegerType, LLVM.FloatingPointType} || return
+    addrspace(value_type(ptr)) == 13 && !haskey(metadata(ptr), "enzyme_type") || return
+    # Reuse the load inference, including its checks on a variable element stride,
+    # Julia's inline representation, field boundaries and the width of the access.
+    known, T, cc = @dispose b = LLVM.IRBuilder() begin
+        position!(b, st)
+        probe = load!(b, ty, ptr)
+        try
+            abs_typeof(probe, enzyme_ctx)
+        finally
+            LLVM.erase!(probe)
+        end
+    end
+    known && cc == GPUCompiler.BITS_VALUE && isprimitivetype(T) || return
+    T <: Union{Integer, Float16, Float32, Float64} && sizeof(T) == LLVM.sizeof(layout, ty) || return
+    tree = copy(typetree_in_world(enzyme_ctx.world, T, ctx, dl, seen))
+    shift!(tree, dl, 0, sizeof(T), 0)
+    merge!(tree, TypeTree(API.DT_Pointer, ctx))
+    only!(tree, -1)
+    metadata(ptr)["enzyme_type"] = to_md(tree, ctx)
+    LLVM.dispose(tree)
+    return nothing
+end
+
+# A slot in boxed Memory{T} contains a Julia reference. When T admits
+# multiple concrete layouts, facts about one referent do not describe the
+# next referent read from (or written to) the buffer.
+function mark_abstract_boxed_element!(inst::Union{LLVM.LoadInst, LLVM.StoreInst}, enzyme_ctx)
+    @static VERSION < v"1.11-" && return
+    if inst isa LLVM.StoreInst
+        value, ptr = operands(inst)
+    else
+        value, ptr = inst, operands(inst)[1]
+    end
+    ty = value_type(value)
+    ty isa LLVM.PointerType && addrspace(ty) == Tracked && addrspace(value_type(ptr)) == 13 || return
+    base = ptr
+    while base isa Union{LLVM.GetElementPtrInst, LLVM.BitCastInst}
+        base = operands(base)[1]
+    end
+    called_function_name(base) == "julia.gc_loaded" || return
+    known, T, _ = abs_typeof(operands(base)[1], enzyme_ctx, true)
+    known && isconcretetype(T) && T <: Core.GenericMemory || return
+    if !isconcretetype(eltype(T)) && !allocatedinline(eltype(T))
+        metadata(inst)["enzyme_opaque_element"] = MDNode(LLVM.Metadata[])
+    end
+    return nothing
+end
+
 function memtransfer_entries(world::UInt, @nospecialize(ptr::LLVM.Value), nbytes::Union{Int, Nothing}, enzyme_ctx::EnzymeContext, extra_offset::Int, depth::Int)
     base, offset = get_base_and_offset(ptr)
     offset += extra_offset
@@ -7763,6 +7848,8 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     retype_allocas = Set{LLVM.Function}()
     for f in functions(mod), bb in blocks(f), inst in instructions(bb)
         fn = isa(inst, LLVM.CallInst) ? LLVM.called_operand(inst) : nothing
+        inst isa LLVM.StoreInst && type_numeric_field_store!(inst, enzyme_ctx, DL, dl, ctx, seen)
+        inst isa Union{LLVM.LoadInst, LLVM.StoreInst} && mark_abstract_boxed_element!(inst, enzyme_ctx)
        
         if !API.HasFromStack(inst) && isa(inst, LLVM.AllocaInst)
             calluse = LLVM.CallInst[]

@@ -1,0 +1,2 @@
+summary = "Dynamic calls preserve the activity of a constant argument copied into an immutable box"
+tests = ["test/typeunstable.jl"]
