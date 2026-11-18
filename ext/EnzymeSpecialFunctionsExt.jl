@@ -11,6 +11,13 @@ function __init__()
     return Enzyme.Compiler.cmplx_known_ops[typeof(SpecialFunctions.besselk)] = (:cmplx_kn, 2, nothing)
 end
 
+# libEnzyme's tgamma rule calls an external digamma and omits the gamma factor.
+# Use Julia's digamma so the derivative also works without a loggamma call nearby.
+EnzymeRules.@easy_rule(
+    SpecialFunctions.gamma(x::Real),
+    (Ω * SpecialFunctions.digamma(x),),
+)
+
 # The reflection formulas for digamma and polygamma contain inv(tanpi(x)).
 # At half-integers tanpi(x) is infinite, so differentiating that intermediate
 # gives NaN although these functions and all their derivatives are finite.
