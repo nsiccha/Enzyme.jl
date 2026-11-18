@@ -35,6 +35,17 @@
   Several directions at once (`BatchDuplicated`) through a task are not
   supported, nested or not. `Enzyme.has_dogfood_repair(:nested_threaded_tasks)`
   reports the repair; `test/nested_threads.jl` covers it.
+- Compile Reverse over Reverse through a `Threads.@threads` loop on Julia 1.12
+  and 1.13, which stopped with `EnzymeInternalError` ("Illegal address space
+  propagation"). Before differentiating, libEnzyme moves a stack slot the
+  reverse pass may need to the heap and marks the allocation, so that it can
+  move it back where the derivative does not need it there. The code Enzyme
+  keeps of a derivative for an outer one to differentiate still carried that
+  mark, although in an augmented forward pass the allocation can escape
+  through the tape; the outer derivative then moved it back to the stack while
+  the loop's array of tapes held its address. The kept code now carries no
+  such marks. `Enzyme.has_dogfood_repair(:kept_stack_slot_markers)` reports
+  the repair; `test/nested_threads.jl` covers it.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture
   attributes only for typed raw data pointers, and ignores uses solely in

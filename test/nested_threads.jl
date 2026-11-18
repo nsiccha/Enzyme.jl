@@ -82,19 +82,6 @@ function nt_gradient_sqnorm(f::F, x) where {F}
     return sum(abs2, dx)
 end
 
-# The gradient of the squared norm of the gradient, or `nothing` where compiling it stops
-# with the internal error the testset below describes.
-function nt_reverse_over_reverse(f::F, x) where {F}
-    g = zero(x)
-    try
-        autodiff(Reverse, Const(nt_gradient_sqnorm), Active, Const(f), Duplicated(x, g))
-    catch err
-        err isa Enzyme.Compiler.EnzymeInternalError || rethrow()
-        return nothing
-    end
-    return g
-end
-
 @testset "Nested derivatives of Threads.@threads loops $(Threads.nthreads())" begin
     x = collect(1.0:6.0)
     v = collect(6.0:-1.0:1.0)
@@ -135,20 +122,12 @@ end
         end
 
         @testset "Reverse over Reverse" begin
-            if VERSION < v"1.11"
-                g = zero(x)
-                autodiff(Reverse, Const(nt_gradient_sqnorm), Active, Const(f), Duplicated(x, g))
-                @test g ≈ 2 * 128^2 .* x
-            elseif VERSION < v"1.12"
-                # Not measured: no Julia 1.11 where these tests are developed
-                @test_skip something(nt_reverse_over_reverse(f, x), zero(x)) ≈ 2 * 128^2 .* x
-            else
-                # Julia 1.12 and 1.13: the tape of the loop's body holds an object, and the
-                # outer reverse pass moves that object to the stack although the loop's
-                # callable stores it in the array of tapes. Compiling stops with
-                # `EnzymeInternalError` ("Illegal address space propagation").
-                @test_broken something(nt_reverse_over_reverse(f, x), zero(x)) ≈ 2 * 128^2 .* x
-            end
+            # On Julia 1.12 and 1.13 the body's tape holds a stack slot that libEnzyme had
+            # moved to the heap, and an outer reverse pass that took its mark along moved
+            # it back to the stack ("Illegal address space propagation").
+            g = zero(x)
+            autodiff(Reverse, Const(nt_gradient_sqnorm), Active, Const(f), Duplicated(x, g))
+            @test g ≈ 2 * 128^2 .* x
         end
     end
 
@@ -300,6 +279,31 @@ end
     end
     @test "jl_threadsfor" in ruled
     @test isempty(folded)
+end
+
+@testset "The code kept for an outer derivative has no marks of moved stack slots" begin
+    # libEnzyme marks a stack slot it moves to the heap before differentiating, and may move
+    # it back where the derivative does not need it. In a derivative's augmented forward
+    # pass such an allocation can escape through the tape, so an outer derivative that
+    # imports the code must not take the mark along.
+    LLVM = Enzyme.Compiler.LLVM
+    @testset "$f" for f in (nt_dynamic, nt_static)
+        augmented, _ = autodiff_thunk(ReverseSplitNoPrimal, Const{typeof(f)}, Active, Duplicated{Vector{Float64}})
+        kept = Enzyme.Compiler.cached_autodiff(augmented.primal)
+        @test kept !== nothing
+        marked = String[]
+        LLVM.Context() do _
+            mod = parse(LLVM.Module, Vector{UInt8}(codeunits(kept.bitcode)))
+            for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)
+                md = LLVM.metadata(inst)
+                for marker in Enzyme.Compiler.STACK_SLOT_MARKERS
+                    haskey(md, marker) && push!(marked, marker)
+                end
+            end
+            LLVM.dispose(mod)
+        end
+        @test isempty(marked)
+    end
 end
 
 # An outer derivative of a loop reaches the body's derivative in split mode: one callable
