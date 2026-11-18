@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T20:05:36Z",
+  "prepared_at": "2026-11-18T20:09:06Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -4124,41 +4124,151 @@
       "repairs": [],
       "upstream_refs": [],
       "fix": {
-        "commits": [],
-        "why_together": "The shadow-selection and forward-return helpers are parts of the two original triangular-rule commits. Include them once wherever triangular, Householder or structured log-determinant rules share them. The later ldiv! fixture change only affects the tests. [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75) · [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd)",
+        "branch": "rebase/lapack-forward-helpers",
         "originals": [
           "75e60dd595eb6524dfe33839d5fb884061f88d75",
           "70f202515eb045337f6ca5931201b51a89464dbd"
-        ]
+        ],
+        "commits": [
+          {
+            "sha": "a17f475adf8f46679740d19feac022a079a70fce",
+            "title": "Share shadow and forward-return handling across LAPACK rules",
+            "original": [
+              "75e60dd595eb6524dfe33839d5fb884061f88d75",
+              "70f202515eb045337f6ca5931201b51a89464dbd"
+            ]
+          }
+        ],
+        "why_together": "These two helpers select an active shadow for each batch lane and return the requested primal and tangent. Both were extracted from the first triangular rule and its trtrs! revision. This commit applies directly to upstream and is shared with the Householder and structured log-determinant rules."
       },
       "depends_on": [],
       "requires": [],
-      "validation": []
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "result": "passed",
+          "tests": [
+            "LAPACK helper contract"
+          ],
+          "detail": "15/15 assertions for active, constant and batched shadows and forward return annotations. The helper alone still raises EnzymeNoDerivativeError for the solve. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "result": "passed",
+          "tests": [
+            "LAPACK helper contract"
+          ],
+          "detail": "15/15 assertions for active, constant and batched shadows and forward return annotations. The helper alone still raises EnzymeNoDerivativeError for the solve. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "result": "passed",
+          "tests": [
+            "LAPACK helper contract"
+          ],
+          "detail": "15/15 assertions for active, constant and batched shadows and forward return annotations. The helper alone still raises EnzymeNoDerivativeError for the solve. Julia build 6d172b025e4."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "result": "passed",
+          "tests": [
+            "LAPACK helper contract"
+          ],
+          "detail": "15/15 assertions for active, constant and batched shadows and forward return annotations. The helper alone still raises EnzymeNoDerivativeError for the solve. Julia build 6d172b025e4."
+        }
+      ]
     },
     {
       "id": "triangular-forward",
       "role": "fix",
-      "title": "Forward differentiation through a triangular solve lacks the trtrs! rule",
-      "summary": "A linear solve with a triangular matrix should propagate a tangent through the LAPACK trtrs! operation. The derivative should agree with differentiating A*x=b, account for triangular wrappers, and leave structurally unused matrix entries inactive.",
+      "title": "Forward differentiation cannot compute the tangent of a LAPACK triangular solve",
+      "summary": "The forward derivative of an in-place triangular solve stops at LAPACK.trtrs!. Its tangent should solve the differentiated triangular system for each active direction.",
       "repairs": [],
       "upstream_refs": [],
       "fix": {
-        "commits": [],
-        "why_together": "The first original introduces the forward rule and tests. The second revises the implementation to use LAPACK.trtrs!. These commits also contain the shared LAPACK helpers. The later wrapper-type fixture is optional and needs separate changes in test dispatch and boxed-tuple tangents. [Later fixture](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6) · [Test dispatch](https://github.com/nsiccha/Enzyme.jl/commit/ff4fcff3fdc56ac3fa2a6bb6827274ea029811a4) · [Tuple tangents](https://github.com/nsiccha/Enzyme.jl/commit/57e176421262224a52837c8a5f057bc701f6aa77)",
+        "branch": "rebase/triangular-solve-forward",
         "originals": [
           "75e60dd595eb6524dfe33839d5fb884061f88d75",
           "70f202515eb045337f6ca5931201b51a89464dbd"
-        ]
+        ],
+        "commits": [
+          {
+            "sha": "7394520b66b5a8be57f6146b1f2be8c572e37684",
+            "title": "Differentiate LAPACK triangular solves through trtrs! in forward mode",
+            "original": [
+              "75e60dd595eb6524dfe33839d5fb884061f88d75",
+              "70f202515eb045337f6ca5931201b51a89464dbd"
+            ]
+          }
+        ],
+        "why_together": "Apply the shared LAPACK helper first, then the trtrs! rule and its original numerical fixture. Both commits draw on the same two historical changes. The original fixture constructs the triangular wrappers with named functions. A later test-only edit passes wrapper types as Const arguments and depends on two separate changes in test dispatch and boxed-tuple tangents. [Later fixture](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6) · [Test dispatch](https://github.com/nsiccha/Enzyme.jl/commit/ff4fcff3fdc56ac3fa2a6bb6827274ea029811a4) · [Boxed-tuple tangents](https://github.com/nsiccha/Enzyme.jl/commit/57e176421262224a52837c8a5f057bc701f6aa77)"
       },
       "depends_on": [
         "lapack-helpers"
       ],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "result": "passed",
+          "tests": [
+            "test/rules/internal_rules/triangular_solve.jl"
+          ],
+          "detail": "20,496 assertions passed and 0 were marked broken. The triangular-solve tangent matched the analytical 1.375. The full suite uses the original wrapper constructors. A separate trial of the later Const-wrapper fixture had 48 failures per run without its two prerequisites. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "result": "passed",
+          "tests": [
+            "test/rules/internal_rules/triangular_solve.jl"
+          ],
+          "detail": "20,496 assertions passed and 0 were marked broken. The triangular-solve tangent matched the analytical 1.375. The full suite uses the original wrapper constructors. A separate trial of the later Const-wrapper fixture had 48 failures per run without its two prerequisites. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "result": "passed",
+          "tests": [
+            "test/rules/internal_rules/triangular_solve.jl"
+          ],
+          "detail": "20,472 assertions passed and 12 were marked broken. The triangular-solve tangent matched the analytical 1.375. The full suite uses the original wrapper constructors. A separate trial of the later Const-wrapper fixture had 48 failures per run without its two prerequisites. Julia build 6d172b025e4."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "result": "passed",
+          "tests": [
+            "test/rules/internal_rules/triangular_solve.jl"
+          ],
+          "detail": "20,472 assertions passed and 12 were marked broken. The triangular-solve tangent matched the analytical 1.375. The full suite uses the original wrapper constructors. A separate trial of the later Const-wrapper fixture had 48 failures per run without its two prerequisites. Julia build 6d172b025e4."
+        }
+      ],
       "draft": {
-        "title": "Forward differentiation through a triangular solve lacks the trtrs! rule",
-        "body": "A linear solve with a triangular matrix should propagate a tangent through the LAPACK trtrs! operation. The derivative should agree with differentiating A*x=b, account for triangular wrappers, and leave structurally unused matrix entries inactive.\n\nOriginal rule changes, in apply order. [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75) · [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd)\n\nRegression coverage on the fork: [test/rules/internal_rules/triangular_solve.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/triangular_solve.jl).",
-        "prepared_at": "2026-11-18T19:35:49Z"
+        "title": "Forward differentiation cannot compute the tangent of a LAPACK triangular solve",
+        "body": "Forward differentiation of a two-by-two upper-triangular solve raises `EnzymeNoDerivativeError` at `LAPACK.trtrs!` on upstream `1ee9a6f8` with Enzyme_jll 0.0.311+0. This occurs on Julia 1.10.12 and 1.12.7.\n\n```julia\nusing Enzyme, LinearAlgebra\n\nobjective(A, b) = sum(LAPACK.trtrs!('U', 'N', 'N', A, copy(b)))\nA = [2.0 1.0; 0.0 3.0]\ndA = [0.5 -1.0; 9.0 0.25]\nb, db = [5.0, 6.0], [2.0, -1.0]\nautodiff(Forward, objective, Duplicated(A, dA), Duplicated(b, db))\n```\n\nThe solution is `x = [1.5, 2.0]`. Differentiating `A*x = b` gives `A*dx = db - dA*x`, using only the upper triangle. The expected derivative of the sum is `1.375`. The patched rule returns that value, including when the unused lower triangle of `dA` is nonzero.\n\n[Shared helper](https://github.com/nsiccha/Enzyme.jl/commit/a17f475adf8f46679740d19feac022a079a70fce) · [Rule and numerical regression](https://github.com/nsiccha/Enzyme.jl/commit/7394520b66b5a8be57f6146b1f2be8c572e37684)",
+        "prepared_at": "2026-11-18T20:09:06Z"
       }
     },
     {
