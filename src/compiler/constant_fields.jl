@@ -1274,12 +1274,12 @@ end
 split_constant_merge!(cf::ConstantFields, phi::LLVM.PHIInst) = unsink_constant_field_phi!(cf, phi)
 split_constant_merge!(::ConstantFields, sel::LLVM.SelectInst) = unselect_constant_load!(sel)
 
-# Every phi or select `merge_wanted` takes that only feeds loads in its block, which
-# `split_constant_merge!` can split.
-function constant_merges(mod::LLVM.Module, cf::ConstantFields)::Vector{LLVM.Instruction}
-    todo = LLVM.Instruction[]
+# Every phi or select (`T`) `merge_wanted` takes that only feeds loads in its block,
+# which `split_constant_merge!` can split.
+function constant_merges(mod::LLVM.Module, cf::ConstantFields, ::Type{T})::Vector{T} where {T <: Union{LLVM.PHIInst, LLVM.SelectInst}}
+    todo = T[]
     for f in functions(mod), bb in blocks(f), inst in instructions(bb)
-        (isa(inst, LLVM.PHIInst) || isa(inst, LLVM.SelectInst)) || continue
+        isa(inst, T) || continue
         isa(value_type(inst), LLVM.PointerType) || continue
         in_unreachable(cf, inst) && continue
         merge_wanted(cf, inst) || continue
@@ -1313,12 +1313,19 @@ end
 # or raise `EnzymeRuntimeActivityError` for a pointer into it.
 function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
     duplicate_merge_tails!(mod, cf)
-    todo = constant_merges(mod, cf)
+    # The selects go first. Splitting one moves the rest of its block to a new block
+    # and rebuilds the phis of the blocks after it (`retarget_phis!`), erasing those
+    # phis, so a phi collected before then would be split after it was freed. It
+    # erases no other select, and it moves the selects after it without erasing them.
+    split = 0
+    for sel in constant_merges(mod, cf, LLVM.SelectInst)
+        split += split_constant_merge!(cf, sel)
+    end
+    todo = constant_merges(mod, cf, LLVM.PHIInst)
     # Splitting an edge rebuilds the phis of the block it leads to, so the merges
-    # are collected again afterwards.
+    # are collected again afterwards. Splitting a phi erases no other phi.
     edges = Tuple{LLVM.BasicBlock, LLVM.BasicBlock}[]
     for merge in todo
-        isa(merge, LLVM.PHIInst) || continue
         bb = LLVM.parent(merge)
         for (_, pred) in LLVM.incoming(merge)
             length(collect(successors(terminator(pred)))) == 1 && continue
@@ -1333,12 +1340,12 @@ function split_constant_merges!(mod::LLVM.Module, cf::ConstantFields)
             split_edge!(builder, pred, succ)
             dispose(builder)
         end
-        todo = constant_merges(mod, cf)
+        todo = constant_merges(mod, cf, LLVM.PHIInst)
     end
     for merge in todo
-        split_constant_merge!(cf, merge)
+        split += split_constant_merge!(cf, merge)
     end
-    return length(todo)
+    return split
 end
 
 # Collect the fields a loaded pointer is only forwarded into. Reading through the
