@@ -7,7 +7,7 @@
 # run-time differentiation of a call it could not resolve, boxes, allocations on Julia's heap,
 # native allocations (Enzyme's tape and caches), and other calls into the runtime or a library.
 # The list stays with the compiled code (`derivative_records`), and with the machine code a
-# package image keeps (`RetainedDerivative`), so that `derivative_report` can describe every
+# package image keeps (`RetainedDerivative`), so that `derivative_report` can describe a
 # derivative a piece of code runs, whenever it was compiled.
 #
 # Nothing here runs code of the caller inside the compiler: a compile may happen in a generator,
@@ -602,8 +602,12 @@ end
 # split-mode derivative lead to the same one. Guarded by `cache_publish_lock`.
 const derivative_records = Dict{Ptr{Cvoid}, DerivativeRecord}()
 
-# Derivatives called under a report that Enzyme has no record of. There should be none: every
-# path that gives out the address of a derivative registers it.
+# The record of each derivative compiled for inlining into its caller, by the type of the
+# `Val` its thunk holds in place of an address. Guarded by `cache_publish_lock`.
+const inlined_derivative_records = IdDict{Any, DerivativeRecord}()
+
+# Derivatives handed to a caller under a report that Enzyme has no record of. There should be
+# none: every path that compiles or links a derivative registers it.
 const unrecorded_derivative_calls = Threads.Atomic{Int}(0)
 
 function derivative_record(ptr::Ptr{Cvoid})::Union{Nothing, DerivativeRecord}
@@ -615,17 +619,39 @@ function derivative_record(ptr::Ptr{Cvoid})::Union{Nothing, DerivativeRecord}
     end
 end
 
+function inlined_derivative_record(@nospecialize(code::Val))::Union{Nothing, DerivativeRecord}
+    lock(cache_publish_lock)
+    try
+        return get(inlined_derivative_records, typeof(code), nothing)
+    finally
+        unlock(cache_publish_lock)
+    end
+end
+
+# Keep `record` for the derivative whose thunk holds `code`: the address of its compiled code,
+# or the `Val` that stands for a module compiled for inlining.
 function register_derivative!(ptr::Ptr{Cvoid}, record::DerivativeRecord)
     ptr == C_NULL && return nothing
     lock(cache_publish_lock)
     try
         derivative_records[ptr] = record
-        delete!(pending_derivatives, ptr)
     finally
         unlock(cache_publish_lock)
     end
     return nothing
 end
+
+function register_derivative!(@nospecialize(code::Val), record::DerivativeRecord)
+    lock(cache_publish_lock)
+    try
+        inlined_derivative_records[typeof(code)] = record
+    finally
+        unlock(cache_publish_lock)
+    end
+    return nothing
+end
+
+register_derivative!(::Nothing, ::DerivativeRecord) = nothing
 
 # Scan `mod`, the module of `job` as the JIT gets it. A failure of the scan must not cost the
 # derivative: the record keeps the reason, and a report shows it.
@@ -737,14 +763,15 @@ function compiled_derivative_record(job::CompilerJob, mod::LLVM.Module)::Tuple{D
 end
 
 """
-    publish_derivative_record!(record, ir, pointers...)
+    publish_derivative_record!(record, ir, adjoint, primal)
 
-Keep `record` for the derivative the JIT placed at `pointers`, and tell a running report that
-it was compiled.
+Keep `record` for the derivative whose thunks hold `adjoint` and `primal` (addresses the JIT
+gave out, or the `Val`s of a derivative compiled for inlining), and tell a running report
+that it was compiled.
 """
-function publish_derivative_record!(record::DerivativeRecord, ir::Union{Nothing, Vector{UInt8}}, adjoint, primal)
-    adjoint isa Ptr{Cvoid} && register_derivative!(adjoint, record)
-    primal isa Ptr{Cvoid} && register_derivative!(primal, record)
+function publish_derivative_record!(record::DerivativeRecord, ir::Union{Nothing, Vector{UInt8}}, @nospecialize(adjoint::Union{Nothing, Ptr{Cvoid}, Val}), @nospecialize(primal::Union{Nothing, Ptr{Cvoid}, Val}))
+    register_derivative!(adjoint, record)
+    register_derivative!(primal, record)
     collector = current_derivative_collector()
     collector === nothing || collect_derivative!(collector, record, record.source === :inlined ? :inlined : :compiled, ir)
     return nothing
@@ -769,51 +796,83 @@ function linked_derivative_record!(job::CompilerJob, findings::Union{Nothing, Ve
 end
 
 """
-    note_derivative_call(fptr)
+    note_derivative_use(ptr)
 
-Tell a running [`derivative_report`](@ref) that the derivative at `fptr` is being called. The
-code of every call of a derivative runs this; while no report is running it reads one counter.
+Tell a running [`derivative_report`](@ref) that the caller is about to call the derivative
+at `ptr`. While no report is running this reads one counter.
 
-Code that Enzyme itself differentiates holds no such call: the inner derivative of a nested
-one becomes part of the outer one's code, which is what a report then describes.
+The functions that hand a compiled derivative to the code that calls it run this:
+`lazy_thunk`, and through [`noted_thunks`](@ref) `lazy_split_thunks` and the code that the
+generator of `thunk` returns. It is not in the code that makes the call (`enzyme_call`),
+because code compiled for a device shares that code: a kernel calls the derivative it got
+from `autodiff_deferred`, and it can neither read a counter of the host nor call into it.
+So two uses go unseen once a derivative is compiled: a call through `autodiff_deferred`, and
+a call of a split-mode thunk that its caller got from `autodiff_thunk` earlier and kept.
+
+Code that Enzyme itself differentiates gets the inner derivative of a nested one as a
+constant, without this: that derivative becomes part of the outer one's code, which is what
+a report then describes.
 """
-@inline note_derivative_call(fptr::Ptr{Cvoid}) = (Enzyme.within_autodiff() || !reports_running()) ? nothing : called_derivative(fptr)
-@inline note_derivative_call(@nospecialize(fptr)) = nothing
+@inline note_derivative_use(ptr::Ptr{Cvoid}) = (Enzyme.within_autodiff() || !reports_running()) ? nothing : used_derivative(ptr)
 
-# The addresses of the trampolines of deferred derivatives that were not compiled yet: the
-# first call through one compiles it, after that call was noted. Guarded by
-# `cache_publish_lock`.
-const pending_derivatives = Set{Ptr{Cvoid}}()
+"""
+    noted_thunks(thunks)
 
-function pending_derivative!(ptr::Ptr{Cvoid})
-    lock(cache_publish_lock)
-    try
-        push!(pending_derivatives, ptr)
-    finally
-        unlock(cache_publish_lock)
+`thunks`, one thunk or the two of a split-mode derivative, after telling a running
+[`derivative_report`](@ref) that the caller is about to call them (see
+[`note_derivative_use`](@ref)).
+"""
+@inline function noted_thunks(thunks::T) where {T}
+    (Enzyme.within_autodiff() || !reports_running()) || used_thunks(thunks)
+    return thunks
+end
+
+@noinline function used_derivative(ptr::Ptr{Cvoid})
+    collector = DERIVATIVE_COLLECTOR[]
+    collector === nothing && return nothing
+    record = derivative_record(ptr)
+    if record === nothing
+        Threads.atomic_add!(unrecorded_derivative_calls, 1)
+        return nothing
+    end
+    collect_derivative!(collector, record, record.source === :image ? :image : :cached, nothing)
+    return nothing
+end
+
+# A derivative compiled for inlining into its caller has no code of its own to inspect.
+function used_inlined_derivative(@nospecialize(code::Val))
+    collector = DERIVATIVE_COLLECTOR[]
+    collector === nothing && return nothing
+    record = inlined_derivative_record(code)
+    if record === nothing
+        Threads.atomic_add!(unrecorded_derivative_calls, 1)
+        return nothing
+    end
+    collect_derivative!(collector, record, :inlined, nothing)
+    return nothing
+end
+
+# The first field of a thunk is what its call runs: the address of the compiled code, or
+# for a derivative compiled for inlining the `Val` of its module and function.
+function used_thunk(@nospecialize(thunk))
+    thunk isa AbstractThunk || return nothing
+    code = getfield(thunk, 1)
+    if code isa Ptr{Cvoid}
+        used_derivative(code)
+    elseif code isa Val
+        used_inlined_derivative(code)
     end
     return nothing
 end
 
-function is_pending_derivative(ptr::Ptr{Cvoid})::Bool
-    lock(cache_publish_lock)
-    try
-        return ptr in pending_derivatives
-    finally
-        unlock(cache_publish_lock)
+@noinline function used_thunks(@nospecialize(thunks))
+    if thunks isa Tuple
+        for thunk in thunks
+            used_thunk(thunk)
+        end
+    else
+        used_thunk(thunks)
     end
-end
-
-@noinline function called_derivative(fptr::Ptr{Cvoid})
-    collector = DERIVATIVE_COLLECTOR[]
-    collector === nothing && return nothing
-    record = derivative_record(fptr)
-    if record === nothing
-        # A deferred derivative on its first call is compiled by that call, and reported then.
-        is_pending_derivative(fptr) || Threads.atomic_add!(unrecorded_derivative_calls, 1)
-        return nothing
-    end
-    collect_derivative!(collector, record, record.source === :image ? :image : :cached, nothing)
     return nothing
 end
 
@@ -834,10 +893,12 @@ One derivative in a [`DerivativeReport`](@ref).
   plainly (see [`set_atomic_add`](@ref)): it does so too, unless it runs work in parallel.
 - `origin`: `:compiled` while the report ran, `:cached` for code compiled earlier in the
   session, `:image` for code linked from a package image, or `:inlined` for a derivative
-  compiled for inlining into its caller. A split-mode derivative is compiled while Julia
-  infers the code that asks for it, which may be before that code runs: it is then `:cached`.
+  compiled for inlining into its caller (`InlineABI`), whenever that was. A split-mode
+  derivative is compiled while Julia infers the code that asks for it, which may be before
+  that code runs: it is then `:cached`.
 - `findings`: what the compiled code calls (see [`DerivativeFinding`](@ref)), or `nothing` if
-  it was not inspected. `note` then says why.
+  it was not inspected: an `:inlined` derivative has no code of its own, since Julia
+  optimizes it as part of its caller. `note` says why.
 - `ir`: the LLVM bitcode of the optimized module, for a derivative compiled while a report
   with `ir = true` ran, and `nothing` otherwise.
 """
@@ -883,7 +944,7 @@ end
 
 What [`derivative_report`](@ref) returns: `value`, the result of the code it ran, and
 `derivatives`, one [`ReportedDerivative`](@ref) for each derivative that code compiled, linked
-from a package image or called, in the order they were first seen.
+from a package image or asked Enzyme for again, in the order they were first seen.
 """
 struct DerivativeReport
     value::Any
@@ -894,8 +955,9 @@ end
     derivative_report(f; ir = false)::DerivativeReport
 
 Run `f()` and report the derivatives Enzyme used for it: each one that was compiled, linked
-from a package image, or called while `f()` ran, on the calling task and the tasks it started.
-`f` may take derivatives directly (`autodiff`, `gradient`) or through another package.
+from a package image, or asked for again while `f()` ran, on the calling task and the tasks it
+started. `f` may take derivatives directly (`autodiff`, `autodiff_thunk`, `gradient`,
+`jacobian`) or through another package.
 
 For each derivative the report says what was differentiated and lists the calls in its
 compiled code that leave it: run-time dispatch, Enzyme's run-time differentiation of a call it
@@ -912,6 +974,13 @@ the LLVM bitcode of its optimized module.
 A derivative nested in another one, such as the inner one of Forward over Reverse, runs as
 part of the outer one's code and is reported there. A derivative compiled for inlining into
 its caller (`InlineABI`) is listed without findings.
+
+A derivative compiled before `f()` ran is seen when `f()` asks Enzyme for it, which every
+call of `autodiff`, `autodiff_thunk`, `gradient` and `jacobian` does. Two uses of such a
+derivative are not seen: a call through `autodiff_deferred`, and a call of a split-mode thunk
+that `f` got from `autodiff_thunk` before the report and kept. Code that runs on a device
+shares the code of these calls, so they cannot carry the check. Take the report around the
+first call to see them.
 
 ```julia
 report = Enzyme.derivative_report() do

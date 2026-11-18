@@ -285,8 +285,6 @@ function get_trampoline(job)
     sym = String(gensym(:func))
     _sym = String(gensym(:func))
     addr = add_trampoline!(jd, (lljit, lctm, ism), _sym, sym)
-    # Its first call compiles the derivative (see `derivative_report`).
-    Compiler.pending_derivative!(pointer(addr))
 
     # 3. add MU that will call back into the compiler
     function materialize(mr)
@@ -298,7 +296,8 @@ function get_trampoline(job)
         # 2. Call MR.replace(symbolAliases({"my_deferred_decision_sym.1" -> "foo.rt.impl"})).
         GPUCompiler.JuliaContext() do ctx
             mod, edges, adjoint_name, primal_name = Compiler._thunk(job)
-            # The code is called at the trampoline's address (see `derivative_report`).
+            # Tell a running report what was compiled (see `derivative_report`). Later calls
+            # through the trampoline are not seen: they share their code with device kernels.
             record, ir = Compiler.compiled_derivative_record(job, mod)
             Compiler.publish_derivative_record!(record, ir, pointer(addr), nothing)
             func_name = use_primal ? primal_name : adjoint_name

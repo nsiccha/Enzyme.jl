@@ -1,2 +1,2 @@
-summary = "Enzyme.derivative_report(f) runs f() and lists, for each derivative compiled, linked from a package image or called in it, the calls its compiled code makes at run time: dispatch, boxes, allocations on Julia's heap and native ones, with source lines"
+summary = "Enzyme.derivative_report(f) runs f() and lists, for each derivative compiled, linked from a package image or asked for again in it, the calls its compiled code makes at run time: dispatch, boxes, allocations on Julia's heap and native ones, with source lines"
 tests = ["test/derivative_report.jl", "test/precompile.jl"]

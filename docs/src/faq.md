@@ -560,7 +560,7 @@ report = Enzyme.derivative_report() do
 end
 ```
 
-`report.value` is what the block returned. `report.derivatives` has one [`Enzyme.ReportedDerivative`](@ref) for each derivative that was compiled, linked from a package image, or called while the block ran, on the calling task and the tasks it started. The block may take derivatives directly or through another package. Here there are two: the derivative of `f`, and the derivative of `sin`, which Enzyme compiled when the dispatched call first ran.
+`report.value` is what the block returned. `report.derivatives` has one [`Enzyme.ReportedDerivative`](@ref) for each derivative that was compiled, linked from a package image, or asked for again while the block ran, on the calling task and the tasks it started. The block may take derivatives directly (`autodiff`, `autodiff_thunk`, `gradient`, `jacobian`) or through another package. Here there are two: the derivative of `f`, and the derivative of `sin`, which Enzyme compiled when the dispatched call first ran.
 
 Each entry says what was differentiated (`func`, `mode`, `arguments`, `return_annotation`), where its code came from (`origin`: `:compiled` during the block, `:cached` from earlier in the session, `:image` from a package image, `:inlined`), and lists the calls in its compiled code that leave it (`findings`, see [`Enzyme.DerivativeFinding`](@ref)):
 
@@ -613,7 +613,9 @@ unstable = [
 
 Enzyme reads the code of every derivative once, when it compiles it, and keeps what it found with the compiled code and with the machine code a package image keeps. So a report costs no second compile, and it does not depend on when a derivative was compiled. `Enzyme.derivative_report(f; ir = true)` also returns, as `ir`, the LLVM bitcode of the optimized module of each derivative compiled during the block.
 
-Two things are not inspected. A derivative nested in another one, such as the inner one of Forward over Reverse, runs as part of the outer one's code and is reported there. A derivative compiled for inlining into its caller (`InlineABI`) is listed with `findings === nothing`, and `note` says why. `sweep` is `:combined` for a call in a function that holds both sweeps, where the call cannot be proven to be in the reverse one.
+Two things are not inspected. A derivative nested in another one, such as the inner one of Forward over Reverse, runs as part of the outer one's code and is reported there. A derivative compiled for inlining into its caller (`InlineABI`) is listed with the origin `:inlined` and `findings === nothing`, and `note` says why: Julia optimizes it as part of that caller. `sweep` is `:combined` for a call in a function that holds both sweeps, where the call cannot be proven to be in the reverse one.
+
+A derivative compiled before the block ran is seen when the block asks Enzyme for it, which every call of `autodiff`, `autodiff_thunk`, `gradient` and `jacobian` does. Two uses of such a derivative are not seen: a call through `autodiff_deferred`, and a call of a split-mode thunk that the caller got from `autodiff_thunk` before the report and kept. Code that runs on a device shares the code of these calls, and it cannot ask the host whether a report is running. Take the report around the first call to see them.
 
 ## Complex numbers
 

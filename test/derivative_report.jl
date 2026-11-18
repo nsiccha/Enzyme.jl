@@ -2,7 +2,8 @@ using Enzyme, Test, LinearAlgebra
 import LLVM
 
 # `Enzyme.derivative_report(f)` runs `f()` and says, for each derivative Enzyme compiled,
-# linked or called meanwhile, what the compiled code of that derivative calls at run time.
+# linked or was asked for meanwhile, what the compiled code of that derivative calls at run
+# time.
 # Enzyme reads the optimized module of every derivative once, before its JIT takes it
 # (`Enzyme.Compiler.scan_derivative`), and keeps what it found with the compiled code.
 #
@@ -541,7 +542,7 @@ function sum_squares_gradient!(dx, x)
     return nothing
 end
 
-# Every call of a derivative asks whether a report is running. That must not keep `autodiff`
+# Every call of `autodiff` asks whether a report is running. That must not keep `autodiff`
 # from being inlined into its caller, where it would return its result boxed.
 @testset "a derivative call allocates nothing while no report runs" begin
     x = [1.0, 2.0, 3.0]
@@ -551,6 +552,9 @@ end
 end
 
 quartic(x) = sum(v -> v^4, x)
+sextic(x) = sum(v -> v^6, x)
+square(x) = x * x
+@noinline inlined_square_derivative(x) = autodiff(Enzyme.set_abi(Reverse, Enzyme.InlineABI), square, Active, Active(x))[1][1]
 
 @testset "other ways to take a derivative" begin
     x = [1.0, 2.0]
@@ -595,10 +599,48 @@ quartic(x) = sum(v -> v^4, x)
         d = derivative_of(report, quartic)
         @test d.origin === :compiled
         @test d.findings !== nothing
+        # A later call is not seen: the code of a deferred call is also what a kernel on a
+        # device runs, and that cannot ask the host whether a report is running.
         again = Enzyme.derivative_report() do
             autodiff_deferred(Reverse, Const(quartic), Active, Duplicated(x, dx))
         end
-        @test derivative_of(again, quartic).origin === :cached
+        @test isempty(again.derivatives)
+    end
+
+    @testset "split-mode thunks kept from before the report" begin
+        dx = zero(x)
+        fwd, rev = autodiff_thunk(ReverseSplitWithPrimal, Const{typeof(sextic)}, Active, Duplicated{Vector{Float64}})
+        kept = Enzyme.derivative_report() do
+            tape, _, _ = fwd(Const(sextic), Duplicated(x, dx))
+            rev(Const(sextic), Duplicated(x, dx), 1.0, tape)
+        end
+        @test dx ≈ 6 .* x .^ 5
+        # Calling a thunk does not ask Enzyme for the derivative, so the report does not see it.
+        @test isempty(kept.derivatives)
+        # Asking for the thunks again does.
+        asked = Enzyme.derivative_report() do
+            autodiff_thunk(ReverseSplitWithPrimal, Const{typeof(sextic)}, Active, Duplicated{Vector{Float64}})
+        end
+        d = derivative_of(asked, sextic)
+        @test d.origin === :cached
+        @test d.mode === :reverse_split
+        @test d.findings !== nothing
+    end
+
+    @testset "compiled for inlining into its caller" begin
+        for _ in 1:2
+            report = Enzyme.derivative_report() do
+                inlined_square_derivative(3.0)
+            end
+            @test report.value ≈ 6.0
+            # Julia optimizes this derivative as part of its caller, so Enzyme has no code of
+            # its own to read: it is listed, without findings, whenever it was compiled.
+            d = derivative_of(report, square)
+            @test d.origin === :inlined
+            @test d.findings === nothing
+            @test occursin("inlining", d.note)
+            @test occursin("not inspected", sprint(show, MIME"text/plain"(), d))
+        end
     end
 
     @testset "Forward over Reverse" begin
@@ -654,7 +696,34 @@ end
     @test occursin(" at ", sprint(show, MIME"text/plain"(), finding))
 end
 
-# Every address a derivative is called at has a record.
+deferred_quartic!(dx, x) = autodiff_deferred(Reverse, Const(quartic), Active, Duplicated(x, dx))
+deferred_quartic_forward(x, dx) = autodiff_deferred(Forward, Const(quartic), Duplicated, Duplicated(x, dx))
+direct_quartic!(dx, x) = autodiff(Reverse, Const(quartic), Active, Duplicated(x, dx))
+
+# The optimized code of `f` for arguments of `types`, as text.
+optimized_code(f, types) = sprint(show, only(code_typed(f, types; optimize = true))[1])
+asks_for_reports(code) = occursin("RunningReports", code) || occursin("DERIVATIVE_REPORTS", code)
+# Whether the call of the derivative is part of the code, and not behind a call that hides it.
+shows_derivative_call(code) = occursin("llvmcall", code)
+
+# A kernel that runs on a device takes derivatives with `autodiff_deferred`, and what it
+# compiles is the code of that call. It can neither read a counter of the host nor call into
+# the host, so the question whether a report is running must not be part of that code. It is
+# asked where the host hands out a derivative instead, as for `autodiff`.
+@testset "the code of a deferred call does not ask for a report" begin
+    vectors = (Vector{Float64}, Vector{Float64})
+    for deferred in (deferred_quartic!, deferred_quartic_forward)
+        code = optimized_code(deferred, vectors)
+        @test shows_derivative_call(code)
+        @test !asks_for_reports(code)
+    end
+    @test deferred_quartic_forward([1.0, 2.0], [1.0, 0.0])[1] ≈ 4.0
+    direct = optimized_code(direct_quartic!, vectors)
+    @test shows_derivative_call(direct)
+    @test asks_for_reports(direct)
+end
+
+# Every derivative that was handed out for a call has a record.
 @testset "no derivative ran without a record" begin
     @test Compiler.unrecorded_derivative_calls[] == 0
 end

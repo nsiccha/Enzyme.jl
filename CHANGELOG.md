@@ -23,8 +23,8 @@
   Reverse, calls that carry no derivative, and a function without a rule.
 - Add `Enzyme.derivative_report(f)`, which runs `f()` and reports the
   derivatives Enzyme used for it: each one compiled, linked from a package
-  image or called meanwhile, with the calls its compiled code makes at run
-  time. A finding names the kind of call (run-time dispatch, Enzyme's own
+  image or asked for again meanwhile, with the calls its compiled code makes
+  at run time. A finding names the kind of call (run-time dispatch, Enzyme's own
   run-time differentiation of a call it could not resolve, a box, an
   allocation on Julia's heap, a native allocation such as the tape, or any
   other call into the runtime or a library), the callee, the compiled function
@@ -38,9 +38,13 @@
   found with the compiled code and with the machine code a package image
   keeps. A report therefore costs no second compile and covers code compiled
   earlier in the session. `ir = true` also returns the LLVM bitcode of what
-  the block compiled. A call of a derivative reads one counter more while no
-  report is running. `Enzyme.has_dogfood_repair(:derivative_report)` reports
-  the API; `test/derivative_report.jl` covers the scan and the report, and
+  the block compiled. Where the host hands a compiled derivative to its
+  caller (`autodiff`, `autodiff_thunk`, Enzyme's run-time rules), it reads one
+  counter more while no report is running. The code of the call itself is
+  unchanged, because kernels on a device share it; so a later call through
+  `autodiff_deferred`, or of a split-mode thunk the caller kept, is not seen.
+  `Enzyme.has_dogfood_repair(:derivative_report)` reports the API;
+  `test/derivative_report.jl` covers the scan and the report, and
   `test/precompile.jl` a derivative linked from an image.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture

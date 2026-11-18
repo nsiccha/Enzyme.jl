@@ -8871,7 +8871,6 @@ const DumpLLVMCall = Ref(false)
     if !(GPUCompiler.isghosttype(PT) || Core.Compiler.isconstType(PT))
         return quote
             Base.@_inline_meta
-            note_derivative_call(fptr)
             Base.llvmcall(
                 ($ir, $fn),
                 $combinedReturn,
@@ -9161,7 +9160,7 @@ function clear_caches!()
     empty!(Enzyme.captured_addresses)
     empty!(materialized_derivatives)
     empty!(derivative_records)
-    empty!(pending_derivatives)
+    empty!(inlined_derivative_records)
     unrecorded_derivative_calls[] = 0
     compiled_derivatives[] = 0
     reset_retained_statistics!()
@@ -9571,18 +9570,24 @@ What the derivative does depend on stays an edge of that code (see
 
 @inline function lazy_thunk(cell::LazyThunk{T}) where {T}
     compiled = @atomic :acquire cell.compiled
-    if compiled === nothing || !lazy_valid(compiled)
-        return T(first_call_of_thunk(cell))
+    ptr = if compiled === nothing || !lazy_valid(compiled)
+        first_call_of_thunk(cell)
+    else
+        compiled.value
     end
-    return T(compiled.value)
+    # The caller is about to call the derivative (see `derivative_report`).
+    note_derivative_use(ptr)
+    return T(ptr)
 end
 
 @inline function lazy_split_thunks(cell::LazySplitThunks)::Tuple{Any, Any}
     compiled = @atomic :acquire cell.compiled
-    if compiled === nothing || !lazy_valid(compiled)
-        return first_call_of_thunk(cell)
+    thunks = if compiled === nothing || !lazy_valid(compiled)
+        first_call_of_thunk(cell)
+    else
+        compiled.value
     end
-    return compiled.value
+    return noted_thunks(thunks)
 end
 
 """
@@ -9793,23 +9798,26 @@ end
     ctx = context(ts_ctx)
     activate(ctx)
     try
-        return thunkbase(
-            mi,
-            nothing,
-            FA,
-            A,
-            TT,
-            Mode,
-            width,
-            ModifiedBetween,
-            ReturnPrimal,
-            ShadowInit,
-            ABI,
-            ErrIfFuncWritten,
-            RuntimeActivity,
-            StrongZero,
-            AtomicAdd,
-            nothing
+        # The caller is about to call the derivative (see `derivative_report`).
+        return noted_thunks(
+            thunkbase(
+                mi,
+                nothing,
+                FA,
+                A,
+                TT,
+                Mode,
+                width,
+                ModifiedBetween,
+                ReturnPrimal,
+                ShadowInit,
+                ABI,
+                ErrIfFuncWritten,
+                RuntimeActivity,
+                StrongZero,
+                AtomicAdd,
+                nothing
+            ),
         )
     finally
         deactivate(ctx)
@@ -10024,7 +10032,16 @@ function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, sou
             dispose(ts_ctx)
         end
         holds_address = true
-        Any[Core.Compiler.ReturnNode(result)]
+        if Interpreter.in_enzyme_inference()
+            # An outer derivative needs the inner one's thunk as a constant.
+            Any[Core.Compiler.ReturnNode(result)]
+        else
+            # The caller is about to call the derivative (see `derivative_report`).
+            Any[
+                Expr(:call, GlobalRef(Compiler, :noted_thunks), QuoteNode(result)),
+                Core.Compiler.ReturnNode(Core.SSAValue(1)),
+            ]
+        end
     end
     ci = create_fresh_codeinfo(fn, source, world, slotnames, code)
     if holds_address && generating_output()
