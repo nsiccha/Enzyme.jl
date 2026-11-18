@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T16:00:25Z",
+  "prepared_at": "2026-11-18T16:11:32Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -1139,6 +1139,2413 @@
           "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 6d172b025e4. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
         }
       ]
+    },
+    {
+      "id": "atomic-add-dynamic-callees",
+      "role": "fix",
+      "title": "Reverse mode loses the caller’s atomic-add setting across dynamic dispatch",
+      "summary": "A reverse derivative can reach a callee whose type is resolved at runtime. Its shadow updates should honor the caller’s set_atomic_add choice. Threaded loops and tasks must retain their default atomic updates.",
+      "repairs": [
+        {
+          "id": "atomic_add_dynamic_callees",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Reverse mode loses the caller’s atomic-add setting across dynamic dispatch",
+        "body": "A reverse derivative can reach a callee whose type is resolved at runtime. Its shadow updates should honor the caller’s set_atomic_add choice. Threaded loops and tasks must retain their default atomic updates.\n\nOriginal fork commits in historical order: [f231d950](https://github.com/nsiccha/Enzyme.jl/commit/f231d95062554914b6dfd7f1abedd59d533c963c), [a6051d4c](https://github.com/nsiccha/Enzyme.jl/commit/a6051d4c6466ece3eb373b997f0d1677cda24ad6).\n\nRegression coverage on the fork: [test/threads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/threads.jl), [test/precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/precompile.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "ccall-runtime-library",
+      "role": "fix",
+      "title": "Differentiation depends on how a ccall names its library",
+      "summary": "A ccall can get its library from a qualified module binding or from a global that can change at runtime. Differentiation should recognize the same routine across those spellings and preserve runtime library selection for BLAS calls.",
+      "repairs": [
+        {
+          "id": "ccall_runtime_library",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Differentiation depends on how a ccall names its library",
+        "body": "A ccall can get its library from a qualified module binding or from a global that can change at runtime. Differentiation should recognize the same routine across those spellings and preserve runtime library selection for BLAS calls.\n\nOriginal fork commits in historical order: [ac7b9ce5](https://github.com/nsiccha/Enzyme.jl/commit/ac7b9ce5f9cfb52f4ec1769ab1c4c9ef1f985b77), [af62fb54](https://github.com/nsiccha/Enzyme.jl/commit/af62fb548bca0250935f5b6fe1f571600efd4be9).\n\nRegression coverage on the fork: [test/ccall_library.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ccall_library.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "ccall-without-library",
+      "role": "fix",
+      "title": "A library-free ccall loses its symbol when differentiated on Julia 1.13",
+      "summary": "Julia 1.13 can leave the library for a C function unspecified. For example, string search can reach memchr without naming a library. A derivative should recognize the C symbol just as it does when Julia resolves the library while compiling.",
+      "repairs": [
+        {
+          "id": "ccall_without_library",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A library-free ccall loses its symbol when differentiated on Julia 1.13",
+        "body": "Julia 1.13 can leave the library for a C function unspecified. For example, string search can reach memchr without naming a library. A derivative should recognize the C symbol just as it does when Julia resolves the library while compiling.\n\nOriginal fork commits in historical order: [3c41abf6](https://github.com/nsiccha/Enzyme.jl/commit/3c41abf65b428dc8b602703d2ef7e1bce1c7b34b), [5edf5125](https://github.com/nsiccha/Enzyme.jl/commit/5edf51256f88ce2653c3391eb2d32b8a8764a7b7), [baf5d4d3](https://github.com/nsiccha/Enzyme.jl/commit/baf5d4d387dad93d5ec9164fdcf16a4758650328).\n\nRegression coverage on the fork: [test/ccall_library.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ccall_library.jl), [test/precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/precompile.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "const-array-reshape",
+      "role": "fix",
+      "title": "Reverse mode loses Const array activity after reshape",
+      "summary": "A reshape of a Const array still refers to the original constant storage. Putting that reshaped array next to active arrays can raise a runtime activity error. The derivative should preserve the reshape’s constant provenance across Julia’s array representations.",
+      "repairs": [
+        {
+          "id": "const_array_reshape",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Reverse mode loses Const array activity after reshape",
+        "body": "A reshape of a Const array still refers to the original constant storage. Putting that reshaped array next to active arrays can raise a runtime activity error. The derivative should preserve the reshape’s constant provenance across Julia’s array representations.\n\nOriginal fork commit: [d7d957b9](https://github.com/nsiccha/Enzyme.jl/commit/d7d957b9ef7e002a718bd647cdd54d105d5bc14a).\n\nRegression coverage on the fork: [test/const_reshape.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_reshape.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "constant-global-gep-paths",
+      "role": "fix",
+      "title": "Constant folding can select the wrong element of a global",
+      "summary": "When a constant address does not identify an element of the global’s declared type, Enzyme’s constant folder can stop compilation or select an unrelated element. It should leave that address for ordinary evaluation and continue folding valid typed paths.",
+      "repairs": [
+        {
+          "id": "constant_global_gep_paths",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Constant folding can select the wrong element of a global",
+        "body": "When a constant address does not identify an element of the global’s declared type, Enzyme’s constant folder can stop compilation or select an unrelated element. It should leave that address for ordinary evaluation and continue folding valid typed paths.\n\nOriginal fork commits in historical order: [f35a4991](https://github.com/nsiccha/Enzyme.jl/commit/f35a4991cb7532522bc3bf1455dfa6d626e28589), [05337e5d](https://github.com/nsiccha/Enzyme.jl/commit/05337e5dc9b2f6ecddf6c71824024a87ed7666fa).\n\nRegression coverage on the fork: [test/constant_global_gep.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/constant_global_gep.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "constant-scalar-tangent",
+      "role": "fix",
+      "title": "Inactive unboxed floats lack zero tangents in mixed forward activity",
+      "summary": "Forward mode can encounter an inactive unboxed floating-point value alongside active values when native type information is incomplete. The inactive scalar should contribute a zero tangent and the active inputs should retain their derivatives.",
+      "repairs": [
+        {
+          "id": "constant_scalar_tangent",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Inactive unboxed floats lack zero tangents in mixed forward activity",
+        "body": "Forward mode can encounter an inactive unboxed floating-point value alongside active values when native type information is incomplete. The inactive scalar should contribute a zero tangent and the active inputs should retain their derivatives.\n\nOriginal fork commit: [5da35cd5](https://github.com/nsiccha/Enzyme.jl/commit/5da35cd51b0c27eaf0c592872fd868c72eea19ec).\n\nRegression coverage on the fork: [test/constant_scalar_tangent.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/constant_scalar_tangent.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "custom-reverse-seed",
+      "role": "fix",
+      "title": "Custom reverse rules box immutable return seeds",
+      "summary": "A custom reverse rule can receive an immutable Active result seed. Passing that seed currently incurs heap boxing. The rule should receive the same value without a heap allocation for the seed.",
+      "repairs": [
+        {
+          "id": "custom_reverse_seed",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Custom reverse rules box immutable return seeds",
+        "body": "A custom reverse rule can receive an immutable Active result seed. Passing that seed currently incurs heap boxing. The rule should receive the same value without a heap allocation for the seed.\n\nOriginal fork commit: [2709bb33](https://github.com/nsiccha/Enzyme.jl/commit/2709bb33e33eb862d047df6d24996b817b48f011).\n\nRegression coverage on the fork: [test/rules/reverse_seed.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/reverse_seed.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "deferred-return-inference",
+      "role": "fix",
+      "title": "Deferred GPU AD infers a device call using the wrong method table",
+      "summary": "A scalar returned by reading a device-array view may be typed differently in host inference. Deferred differentiation should infer its return type using the caller’s device method table so the annotation agrees with the device implementation.",
+      "repairs": [
+        {
+          "id": "deferred_return_inference",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Deferred GPU AD infers a device call using the wrong method table",
+        "body": "A scalar returned by reading a device-array view may be typed differently in host inference. Deferred differentiation should infer its return type using the caller’s device method table so the annotation agrees with the device implementation.\n\nOriginal fork commit: [eb0b2e0a](https://github.com/nsiccha/Enzyme.jl/commit/eb0b2e0a026567339b439f9563d7b48b56201cf0).\n\nRegression coverage on the fork: [test/cuda.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/cuda.jl), [test/core/deferred.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/core/deferred.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "empty-array-types",
+      "role": "fix",
+      "title": "An empty array allocation can impose the wrong layout on a return value",
+      "summary": "A constructor map can return arrays of different layouts on different branches. A known-empty allocation has no element to describe. Inferring an element layout from that allocation can constrain the return join incorrectly.",
+      "repairs": [
+        {
+          "id": "empty_array_types",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "An empty array allocation can impose the wrong layout on a return value",
+        "body": "A constructor map can return arrays of different layouts on different branches. A known-empty allocation has no element to describe. Inferring an element layout from that allocation can constrain the return join incorrectly.\n\nOriginal fork commit: [af6d0b0e](https://github.com/nsiccha/Enzyme.jl/commit/af6d0b0e4658c308482f2023747727a2e225d520).\n\nRegression coverage on the fork: [test/empty_array_types.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/empty_array_types.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "forward-memory-shadow-init",
+      "role": "fix",
+      "title": "Initialize inline memory before subsequent forward-mode shadow allocations",
+      "summary": "Forward mode and batched forward mode can allocate several pieces of shadow storage. Each preceding allocation must have a valid empty representation when the next allocation begins so that garbage collection sees consistent objects.",
+      "repairs": [
+        {
+          "id": "forward_memory_shadow_init",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Initialize inline memory before subsequent forward-mode shadow allocations",
+        "body": "Forward mode and batched forward mode can allocate several pieces of shadow storage. Each preceding allocation must have a valid empty representation when the next allocation begins so that garbage collection sees consistent objects.\n\nOriginal fork commit: [9274d18a](https://github.com/nsiccha/Enzyme.jl/commit/9274d18a55eac866a0e17df40e93ff6255f25f4e).\n\nRegression coverage on the fork: [test/forward_memory_shadow.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/forward_memory_shadow.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "inline-return-roots",
+      "role": "fix",
+      "title": "InlineABI loses return roots on a helper returning a mixed aggregate",
+      "summary": "First-order forward AD can retain a helper returning both references and plain values. Its result needs the return-root convention expected by Julia’s GC lowering, including when an integer-array argument is inactive.",
+      "repairs": [
+        {
+          "id": "inline_return_roots",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "InlineABI loses return roots on a helper returning a mixed aggregate",
+        "body": "First-order forward AD can retain a helper returning both references and plain values. Its result needs the return-root convention expected by Julia’s GC lowering, including when an integer-array argument is inactive.\n\nOriginal fork commit: [fb67b277](https://github.com/nsiccha/Enzyme.jl/commit/fb67b277e860218b21d800488e5ec42c48220b2a).\n\nRegression coverage on the fork: [test/inline_return_roots.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/inline_return_roots.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "logbeta-partials",
+      "role": "fix",
+      "title": "Reverse differentiation of scalar logabsbeta builds a recursive tape",
+      "summary": "Scalar logabsbeta has analytic partial derivatives. Reverse mode should use stable partials for both arguments, including large inputs, and avoid a recursive derivative tape.",
+      "repairs": [
+        {
+          "id": "logbeta_partials",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Reverse differentiation of scalar logabsbeta builds a recursive tape",
+        "body": "Scalar logabsbeta has analytic partial derivatives. Reverse mode should use stable partials for both arguments, including large inputs, and avoid a recursive derivative tape.\n\nOriginal fork commit: [ec6a56dc](https://github.com/nsiccha/Enzyme.jl/commit/ec6a56dc802342b19df0c1f1f80dc1599a3dcbc4).\n\nRegression coverage on the fork: [test/ext/logbeta.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/logbeta.jl), [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "memory-header-init",
+      "role": "fix",
+      "title": "Fresh Memory headers must be valid at allocation safepoints in derivatives",
+      "summary": "On Julia 1.12 and later, a fresh Memory object in differentiated code can be visible to the garbage collector before its header is ready. The compiler should establish the object’s required header fields before the next safepoint in each affected AD mode.",
+      "repairs": [
+        {
+          "id": "memory_header_init",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Fresh Memory headers must be valid at allocation safepoints in derivatives",
+        "body": "On Julia 1.12 and later, a fresh Memory object in differentiated code can be visible to the garbage collector before its header is ready. The compiler should establish the object’s required header fields before the next safepoint in each affected AD mode.\n\nOriginal fork commits in historical order: [c9c78f6c](https://github.com/nsiccha/Enzyme.jl/commit/c9c78f6c45bee16602e4223b3eab7f7e2df9628f), [8353ad3f](https://github.com/nsiccha/Enzyme.jl/commit/8353ad3fda2c8707df788d795bf967e4548502d5), [a818aa38](https://github.com/nsiccha/Enzyme.jl/commit/a818aa3891b7c7e5a06b3cdc9c2ca336ee5b4b71), [3a43d2bb](https://github.com/nsiccha/Enzyme.jl/commit/3a43d2bb8992b6299fdd067c64a926d6d11c0f5e).\n\nRegression coverage on the fork: [test/memory_header_init.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/memory_header_init.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "nested-callable-inference",
+      "role": "fix",
+      "title": "Nested result-type inference loses distinct callable types",
+      "summary": "A higher-order helper can call one callable type and then recurse through another. Enzyme should retain each concrete callable type so a nested result-type query returns the concrete result when Julia can infer it.",
+      "repairs": [
+        {
+          "id": "nested_callable_inference",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Nested result-type inference loses distinct callable types",
+        "body": "A higher-order helper can call one callable type and then recurse through another. Enzyme should retain each concrete callable type so a nested result-type query returns the concrete result when Julia can infer it.\n\nOriginal fork commit: [29d026f0](https://github.com/nsiccha/Enzyme.jl/commit/29d026f03df8166b032a168924be3c7b4cab2622).\n\nRegression coverage on the fork: [test/inference_recursion.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/inference_recursion.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "nested-threaded-loops",
+      "role": "fix",
+      "title": "Taking a derivative of a threaded-loop derivative can fail during compilation",
+      "summary": "The derivative of a Threads.@threads loop can be differentiated again. The nested transform needs the loop body and its required arguments to survive compilation. Test the four forward/reverse combinations separately because version-specific tape behavior differs.",
+      "repairs": [
+        {
+          "id": "nested_threaded_loops",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Taking a derivative of a threaded-loop derivative can fail during compilation",
+        "body": "The derivative of a Threads.@threads loop can be differentiated again. The nested transform needs the loop body and its required arguments to survive compilation. Test the four forward/reverse combinations separately because version-specific tape behavior differs.\n\nOriginal fork commits in historical order: [1b319f90](https://github.com/nsiccha/Enzyme.jl/commit/1b319f90e427ba6e30af78c72b32caeafb3203de), [1a3d0fdf](https://github.com/nsiccha/Enzyme.jl/commit/1a3d0fdf59dabf93d71e4784e49fede7c0842a67), [111b98ba](https://github.com/nsiccha/Enzyme.jl/commit/111b98ba3d9e13fe7ef9b138047df3707c742888), [39cf9736](https://github.com/nsiccha/Enzyme.jl/commit/39cf973655a2274ae99bf214e3670a8601807ab5).\n\nRegression coverage on the fork: [test/nested_threads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/nested_threads.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-local-memset",
+      "role": "fix",
+      "title": "Local slot initialization makes the readonly check reject a caller",
+      "summary": "A callee can memset its own argument slots or GC-root slots without mutating an input buffer. Readonly analysis should distinguish that initialization from writes through a pointer stored in one of those slots.",
+      "repairs": [
+        {
+          "id": "readonly_local_memset",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Local slot initialization makes the readonly check reject a caller",
+        "body": "A callee can memset its own argument slots or GC-root slots without mutating an input buffer. Readonly analysis should distinguish that initialization from writes through a pointer stored in one of those slots.\n\nOriginal fork commit: [7c14b2a0](https://github.com/nsiccha/Enzyme.jl/commit/7c14b2a0a0e5db9f6d6f6f2e51b09413141ded36).\n\nRegression coverage on the fork: [test/readonly_memset.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_memset.jl), [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-pointer-operands",
+      "role": "fix",
+      "title": "Readonly analysis rejects a captured BLAS input that the callee only reads",
+      "summary": "A captured array can be passed to BLAS as a noncaptured raw data pointer together with a Julia GC-root operand. When the call’s operand attributes establish read-only access, the proof should accept the input while continuing to detect writes.",
+      "repairs": [
+        {
+          "id": "readonly_pointer_operands",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Readonly analysis rejects a captured BLAS input that the callee only reads",
+        "body": "A captured array can be passed to BLAS as a noncaptured raw data pointer together with a Julia GC-root operand. When the call’s operand attributes establish read-only access, the proof should accept the input while continuing to detect writes.\n\nOriginal fork commit: [6082b9a6](https://github.com/nsiccha/Enzyme.jl/commit/6082b9a62c91a6a5c5e99fface7967c04d6eadd3).\n\nRegression coverage on the fork: [test/readonly_blas.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_blas.jl), [test/readonly_call_operands.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_call_operands.jl), [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "retained-object-sections",
+      "role": "fix",
+      "title": "Derivative retention treats ELF metadata as loaded program addresses",
+      "summary": "A package image may contain relocations and other object-file metadata outside its loaded sections. The retention scan should inspect loaded sections when deciding which addresses the derivative needs.",
+      "repairs": [
+        {
+          "id": "retained_object_sections",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. This changes the retained-object scanner introduced with package-image derivative retention."
+      },
+      "depends_on": [
+        "retained-derivatives"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Derivative retention treats ELF metadata as loaded program addresses",
+        "body": "A package image may contain relocations and other object-file metadata outside its loaded sections. The retention scan should inspect loaded sections when deciding which addresses the derivative needs.\n\nOriginal fork commit: [13bfdbe0](https://github.com/nsiccha/Enzyme.jl/commit/13bfdbe04094306c9cfd45277caef62649633e6c).\n\nRegression coverage on the fork: [test/retained_object.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/retained_object.jl), [test/precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/precompile.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "retained-several-threads",
+      "role": "fix",
+      "title": "A derivative retained in a package image can omit code needed with several threads",
+      "summary": "An image built with one thread can be loaded in a session that uses several. The retained threaded variant needs the loop bodies, nested derivative bodies and pmap bodies that a multithreaded session compiles, along with the appropriate atomic updates.",
+      "repairs": [
+        {
+          "id": "retained_several_threads",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The second compiled variant belongs to a derivative retained in a package image."
+      },
+      "depends_on": [
+        "retained-derivatives"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A derivative retained in a package image can omit code needed with several threads",
+        "body": "An image built with one thread can be loaded in a session that uses several. The retained threaded variant needs the loop bodies, nested derivative bodies and pmap bodies that a multithreaded session compiles, along with the appropriate atomic updates.\n\nOriginal fork commit: [b7bceb71](https://github.com/nsiccha/Enzyme.jl/commit/b7bceb71c79f2f4d0cc7a8bb6472256a6d17e282).\n\nRegression coverage on the fork: [test/precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/precompile.jl), [test/threads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/threads.jl), [test/nested_threads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/nested_threads.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "reverse-const-constructor-shadow",
+      "role": "fix",
+      "title": "Static reverse mode gives constant constructor fields the wrong shadow",
+      "summary": "Runtime construction of a tuple or struct can combine constant differentiable fields with active fields. Under static reverse mode the constant fields need separate zero shadows, preserving the active fields’ derivative storage.",
+      "repairs": [
+        {
+          "id": "reverse_const_constructor_shadow",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Static reverse mode gives constant constructor fields the wrong shadow",
+        "body": "Runtime construction of a tuple or struct can combine constant differentiable fields with active fields. Under static reverse mode the constant fields need separate zero shadows, preserving the active fields’ derivative storage.\n\nOriginal fork commit: [5bf535f2](https://github.com/nsiccha/Enzyme.jl/commit/5bf535f253ce78b7cf9b7bf0df2d1ba738dd3e0c).\n\nRegression coverage on the fork: [test/typeunstable.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/typeunstable.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "runtime-map-collection",
+      "role": "fix",
+      "title": "Runtime map wrappers recurse on non-tuple collections",
+      "summary": "A custom collection with an imprecise inferred return type can be routed into a wrapper intended for long tuples. Ordinary map dispatch should keep working for that collection, while the long-tuple specialization remains available.",
+      "repairs": [
+        {
+          "id": "runtime_map_collection",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. This correction narrows the runtime wrapper introduced for long tuples."
+      },
+      "depends_on": [
+        "runtime-tuple-map"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Runtime map wrappers recurse on non-tuple collections",
+        "body": "A custom collection with an imprecise inferred return type can be routed into a wrapper intended for long tuples. Ordinary map dispatch should keep working for that collection, while the long-tuple specialization remains available.\n\nOriginal fork commit: [6660aba3](https://github.com/nsiccha/Enzyme.jl/commit/6660aba30dd263c9116ee8be0333cc0604c5d944).\n\nRegression coverage on the fork: [test/tuple_map.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/tuple_map.jl), [test/applyiter.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/applyiter.jl), [test/mixedapplyiter.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/mixedapplyiter.jl), [test/runtime_calls.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/runtime_calls.jl), [test/test_builtin_dynamic.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/test_builtin_dynamic.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "runtime-tuple-map",
+      "role": "fix",
+      "title": "Runtime dispatch hides long mixed tuples from differentiated map",
+      "summary": "A long tuple of mixed element types may be hidden from inference or passed through a splat. A differentiated map should still see its runtime tuple type and propagate derivatives field by field.",
+      "repairs": [
+        {
+          "id": "runtime_tuple_map",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The runtime wrapper delegates to the existing long-tuple rewrite."
+      },
+      "depends_on": [
+        "long-tuple-map"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Runtime dispatch hides long mixed tuples from differentiated map",
+        "body": "A long tuple of mixed element types may be hidden from inference or passed through a splat. A differentiated map should still see its runtime tuple type and propagate derivatives field by field.\n\nOriginal fork commit: [7a0e51db](https://github.com/nsiccha/Enzyme.jl/commit/7a0e51db52697ca6561b8e8809169fac57020d2d).\n\nRegression coverage on the fork: [test/tuple_map.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/tuple_map.jl), [test/applyiter.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/applyiter.jl), [test/mixedapplyiter.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/mixedapplyiter.jl), [test/runtime_calls.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/runtime_calls.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "singleton-float-layouts",
+      "role": "fix",
+      "title": "Type-layout metadata misclassifies singleton floating-point types",
+      "summary": "A floating-point subtype can be a singleton with no payload. The derivative compiler should use its actual storage layout when building type metadata and preserve differentiation of its containing structure.",
+      "repairs": [
+        {
+          "id": "singleton_float_layouts",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks apply directly to upstream 1ee9a6f8. Standalone runtime validation is pending."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Type-layout metadata misclassifies singleton floating-point types",
+        "body": "A floating-point subtype can be a singleton with no payload. The derivative compiler should use its actual storage layout when building type metadata and preserve differentiation of its containing structure.\n\nOriginal fork commit: [50a22372](https://github.com/nsiccha/Enzyme.jl/commit/50a22372272fe1940c82c00d06615a89db77a4dc).\n\nRegression coverage on the fork: [test/float_layouts.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/float_layouts.jl), [test/integration/MeasureTheory/runtests.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/integration/MeasureTheory/runtests.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "tape-memory-pointers",
+      "role": "fix",
+      "title": "Nested reverse mode loses pointer information for a threaded-loop tape",
+      "summary": "An outer derivative can receive a tape created by a threaded inner derivative. It needs the tangent and pointer type of the cache table. The historical change still records reverse-over-reverse on Julia 1.12 and 1.13 as an expected failure.",
+      "repairs": [
+        {
+          "id": "tape_memory_pointers",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The cache table belongs to a tape produced by the threaded-loop derivative."
+      },
+      "depends_on": [
+        "nested-threaded-loops"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Nested reverse mode loses pointer information for a threaded-loop tape",
+        "body": "An outer derivative can receive a tape created by a threaded inner derivative. It needs the tangent and pointer type of the cache table. The historical change still records reverse-over-reverse on Julia 1.12 and 1.13 as an expected failure.\n\nOriginal fork commits in historical order: [544db199](https://github.com/nsiccha/Enzyme.jl/commit/544db199b2f24ae2f9dda6bb88bfba21f5d272e6), [dea509a9](https://github.com/nsiccha/Enzyme.jl/commit/dea509a9841af0904d2d7428488a36a6232a3800).\n\nRegression coverage on the fork: [test/nested_threads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/nested_threads.jl), [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "tuplearray-invalidation",
+      "role": "fix",
+      "title": "Loading Enzyme invalidates previously compiled abstract-array callers",
+      "summary": "Code that uses ndims, eltype or convert on abstract arrays can be compiled before Enzyme is imported. Loading Enzyme should preserve those compiled callers when the inherited array interface already supplies the required TupleArray behavior.",
+      "repairs": [
+        {
+          "id": "tuplearray_invalidation",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Loading Enzyme invalidates previously compiled abstract-array callers",
+        "body": "Code that uses ndims, eltype or convert on abstract arrays can be compiled before Enzyme is imported. Loading Enzyme should preserve those compiled callers when the inherited array interface already supplies the required TupleArray behavior.\n\nOriginal fork commits in historical order: [c373fa99](https://github.com/nsiccha/Enzyme.jl/commit/c373fa99c7bcdea7069e9fa92caaf97ecd3bf62d), [374b2691](https://github.com/nsiccha/Enzyme.jl/commit/374b26919d00dad713cb9995fc1373e0e640d931).\n\nRegression coverage on the fork: [test/tuplearray.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/tuplearray.jl), [test/sugar.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/sugar.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "unchanged-custom-rule-roots",
+      "role": "fix",
+      "title": "Julia 1.13 custom reverse rules lose roots for unchanged tuples of arrays",
+      "summary": "A rule can receive an unchanged tuple containing references to arrays. Its reverse pass should read the same tuple with valid root metadata at the rule boundary, including when some fields were unchanged across the primal call.",
+      "repairs": [
+        {
+          "id": "unchanged_custom_rule_roots",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks apply directly to upstream 1ee9a6f8. Standalone runtime validation is pending."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Julia 1.13 custom reverse rules lose roots for unchanged tuples of arrays",
+        "body": "A rule can receive an unchanged tuple containing references to arrays. Its reverse pass should read the same tuple with valid root metadata at the rule boundary, including when some fields were unchanged across the primal call.\n\nOriginal fork commit: [c505b17c](https://github.com/nsiccha/Enzyme.jl/commit/c505b17ce3b5225da060ba37707db0e19040b0e5).\n\nRegression coverage on the fork: [test/rules/unchanged_roots.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/unchanged_roots.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "union-return-types",
+      "role": "fix",
+      "title": "A cached equivalent pointer type obscures the original union return type",
+      "summary": "A function returning a union through a result buffer may already have an equivalent pointer type in the compiler’s cache. The result-buffer annotation should retain the original union type facts regardless of cache order.",
+      "repairs": [
+        {
+          "id": "union_return_types",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A cached equivalent pointer type obscures the original union return type",
+        "body": "A function returning a union through a result buffer may already have an equivalent pointer type in the compiler’s cache. The result-buffer annotation should retain the original union type facts regardless of cache order.\n\nOriginal fork commit: [4a050a0f](https://github.com/nsiccha/Enzyme.jl/commit/4a050a0f77eaf557724e6cd269d93948e77af584).\n\nRegression coverage on the fork: [test/union_return_types.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/union_return_types.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "untagged-slot-reloads",
+      "role": "fix",
+      "title": "A stack-slot reload can lose its type inside a custom-rule Hessian-vector product",
+      "summary": "On Julia 1.12, a reload may lose its explicit type tag after native rewriting. A Hessian-vector product through a rule containing try/catch or try/finally can then raise an activity error. The slot’s known writes should still determine the type.",
+      "repairs": [
+        {
+          "id": "untagged_slot_reloads",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A stack-slot reload can lose its type inside a custom-rule Hessian-vector product",
+        "body": "On Julia 1.12, a reload may lose its explicit type tag after native rewriting. A Hessian-vector product through a rule containing try/catch or try/finally can then raise an activity error. The slot’s known writes should still determine the type.\n\nOriginal fork commit: [d4c94819](https://github.com/nsiccha/Enzyme.jl/commit/d4c94819d1213fa052afabd5a19ae1169fb46e7d).\n\nRegression coverage on the fork: [test/rule_handler_slot_reloads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rule_handler_slot_reloads.jl), [test/const_slot_reloads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_slot_reloads.jl), [test/const_element_store.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_element_store.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "array-del-end-adjoints",
+      "role": "fix",
+      "title": "Batched reverse deletion leaves adjoints in restored array elements",
+      "summary": "On Julia 1.10 the reverse of array_del_end restores elements to a vector. Every restored element should start with a zero adjoint in each batch lane. Stale values can otherwise be added to the gradient.",
+      "repairs": [
+        {
+          "id": "array_del_end_adjoints",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the array-storage-adjoints review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used memoryref-root, resized-sort-shadows. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Batched reverse deletion leaves adjoints in restored array elements",
+        "body": "On Julia 1.10 the reverse of array_del_end restores elements to a vector. Every restored element should start with a zero adjoint in each batch lane. Stale values can otherwise be added to the gradient.\n\nOriginal fork commit: [8377bbbe](https://github.com/nsiccha/Enzyme.jl/commit/8377bbbe86124196707f626c5b38df27d5716fdd).\n\nRegression coverage on the fork: [test/array_del_end.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/array_del_end.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "atomic-tape-init",
+      "role": "fix",
+      "title": "Runtime-activity tape fields need GC-safe initialization",
+      "summary": "A runtime-activity tape contains references that may be observed during garbage collection on Julia 1.12 and 1.13. Initialize those fields with the atomic semantics expected by Julia’s collector.",
+      "repairs": [
+        {
+          "id": "atomic_tape_init",
+          "covers": [
+            "implementation"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Runtime-activity tape fields need GC-safe initialization",
+        "body": "A runtime-activity tape contains references that may be observed during garbage collection on Julia 1.12 and 1.13. Initialize those fields with the atomic semantics expected by Julia’s collector.\n\nOriginal fork commit: [9d12993c](https://github.com/nsiccha/Enzyme.jl/commit/9d12993c50675f838c0f84ec696115d1db649856).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "concurrent-compile",
+      "role": "fix",
+      "title": "Concurrent first calls of derivatives can deadlock",
+      "summary": "Two threads may request previously uncompiled derivatives at the same time. Compilation must make progress while Julia performs code generation and inference. This is observable on the first calls even when warmed calls are reliable.",
+      "repairs": [
+        {
+          "id": "concurrent_compile",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Concurrent first calls of derivatives can deadlock",
+        "body": "Two threads may request previously uncompiled derivatives at the same time. Compilation must make progress while Julia performs code generation and inference. This is observable on the first calls even when warmed calls are reliable.\n\nOriginal fork commits in historical order: [d38966c1](https://github.com/nsiccha/Enzyme.jl/commit/d38966c1531c8c8d3fec2f6e25b68a04b106bcd1), [86f6156c](https://github.com/nsiccha/Enzyme.jl/commit/86f6156cc423e26e66c2cc31cc1f14434cb64554).\n\nRegression coverage on the fork: [test/concurrent_compile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/concurrent_compile.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "concurrent-gc-safepoints",
+      "role": "fix",
+      "title": "Optimization drops safepoint effects needed by reverse gradients",
+      "summary": "When one thread differentiates while others allocate, the generated derivative still has to preserve the memory effects of calls that can reach a safepoint. Those effects must survive until GC lowering.",
+      "repairs": [
+        {
+          "id": "concurrent_gc_safepoints",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/4054",
+          "relation": "reports"
+        }
+      ],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Optimization drops safepoint effects needed by reverse gradients",
+        "body": "When one thread differentiates while others allocate, the generated derivative still has to preserve the memory effects of calls that can reach a safepoint. Those effects must survive until GC lowering.\n\nOriginal fork commits in historical order: [a3ce94d7](https://github.com/nsiccha/Enzyme.jl/commit/a3ce94d7de93e62d79f7e78529cba6b43e958d7f), [71164202](https://github.com/nsiccha/Enzyme.jl/commit/71164202404bb80375d0f2e89a2c952d7c90105c), [047f40ca](https://github.com/nsiccha/Enzyme.jl/commit/047f40ca54dcebe3623c9dab307cd2150bdfaff4).\n\nRegression coverage on the fork: [test/gc_safepoints.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/gc_safepoints.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "const-active-select-nested",
+      "role": "fix",
+      "title": "Nested AD loses activity across a Const-or-active read",
+      "summary": "A load selected from constant and active data should remain differentiable inside a nested transform or a bounds-checked loop. The gradient of a selected constant branch is zero. The original tests record which nested configurations still fail.",
+      "repairs": [
+        {
+          "id": "const_active_select_nested",
+          "covers": [
+            "implementation"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Nested AD loses activity across a Const-or-active read",
+        "body": "A load selected from constant and active data should remain differentiable inside a nested transform or a bounds-checked loop. The gradient of a selected constant branch is zero. The original tests record which nested configurations still fail.\n\nOriginal fork commits in historical order: [e515811e](https://github.com/nsiccha/Enzyme.jl/commit/e515811e1d1947278565cbdb0d414bd3f469e958), [b44500bb](https://github.com/nsiccha/Enzyme.jl/commit/b44500bb6a4eba1f8a415cbc062ba81895d2b9dc), [6b95a93d](https://github.com/nsiccha/Enzyme.jl/commit/6b95a93d25e71ff9077418566c84058d07639478).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "const-slot-reloads",
+      "role": "fix",
+      "title": "A vararg tuple reload loses the Const activity of data next to an active input",
+      "summary": "A vararg method can retrieve both constant and active data from its argument tuple. Treating an objectid read or a stack-slot reload as a write loses the constant provenance and can reject a valid reverse derivative.",
+      "repairs": [
+        {
+          "id": "const_slot_reloads",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A vararg tuple reload loses the Const activity of data next to an active input",
+        "body": "A vararg method can retrieve both constant and active data from its argument tuple. Treating an objectid read or a stack-slot reload as a write loses the constant provenance and can reject a valid reverse derivative.\n\nOriginal fork commit: [0dbdf8dd](https://github.com/nsiccha/Enzyme.jl/commit/0dbdf8ddb38832e04229bf850589d22ec8ad1296).\n\nRegression coverage on the fork: [test/const_slot_reloads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_slot_reloads.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "const-view-copy",
+      "role": "fix",
+      "title": "A copy of a Const view can use the primal array as its own shadow",
+      "summary": "On Julia 1.10, copying a view of Const data into an aggregate alongside active data can assign gradient storage to the original array. Reverse mode should use a separate zero shadow wherever active storage is required.",
+      "repairs": [
+        {
+          "id": "const_view_copy",
+          "covers": [
+            "implementation"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A copy of a Const view can use the primal array as its own shadow",
+        "body": "On Julia 1.10, copying a view of Const data into an aggregate alongside active data can assign gradient storage to the original array. Reverse mode should use a separate zero shadow wherever active storage is required.\n\nOriginal fork commits in historical order: [c81892cf](https://github.com/nsiccha/Enzyme.jl/commit/c81892cf522e18ff72b3873cbf22081d3659826b), [fb305e04](https://github.com/nsiccha/Enzyme.jl/commit/fb305e041c0b160acae1d22dff66542ed0dc62a2).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "data-phi-loads",
+      "role": "fix",
+      "title": "Reverse mode reloads a loop-carried value that the primal already read",
+      "summary": "After peeling the first iteration, every incoming loop edge can carry an array read. Preserve the value on those edges so the reverse pass uses what the primal saw. The forced-bounds peeled-loop IR check has a recorded limitation.",
+      "repairs": [
+        {
+          "id": "data_phi_loads",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the nodecayed-phis review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used llvm-ir-helpers. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Reverse mode reloads a loop-carried value that the primal already read",
+        "body": "After peeling the first iteration, every incoming loop edge can carry an array read. Preserve the value on those edges so the reverse pass uses what the primal saw. The forced-bounds peeled-loop IR check has a recorded limitation.\n\nOriginal fork commits in historical order: [9202c81b](https://github.com/nsiccha/Enzyme.jl/commit/9202c81b2bd7317144535893d8ddbb56f07e788a), [7aec5619](https://github.com/nsiccha/Enzyme.jl/commit/7aec561920ffcb24faa69643951f4b2fe632aa4b), [acc6883a](https://github.com/nsiccha/Enzyme.jl/commit/acc6883a2aa7d9fa599eecfea7b9707718bfb0ea).\n\nRegression coverage on the fork: [test/data_phi_loads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/data_phi_loads.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "deferred-trampoline",
+      "role": "fix",
+      "title": "Deferred derivative materialization should export only its requested entry point",
+      "summary": "Compiling a top-level deferred derivative can fail to materialize its JIT target. The derivative module should expose the requested target and keep its other definitions internal. A successful first call should return the same derivative as ordinary AD.",
+      "repairs": [
+        {
+          "id": "deferred_trampoline",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the deferred-trampoline review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Deferred derivative materialization should export only its requested entry point",
+        "body": "Compiling a top-level deferred derivative can fail to materialize its JIT target. The derivative module should expose the requested target and keep its other definitions internal. A successful first call should return the same derivative as ordinary AD.\n\nOriginal fork commit: [0817916c](https://github.com/nsiccha/Enzyme.jl/commit/0817916c44ef9abfb7c0494fa1a4b614141d9a84).\n\nRegression coverage on the fork: [test/deferred_trampoline.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/deferred_trampoline.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "erfcx-derivatives",
+      "role": "fix",
+      "title": "Higher derivatives of erfcx lose accuracy through cancellation",
+      "summary": "For positive arguments the two terms of the usual erfcx derivative formula can be nearly equal. Repeated differentiation compounds the cancellation. Compare the resulting derivatives across orders and argument magnitudes with a sufficiently precise reference.",
+      "repairs": [
+        {
+          "id": "erfcx_derivatives",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the erfcx review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Higher derivatives of erfcx lose accuracy through cancellation",
+        "body": "For positive arguments the two terms of the usual erfcx derivative formula can be nearly equal. Repeated differentiation compounds the cancellation. Compare the resulting derivatives across orders and argument magnitudes with a sufficiently precise reference.\n\nOriginal fork commits in historical order: [708afc1b](https://github.com/nsiccha/Enzyme.jl/commit/708afc1b7b40c2fe59ac9553d31d6272511e50bc), [f85c0425](https://github.com/nsiccha/Enzyme.jl/commit/f85c0425c1a06504d380381878aa53a86571050a).\n\nRegression coverage on the fork: [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "erfcx-seeded-partials",
+      "role": "fix",
+      "title": "A representable seeded erfcx derivative can overflow or underflow prematurely",
+      "summary": "Multiplying an erfcx partial by the tangent or adjoint seed in a separate step can lose a result that is representable in Float64. The scaled result should agree with a high-precision reference even when the unscaled intermediate is out of range.",
+      "repairs": [
+        {
+          "id": "erfcx_seeded_partials",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the erfcx review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The seeded rules extend the stable erfcx partial derivative implementation."
+      },
+      "depends_on": [
+        "erfcx-derivatives"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A representable seeded erfcx derivative can overflow or underflow prematurely",
+        "body": "Multiplying an erfcx partial by the tangent or adjoint seed in a separate step can lose a result that is representable in Float64. The scaled result should agree with a high-precision reference even when the unscaled intermediate is out of range.\n\nOriginal fork commits in historical order: [69d55292](https://github.com/nsiccha/Enzyme.jl/commit/69d5529225f30cc03122aba62d9da5eb3278a909), [cd2acaa3](https://github.com/nsiccha/Enzyme.jl/commit/cd2acaa3848d676fa97bc5044b5c3c3e5ea8381a), [cb364c92](https://github.com/nsiccha/Enzyme.jl/commit/cb364c929fb4e4f92924a66fe04ad1cb13fd3c8a).\n\nRegression coverage on the fork: [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "float-stack-slot",
+      "role": "fix",
+      "title": "A float-only stack reload can lose its element type on Julia 1.10",
+      "summary": "A runtime-indexed tuple can merge a float value with a reload from a stack slot containing only that float type. Type analysis should retain the float type through the merge.",
+      "repairs": [
+        {
+          "id": "float_stack_slot",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A float-only stack reload can lose its element type on Julia 1.10",
+        "body": "A runtime-indexed tuple can merge a float value with a reload from a stack slot containing only that float type. Type analysis should retain the float type through the merge.\n\nOriginal fork commit: [43db7511](https://github.com/nsiccha/Enzyme.jl/commit/43db7511accb1a1f17a2389544be2d22359e5ebd).\n\nRegression coverage on the fork: [test/float_stack_slot.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/float_stack_slot.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "fresh-data-merge",
+      "role": "fix",
+      "title": "Static reverse AD rejects a read from fresh or active array storage",
+      "summary": "A branch can select a freshly allocated array or an active argument before reading an element. Both are valid primal values. The reverse derivative should follow the selected branch and place its contribution in the matching shadow.",
+      "repairs": [
+        {
+          "id": "fresh_data_merge",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Static reverse AD rejects a read from fresh or active array storage",
+        "body": "A branch can select a freshly allocated array or an active argument before reading an element. Both are valid primal values. The reverse derivative should follow the selected branch and place its contribution in the matching shadow.\n\nOriginal fork commits in historical order: [0a1262ac](https://github.com/nsiccha/Enzyme.jl/commit/0a1262ac499ea01486b1cabc4a4b857920a99ca6), [1aef4fb1](https://github.com/nsiccha/Enzyme.jl/commit/1aef4fb1c34d1f6d5709bfe461e48d8b723d3365), [c99a9e2a](https://github.com/nsiccha/Enzyme.jl/commit/c99a9e2acb3869a5cb8c56403a6d2f6e628363fd), [8fec4bf1](https://github.com/nsiccha/Enzyme.jl/commit/8fec4bf13f464556357bf5f8d4acafaf9ca0aad6).\n\nRegression coverage on the fork: [test/fresh_data_merge.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/fresh_data_merge.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "heap-slot-object-id",
+      "role": "fix",
+      "title": "Moving a stack slot to the heap loses a call argument type on Julia 1.10",
+      "summary": "A view of a SubArray held in a slot should still compile when the slot moves to the heap. The argument type used by the call must remain consistent across the move.",
+      "repairs": [
+        {
+          "id": "heap_slot_object_id",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [
+        {
+          "name": "libEnzyme build",
+          "repo": "nsiccha/Enzyme",
+          "build": "979b679afd12d0f7d829f3925ba2d3c453b9d385",
+          "why": "The Enzyme.jl repair record names this native build as a prerequisite."
+        }
+      ],
+      "validation": [],
+      "draft": {
+        "title": "Moving a stack slot to the heap loses a call argument type on Julia 1.10",
+        "body": "A view of a SubArray held in a slot should still compile when the slot moves to the heap. The argument type used by the call must remain consistent across the move.\n\nOriginal fork commit: [bcefef27](https://github.com/nsiccha/Enzyme.jl/commit/bcefef27e6af24963faaec8e3a8089cf88147d4c).\n\nRegression coverage on the fork: [test/heap_slot_object_id.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/heap_slot_object_id.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "householder-q-products",
+      "role": "fix",
+      "title": "Products with the Q from QR, LQ and Hessenberg factorizations need derivatives",
+      "summary": "LinearAlgebra represents Q implicitly in these factorizations. Applying it to a vector or matrix should support forward and reverse differentiation without materializing Q. Check transpose cases and nested derivatives against an explicit small reference.",
+      "repairs": [
+        {
+          "id": "householder_q_products",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the householder-products review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used lapack-helpers. Its prerequisites have yet to be verified for this issue alone. The Householder rules use the shared LAPACK shadow and return helpers."
+      },
+      "depends_on": [
+        "lapack-helpers"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Products with the Q from QR, LQ and Hessenberg factorizations need derivatives",
+        "body": "LinearAlgebra represents Q implicitly in these factorizations. Applying it to a vector or matrix should support forward and reverse differentiation without materializing Q. Check transpose cases and nested derivatives against an explicit small reference.\n\nOriginal fork commits in historical order: [d5dffdf2](https://github.com/nsiccha/Enzyme.jl/commit/d5dffdf2a7c0dc79695c2dc449952876c66dc837), [930ec4be](https://github.com/nsiccha/Enzyme.jl/commit/930ec4bebe5a2a9839b455b544944224a31ee553), [0f6d362b](https://github.com/nsiccha/Enzyme.jl/commit/0f6d362b2cc9016679c383a3273294df554a8a69), [6c6b9ad7](https://github.com/nsiccha/Enzyme.jl/commit/6c6b9ad716e7bc71b6a2e7e55094ea3b3637a419), [de6bb994](https://github.com/nsiccha/Enzyme.jl/commit/de6bb994ea8cdb6787d461dd8c80dccaeadb711d).\n\nRegression coverage on the fork: [test/rules/internal_rules/householder_multiply.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/householder_multiply.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "image-time-derivatives",
+      "role": "fix",
+      "title": "Derivatives compiled while writing a package image can fail in a later session",
+      "summary": "A package precompile workload can construct a split derivative, a Jacobian or a nested derivative. Reopening that image in a new Julia process should produce usable derivatives with valid callback and seed references.",
+      "repairs": [
+        {
+          "id": "image_time_derivatives",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Derivatives compiled while writing a package image can fail in a later session",
+        "body": "A package precompile workload can construct a split derivative, a Jacobian or a nested derivative. Reopening that image in a new Julia process should produce usable derivatives with valid callback and seed references.\n\nOriginal fork commit: [fe3611ed](https://github.com/nsiccha/Enzyme.jl/commit/fe3611ed4e367da64b0436d6569cbafb615422d1).\n\nRegression coverage on the fork: [test/precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/precompile.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "lazy-derivative-compile",
+      "role": "fix",
+      "title": "Derivative compilation during caller inference blocks unrelated threads",
+      "summary": "Compiling a combined or forward derivative inside caller inference can keep other threads waiting for Julia’s codegen lock. Delay derivative compilation until the first call, and invalidate the compiled result when its dependencies change.",
+      "repairs": [
+        {
+          "id": "lazy_derivative_compile",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Derivative compilation during caller inference blocks unrelated threads",
+        "body": "Compiling a combined or forward derivative inside caller inference can keep other threads waiting for Julia’s codegen lock. Delay derivative compilation until the first call, and invalidate the compiled result when its dependencies change.\n\nOriginal fork commits in historical order: [9e7c276e](https://github.com/nsiccha/Enzyme.jl/commit/9e7c276ea752fda6e5285215768fe024dfa1be06), [cd22f767](https://github.com/nsiccha/Enzyme.jl/commit/cd22f7673d8977267a674e5ba9779cd5bcabd441), [03156b23](https://github.com/nsiccha/Enzyme.jl/commit/03156b23f82120bd29542ba79ef7c218f368e9eb), [16c8d85f](https://github.com/nsiccha/Enzyme.jl/commit/16c8d85f4ea07407314dfc0a748405dde2cb7791).\n\nRegression coverage on the fork: [test/lazy_thunk.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/lazy_thunk.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "literal-constant-capture",
+      "role": "fix",
+      "title": "Literal constants captured next to active views trigger a runtime activity error",
+      "summary": "A closure or generator can capture a constant object next to an active view. Reverse mode should allocate a separate zero shadow for the constant when needed and differentiate the active data.",
+      "repairs": [
+        {
+          "id": "literal_constant_capture",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Literal constants captured next to active views trigger a runtime activity error",
+        "body": "A closure or generator can capture a constant object next to an active view. Reverse mode should allocate a separate zero shadow for the constant when needed and differentiate the active data.\n\nOriginal fork commit: [1232a97d](https://github.com/nsiccha/Enzyme.jl/commit/1232a97d96205d399cd7636aab8d60c1cdf55db8).\n\nRegression coverage on the fork: [test/literal_constant_capture.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/literal_constant_capture.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "logger-world",
+      "role": "fix",
+      "title": "Derivative compilation can call a logger outside its method world",
+      "summary": "A task can use a logger whose methods were defined after the method world in which a derivative is compiling. Compilation should still complete and preserve the caller’s logger for ordinary runtime messages.",
+      "repairs": [
+        {
+          "id": "logger_world",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the logger-world review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Derivative compilation can call a logger outside its method world",
+        "body": "A task can use a logger whose methods were defined after the method world in which a derivative is compiling. Compilation should still complete and preserve the caller’s logger for ordinary runtime messages.\n\nOriginal fork commits in historical order: [90ac1dde](https://github.com/nsiccha/Enzyme.jl/commit/90ac1dde7d86804f9ec35b4a63d8d39026f97df4), [3292bc48](https://github.com/nsiccha/Enzyme.jl/commit/3292bc480e651affbfc2c6d7f50b2dd842a035db).\n\nRegression coverage on the fork: [test/logger_world.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/logger_world.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "long-tuple-map",
+      "role": "fix",
+      "title": "Mapping over a long heterogeneous tuple loses field types during differentiation",
+      "summary": "The derivative of a map over a mixed tuple should preserve one concrete result type per field. Falling back to a Vector{Any} loses information otherwise available for a shorter tuple. Runtime-hidden tuples have a separate follow-up.",
+      "repairs": [
+        {
+          "id": "long_tuple_map",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the tuple-map review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used array-tuple-layout, wide-active-calls. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Mapping over a long heterogeneous tuple loses field types during differentiation",
+        "body": "The derivative of a map over a mixed tuple should preserve one concrete result type per field. Falling back to a Vector{Any} loses information otherwise available for a shorter tuple. Runtime-hidden tuples have a separate follow-up.\n\nOriginal fork commit: [0ed72ccc](https://github.com/nsiccha/Enzyme.jl/commit/0ed72ccc189e04eebeb9aabddd2192616de00f31).\n\nRegression coverage on the fork: [test/tuple_map.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/tuple_map.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "make-zero-atomic-fields",
+      "role": "fix",
+      "title": "make_zero fails to preserve atomic fields and shared runtime objects",
+      "summary": "Taking a zero shadow of a structure containing atomic fields requires atomic writes. Locks, channels and global references can also reach Tasks or bindings that must remain shared. Creating a shadow should preserve those relationships.",
+      "repairs": [
+        {
+          "id": "make_zero_atomic_fields",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the atomic-make-zero review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "make_zero fails to preserve atomic fields and shared runtime objects",
+        "body": "Taking a zero shadow of a structure containing atomic fields requires atomic writes. Locks, channels and global references can also reach Tasks or bindings that must remain shared. Creating a shadow should preserve those relationships.\n\nOriginal fork commit: [d91e7405](https://github.com/nsiccha/Enzyme.jl/commit/d91e7405396e4a4436953a4f6f13ce7272c2205d).\n\nRegression coverage on the fork: [test/make_zero.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/make_zero.jl), [test/locks.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/locks.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "memoryref-root",
+      "role": "fix",
+      "title": "Reverse mode allocates a tape per recursive call over a view",
+      "summary": "On Julia 1.12 and 1.13 the root of a MemoryRef read can be recovered together with the data pointer. A recursive function over a view should obtain the same gradient without retaining a new tape for every call.",
+      "repairs": [
+        {
+          "id": "memoryref_root",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the memoryref-root review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Reverse mode allocates a tape per recursive call over a view",
+        "body": "On Julia 1.12 and 1.13 the root of a MemoryRef read can be recovered together with the data pointer. A recursive function over a view should obtain the same gradient without retaining a new tape for every call.\n\nOriginal fork commits in historical order: [d0abfb09](https://github.com/nsiccha/Enzyme.jl/commit/d0abfb098857430a2051fc08f6c2e2e6a4ba19b9), [887f864d](https://github.com/nsiccha/Enzyme.jl/commit/887f864d0545f9d502dd1132d475ec820a26c0b5), [5d4fbb0b](https://github.com/nsiccha/Enzyme.jl/commit/5d4fbb0b830ae07fa029ac8a38e1d93b98883fcf), [2ad4f3d1](https://github.com/nsiccha/Enzyme.jl/commit/2ad4f3d1f5a2c3374929116a8f12742c58e2cc20).\n\nRegression coverage on the fork: [test/memoryref_root.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/memoryref_root.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "nested-tape-activity",
+      "role": "fix",
+      "title": "An outer derivative rejects constant members of an inner derivative’s tape",
+      "summary": "Sorting, removing duplicates and slicing constant data can leave constant members in an inner tape. An outer differentiation should propagate the activity of those members without raising a runtime activity error.",
+      "repairs": [
+        {
+          "id": "nested_tape_activity",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "An outer derivative rejects constant members of an inner derivative’s tape",
+        "body": "Sorting, removing duplicates and slicing constant data can leave constant members in an inner tape. An outer differentiation should propagate the activity of those members without raising a runtime activity error.\n\nOriginal fork commit: [765aa977](https://github.com/nsiccha/Enzyme.jl/commit/765aa9772c24ad4ad78e463b12aa57bbfbeaedb0).\n\nRegression coverage on the fork: [test/nested_tape_activity.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/nested_tape_activity.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-args-inference",
+      "role": "fix",
+      "title": "A nested derivative through dynamic dispatch loses readonly operand information",
+      "summary": "On Julia 1.10, a second derivative through a dynamic call can fail when the readonly argument set is inferred imprecisely. Preserve the argument positions in the inferred activity tuple.",
+      "repairs": [
+        {
+          "id": "readonly_args_inference",
+          "covers": [
+            "implementation"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A nested derivative through dynamic dispatch loses readonly operand information",
+        "body": "On Julia 1.10, a second derivative through a dynamic call can fail when the readonly argument set is inferred imprecisely. Preserve the argument positions in the inferred activity tuple.\n\nOriginal fork commits in historical order: [abdb9f1c](https://github.com/nsiccha/Enzyme.jl/commit/abdb9f1c533f9dce65c78a87dcc9caa1c0541385), [c6af79b7](https://github.com/nsiccha/Enzyme.jl/commit/c6af79b7f494d3e353502f76664d0fb1cdd02b86).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-byvalue-copies",
+      "role": "fix",
+      "title": "Readonly analysis mistakes writes to an argument copy for writes to the original",
+      "summary": "A calling-convention wrapper can copy a by-value argument into local storage. Initializing that copy and forwarding its contents to a read-only callee should not be reported as mutation of the captured input.",
+      "repairs": [
+        {
+          "id": "readonly_byvalue_copies",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Readonly analysis mistakes writes to an argument copy for writes to the original",
+        "body": "A calling-convention wrapper can copy a by-value argument into local storage. Initializing that copy and forwarding its contents to a read-only callee should not be reported as mutation of the captured input.\n\nOriginal fork commits in historical order: [056d0a3c](https://github.com/nsiccha/Enzyme.jl/commit/056d0a3cbe96639ddbb15e5299b2a9fa8594f5a6), [5fcaef3a](https://github.com/nsiccha/Enzyme.jl/commit/5fcaef3a5d204bec1a09257faa83c63156869d14).\n\nRegression coverage on the fork: [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-copies",
+      "role": "fix",
+      "title": "Readonly analysis rejects changes to a separate copy of plain data",
+      "summary": "A callable can copy its captured data into a fresh buffer and mutate the copy. For elements containing no references, those stores cannot change the captured buffer. Readonly analysis should accept that pattern.",
+      "repairs": [
+        {
+          "id": "readonly_copies",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Readonly analysis rejects changes to a separate copy of plain data",
+        "body": "A callable can copy its captured data into a fresh buffer and mutate the copy. For elements containing no references, those stores cannot change the captured buffer. Readonly analysis should accept that pattern.\n\nOriginal fork commit: [bb67e327](https://github.com/nsiccha/Enzyme.jl/commit/bb67e327c86fb82100e525c63215f4d4dc751d93).\n\nRegression coverage on the fork: [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-custom-rule-calls",
+      "role": "fix",
+      "title": "Readonly analysis rejects a custom-rule callee used at several call sites",
+      "summary": "Two callers can share a callee with a custom derivative rule. The readonly proof should check what each call receives and accept calls that preserve captured input data.",
+      "repairs": [
+        {
+          "id": "readonly_custom_rule_calls",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Readonly analysis rejects a custom-rule callee used at several call sites",
+        "body": "Two callers can share a callee with a custom derivative rule. The readonly proof should check what each call receives and accept calls that preserve captured input data.\n\nOriginal fork commits in historical order: [55ceb109](https://github.com/nsiccha/Enzyme.jl/commit/55ceb10919c8f4501332cde508141283e335cbf2), [5c01a312](https://github.com/nsiccha/Enzyme.jl/commit/5c01a3125c11f4299080aad9a7b3a0a9048809d3), [58356e24](https://github.com/nsiccha/Enzyme.jl/commit/58356e2459702e6b495b737ceb241492549d85ae).\n\nRegression coverage on the fork: [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-dynamic-calls",
+      "role": "fix",
+      "title": "Readonly analysis cannot follow a captured argument through dynamic dispatch",
+      "summary": "The callable can pass captured data to a method selected only at runtime. Check the actual operands when the method is reached, including invokelatest and batched calls.",
+      "repairs": [
+        {
+          "id": "readonly_dynamic_calls",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Readonly analysis cannot follow a captured argument through dynamic dispatch",
+        "body": "The callable can pass captured data to a method selected only at runtime. Check the actual operands when the method is reached, including invokelatest and batched calls.\n\nOriginal fork commits in historical order: [f39f2ded](https://github.com/nsiccha/Enzyme.jl/commit/f39f2ded75768e1077345585ce2ea60c044a341b), [86565ac3](https://github.com/nsiccha/Enzyme.jl/commit/86565ac3c34f4e5eb7a626a4c10d94939001bcb9).\n\nRegression coverage on the fork: [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-loop-stores",
+      "role": "fix",
+      "title": "A store to a fresh float array in a loop is mistaken for mutation of captured data",
+      "summary": "On Julia 1.11 and later a loop may read a captured array and write the result to a new array. The readonly proof should distinguish the two arrays and accept the callable.",
+      "repairs": [
+        {
+          "id": "readonly_loop_stores",
+          "covers": [
+            "implementation"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A store to a fresh float array in a loop is mistaken for mutation of captured data",
+        "body": "On Julia 1.11 and later a loop may read a captured array and write the result to a new array. The readonly proof should distinguish the two arrays and accept the callable.\n\nOriginal fork commit: [213d370d](https://github.com/nsiccha/Enzyme.jl/commit/213d370deb680d4aba1e77cf8a52f011751d465d).\n\nRegression coverage on the fork: [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "readonly-shared-callees",
+      "role": "fix",
+      "title": "A readonly proof loses which argument carries captured data at a shared callee",
+      "summary": "The same function may receive captured data in different positions at different call sites. Check each set of affected positions and follow the value through exceptions when it is thrown and caught.",
+      "repairs": [
+        {
+          "id": "readonly_shared_callees",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A readonly proof loses which argument carries captured data at a shared callee",
+        "body": "The same function may receive captured data in different positions at different call sites. Check each set of affected positions and follow the value through exceptions when it is thrown and caught.\n\nOriginal fork commits in historical order: [66f48584](https://github.com/nsiccha/Enzyme.jl/commit/66f485845837751888f8dcdceb13aaf50665408f), [c5d7107e](https://github.com/nsiccha/Enzyme.jl/commit/c5d7107e86347be703e85e872931ada521fd419e).\n\nRegression coverage on the fork: [test/readonly_argument.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/readonly_argument.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "recursive-constant-fields",
+      "role": "fix",
+      "title": "Reverse mode loses constant-field provenance across a recursive call",
+      "summary": "A recursive helper can pass on a struct containing both constant and active data. A lazy broadcast reduction over the constant field should retain its activity and differentiate without a runtime activity error.",
+      "repairs": [
+        {
+          "id": "recursive_constant_fields",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Reverse mode loses constant-field provenance across a recursive call",
+        "body": "A recursive helper can pass on a struct containing both constant and active data. A lazy broadcast reduction over the constant field should retain its activity and differentiate without a runtime activity error.\n\nOriginal fork commit: [f4d7aa9d](https://github.com/nsiccha/Enzyme.jl/commit/f4d7aa9dade38e553b3da59382ee58553fd74a4d).\n\nRegression coverage on the fork: [test/recursive_constant_fields.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/recursive_constant_fields.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "retained-derivatives",
+      "role": "fix",
+      "title": "A new session recompiles derivatives already computed in a precompile workload",
+      "summary": "On x86-64 Linux, a package can calculate derivatives while building its image. A second session should link the matching derivative from that image and return the same result without repeating compilation.",
+      "repairs": [
+        {
+          "id": "retained_derivatives",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A new session recompiles derivatives already computed in a precompile workload",
+        "body": "On x86-64 Linux, a package can calculate derivatives while building its image. A second session should link the matching derivative from that image and return the same result without repeating compilation.\n\nOriginal fork commit: [4c01852e](https://github.com/nsiccha/Enzyme.jl/commit/4c01852e969d6e2d15a5f7ad46b3eb03a108dc89).\n\nRegression coverage on the fork: [test/precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/precompile.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "retained-derivatives-after-invalidation",
+      "role": "fix",
+      "title": "A compiler invalidation prevents reuse of a valid derivative from a package image",
+      "summary": "Loading another package may invalidate parts of Enzyme’s compiler. If the derivative itself remains valid, the subsequent call should still link the retained derivative from the image.",
+      "repairs": [
+        {
+          "id": "retained_derivatives_after_invalidation",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone. This changes cache lookup for derivatives already retained in package images."
+      },
+      "depends_on": [
+        "retained-derivatives"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A compiler invalidation prevents reuse of a valid derivative from a package image",
+        "body": "Loading another package may invalidate parts of Enzyme’s compiler. If the derivative itself remains valid, the subsequent call should still link the retained derivative from the image.\n\nOriginal fork commit: [53ee3043](https://github.com/nsiccha/Enzyme.jl/commit/53ee304324ae17d180b09f95f862862dc3ba151a).\n\nRegression coverage on the fork: [test/precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/precompile.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "returned-integer-array",
+      "role": "fix",
+      "title": "A returned integer array beside active data triggers a runtime activity error",
+      "summary": "A non-inlined callee can return an integer array that is stored next to differentiable data. Since the integer array carries no derivative, reverse mode should preserve it as its own shadow and differentiate the active part.",
+      "repairs": [
+        {
+          "id": "returned_integer_array",
+          "covers": [
+            "implementation"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A returned integer array beside active data triggers a runtime activity error",
+        "body": "A non-inlined callee can return an integer array that is stored next to differentiable data. Since the integer array carries no derivative, reverse mode should preserve it as its own shadow and differentiate the active part.\n\nOriginal fork commits in historical order: [de5bc5a6](https://github.com/nsiccha/Enzyme.jl/commit/de5bc5a6a299c5f4c256a945158349e65cc206b1), [afa71686](https://github.com/nsiccha/Enzyme.jl/commit/afa716866723a75b8ae13c5fb66c1b346fcbcb07), [68ca9137](https://github.com/nsiccha/Enzyme.jl/commit/68ca91375a531c5cfc5355210c013370d0a007cf).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "returned-memory",
+      "role": "fix",
+      "title": "Reverse mode loses adjoints for storage initialized and returned by a callee",
+      "summary": "A helper may initialize storage and return it through an indexed copy, nested wrapper or tuple. When the caller uses that storage, the adjoint must reach the initialized destination through the returned value.",
+      "repairs": [
+        {
+          "id": "returned_memory",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [
+        {
+          "name": "libEnzyme build",
+          "repo": "nsiccha/Enzyme",
+          "build": "33709d12d36d39bad556863058a2a0ce2912d35c",
+          "why": "The Enzyme.jl repair record names this native build as a prerequisite."
+        }
+      ],
+      "validation": [],
+      "draft": {
+        "title": "Reverse mode loses adjoints for storage initialized and returned by a callee",
+        "body": "A helper may initialize storage and return it through an indexed copy, nested wrapper or tuple. When the caller uses that storage, the adjoint must reach the initialized destination through the returned value.\n\nOriginal fork commits in historical order: [fe5325a6](https://github.com/nsiccha/Enzyme.jl/commit/fe5325a60791950ad4463ab2b07db213257d3396), [de0f766e](https://github.com/nsiccha/Enzyme.jl/commit/de0f766e8ff369a14d604ca5823233aa1b599f25), [7dd28c87](https://github.com/nsiccha/Enzyme.jl/commit/7dd28c878d8fb154950f94365dcda55101781355), [67b443f4](https://github.com/nsiccha/Enzyme.jl/commit/67b443f4285fea61dfeb8642cc214b202a359b17).\n\nRegression coverage on the fork: [test/returned_memory.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/returned_memory.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "source-loaded-generators",
+      "role": "fix",
+      "title": "Reverse-mode splats can fail when Enzyme is loaded from source",
+      "summary": "On Julia 1.12 and later, loading Enzyme without its package image can change which helpers a generated function sees. A runtime splat in reverse mode should compile on first use in either loading mode.",
+      "repairs": [
+        {
+          "id": "source_loaded_generators",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the source-loaded-generators review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Reverse-mode splats can fail when Enzyme is loaded from source",
+        "body": "On Julia 1.12 and later, loading Enzyme without its package image can change which helpers a generated function sees. A runtime splat in reverse mode should compile on first use in either loading mode.\n\nOriginal fork commits in historical order: [6a1a5c5c](https://github.com/nsiccha/Enzyme.jl/commit/6a1a5c5cd1b9a4cd525cf171427a9c89c27cf6ff), [10e171e7](https://github.com/nsiccha/Enzyme.jl/commit/10e171e744e686d671d363ec5984b894369f965d).\n\nRegression coverage on the fork: [test/source_loaded.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/source_loaded.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "staticarrays-compiler-image",
+      "role": "fix",
+      "title": "Loading StaticArrays causes the first derivative to recompile Enzyme’s compiler",
+      "summary": "After a package image is built, importing StaticArrays can discard the benefit of Enzyme’s precompile workload. A fresh process that loads the extension should retain usable compiler code and compute the first derivative correctly.",
+      "repairs": [
+        {
+          "id": "staticarrays_compiler_image",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Loading StaticArrays causes the first derivative to recompile Enzyme’s compiler",
+        "body": "After a package image is built, importing StaticArrays can discard the benefit of Enzyme’s precompile workload. A fresh process that loads the extension should retain usable compiler code and compute the first derivative correctly.\n\nOriginal fork commits in historical order: [b3a7f50c](https://github.com/nsiccha/Enzyme.jl/commit/b3a7f50cbf8343db17a7a8e1beb9d4e1b615ead4), [ac7807a9](https://github.com/nsiccha/Enzyme.jl/commit/ac7807a9252f36b89b6be598d54a6f6876eacc71), [8a471677](https://github.com/nsiccha/Enzyme.jl/commit/8a4716777a62178e52ba79a4216e7e346418195f), [84ec4fec](https://github.com/nsiccha/Enzyme.jl/commit/84ec4fec31ba542d8173ad12fadfc5e1f35bc43a).\n\nRegression coverage on the fork: [test/precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/precompile.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "supplied-gradients",
+      "role": "fix",
+      "title": "Allow a caller to supply a known gradient for an opaque function",
+      "summary": "A Julia function may call native code for which AD has no derivative rule. A wrapper should allow a caller to supply its analytic gradient. Other unsupported calls should retain their normal activity checks and report when a required derivative is missing.",
+      "repairs": [
+        {
+          "id": "supplied_gradients",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the supplied-gradients review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+      },
+      "depends_on": [],
+      "requires": [
+        {
+          "name": "libEnzyme build",
+          "repo": "nsiccha/Enzyme",
+          "build": "7f957e67cc6c7876e64367be0efcbf7adaa82731",
+          "why": "The Enzyme.jl repair record names this native build as a prerequisite."
+        }
+      ],
+      "validation": [],
+      "draft": {
+        "title": "Allow a caller to supply a known gradient for an opaque function",
+        "body": "A Julia function may call native code for which AD has no derivative rule. A wrapper should allow a caller to supply its analytic gradient. Other unsupported calls should retain their normal activity checks and report when a required derivative is missing.\n\nOriginal fork commits in historical order: [fe7300a3](https://github.com/nsiccha/Enzyme.jl/commit/fe7300a308153edf923673f0b4e58ee6e5c5c4ff), [8fc1c1e5](https://github.com/nsiccha/Enzyme.jl/commit/8fc1c1e58e82f3de41de1387c08db25587c3b338), [a79988cb](https://github.com/nsiccha/Enzyme.jl/commit/a79988cbb70de9f6729aee7d8cada4f7c2126d3f), [a4a368c3](https://github.com/nsiccha/Enzyme.jl/commit/a4a368c30df853677dc1f2ef59ebacd032c16a6d).\n\nRegression coverage on the fork: [test/foreign_call.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/foreign_call.jl), [test/rules/provided_gradient.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/provided_gradient.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "vararg-slot-fields",
+      "role": "fix",
+      "title": "A constant struct field loses its type after a vararg tuple reload",
+      "summary": "On Julia 1.10 a vararg method can store its arguments in a tuple and reload a struct field. Static reverse mode should recover the Julia type and constant-field information at that location.",
+      "repairs": [
+        {
+          "id": "vararg_slot_fields",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A constant struct field loses its type after a vararg tuple reload",
+        "body": "On Julia 1.10 a vararg method can store its arguments in a tuple and reload a struct field. Static reverse mode should recover the Julia type and constant-field information at that location.\n\nOriginal fork commit: [3f5c9edd](https://github.com/nsiccha/Enzyme.jl/commit/3f5c9edd7145acc829f3f42035d58000f142ebcb).\n\nRegression coverage on the fork: [test/const_element_store.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_element_store.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "vararg-slot-null-stores",
+      "role": "fix",
+      "title": "Null stores prevent type recovery from a wide vararg tuple",
+      "summary": "Julia 1.10 can clear wide argument tuple storage field by field. An explicit null store should have the same effect on slot-field analysis as a zero memset.",
+      "repairs": [
+        {
+          "id": "vararg_slot_null_stores",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Null stores prevent type recovery from a wide vararg tuple",
+        "body": "Julia 1.10 can clear wide argument tuple storage field by field. An explicit null store should have the same effect on slot-field analysis as a zero memset.\n\nOriginal fork commits in historical order: [ffae0f34](https://github.com/nsiccha/Enzyme.jl/commit/ffae0f349b0fd76ed1ff48b382063c70fad49708), [c353ffe2](https://github.com/nsiccha/Enzyme.jl/commit/c353ffe2ba55d769190a1fc4bbef0dc7f3d0df9b).\n\nRegression coverage on the fork: [test/const_element_store.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_element_store.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "vararg-slot-two-offsets",
+      "role": "fix",
+      "title": "Constant-field analysis loses a slot passed to the same method at two offsets",
+      "summary": "A method can be called with two different places within one slot. On Julia 1.10, constant-field analysis must track both offsets, including when the corresponding views are swapped.",
+      "repairs": [
+        {
+          "id": "vararg_slot_two_offsets",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Constant-field analysis loses a slot passed to the same method at two offsets",
+        "body": "A method can be called with two different places within one slot. On Julia 1.10, constant-field analysis must track both offsets, including when the corresponding views are swapped.\n\nOriginal fork commits in historical order: [350886f7](https://github.com/nsiccha/Enzyme.jl/commit/350886f7ae20d6135a7f8a0e6aea1d62baba0c37), [d9192503](https://github.com/nsiccha/Enzyme.jl/commit/d9192503ebdea0044b959c5098c5e11a8d774a43).\n\nRegression coverage on the fork: [test/const_element_store.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_element_store.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "llvm-ir-helpers",
+      "role": "shared",
+      "title": "Share CFG edge splitting and call-site attribute inspection",
+      "summary": "CFG edge splitting and call-site attribute inspection are shared by several independent changes.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "Original introducing commits: retarget_phis! in e515811e, split_edge! in 361e5020, callsite_function_attributes in a3ce94d7. Each also contains other changes. Extract the helpers required by the dependent patch. Original source: [a3ce94d7](https://github.com/nsiccha/Enzyme.jl/commit/a3ce94d7de93e62d79f7e78529cba6b43e958d7f), [e515811e](https://github.com/nsiccha/Enzyme.jl/commit/e515811e1d1947278565cbdb0d414bd3f469e958), [361e5020](https://github.com/nsiccha/Enzyme.jl/commit/361e502048d3ff7a7545533c592c62390c7b8541)."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "call-result-types",
+      "role": "fix",
+      "title": "AD loses the type of a value returned directly by Julia",
+      "summary": "A non-inlined findall can return a Vector{Int} next to a differentiable value in a NamedTuple. Its integer result should remain inactive in forward and reverse AD. If the compiler loses the direct return type, a valid caller can raise a runtime activity error.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical call-result-types topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "AD loses the type of a value returned directly by Julia",
+        "body": "A non-inlined findall can return a Vector{Int} next to a differentiable value in a NamedTuple. Its integer result should remain inactive in forward and reverse AD. If the compiler loses the direct return type, a valid caller can raise a runtime activity error.\n\nOriginal fork commit: [4f68c8e8](https://github.com/nsiccha/Enzyme.jl/commit/4f68c8e808203dbc58505b1b102e88fc595aa71d).\n\nRegression coverage on the fork: [test/absint.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/absint.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "exact-type-tests",
+      "role": "fix",
+      "title": "An exact type test can remain unresolved across a loop",
+      "summary": "All paths into a loop can establish the same result for an exact type comparison. When that result is preserved through a loop-carried value, subsequent differentiation should see it and retain the concrete layout. Cover both incoming paths and the case where they disagree.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical exact-type-tests topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "An exact type test can remain unresolved across a loop",
+        "body": "All paths into a loop can establish the same result for an exact type comparison. When that result is preserved through a loop-carried value, subsequent differentiation should see it and retain the concrete layout. Cover both incoming paths and the case where they disagree.\n\nOriginal fork commit: [f390d0b2](https://github.com/nsiccha/Enzyme.jl/commit/f390d0b21d24f280a4118d8c17e92b89e06d7de1).\n\nRegression coverage on the fork: [test/type_test_folding.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/type_test_folding.jl), [test/buffer_ownership.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/buffer_ownership.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "gamma-family",
+      "role": "fix",
+      "title": "Derivatives of gamma and polygamma need stable real-argument rules",
+      "summary": "Differentiating gamma and digamma should give the corresponding analytic partials, including on negative half-integers away from poles. Compare reverse and forward results with the real gamma and polygamma identities across signs and derivative orders.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical gamma-family topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Derivatives of gamma and polygamma need stable real-argument rules",
+        "body": "Differentiating gamma and digamma should give the corresponding analytic partials, including on negative half-integers away from poles. Compare reverse and forward results with the real gamma and polygamma identities across signs and derivative orders.\n\nOriginal fork commits in historical order: [74ace76d](https://github.com/nsiccha/Enzyme.jl/commit/74ace76d2740452b074dcf7e5b6e8422c6ece39e), [bb949ab5](https://github.com/nsiccha/Enzyme.jl/commit/bb949ab5ef00f617a6655bb51e5751022122abbc).\n\nRegression coverage on the fork: [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl), [test/ext/digamma.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/digamma.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "incomplete-gamma",
+      "role": "fix",
+      "title": "Differentiate the incomplete gamma function and its inverse with respect to shape",
+      "summary": "A scalar objective can use both components of gamma_inc or the inverse function. Shape and argument derivatives should agree with analytic partials and finite differences, including when the result is composed with the inverse. Existing upstream issue #3580 and PR #3599 are related.",
+      "repairs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3580",
+          "relation": "related"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3599",
+          "relation": "related"
+        }
+      ],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical incomplete-gamma topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Differentiate the incomplete gamma function and its inverse with respect to shape",
+        "body": "A scalar objective can use both components of gamma_inc or the inverse function. Shape and argument derivatives should agree with analytic partials and finite differences, including when the result is composed with the inverse. Existing upstream issue #3580 and PR #3599 are related.\n\nOriginal fork commits in historical order: [c01a581a](https://github.com/nsiccha/Enzyme.jl/commit/c01a581a6fbb85c2bd776533efc6542d79e0f588), [f23adee5](https://github.com/nsiccha/Enzyme.jl/commit/f23adee5365fa364a4eea5a9e9dc4224b34d6608), [3605c459](https://github.com/nsiccha/Enzyme.jl/commit/3605c459909d8f697c65f86a42b2a6cef2ca19dc), [9a5ceac1](https://github.com/nsiccha/Enzyme.jl/commit/9a5ceac1c1b6db0542e450c864bb977f8a751640), [4b243985](https://github.com/nsiccha/Enzyme.jl/commit/4b243985916450881167da7dd882fcbfd2356096), [2d58e887](https://github.com/nsiccha/Enzyme.jl/commit/2d58e88749e2ddb6341ef63d413e25cbebb9cdd8).\n\nRegression coverage on the fork: [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "boxed-forward",
+      "role": "fix",
+      "title": "Constant boxed tuple elements receive the wrong forward tangent",
+      "summary": "A forward-mode call can return a tuple that mixes differentiable fields with constant boxed values. Constant fields should receive zero tangents, and the primal values and active tangents should be preserved.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical boxed-forward topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Constant boxed tuple elements receive the wrong forward tangent",
+        "body": "A forward-mode call can return a tuple that mixes differentiable fields with constant boxed values. Constant fields should receive zero tangents, and the primal values and active tangents should be preserved.\n\nOriginal fork commits in historical order: [ff4fcff3](https://github.com/nsiccha/Enzyme.jl/commit/ff4fcff3fdc56ac3fa2a6bb6827274ea029811a4), [57e17642](https://github.com/nsiccha/Enzyme.jl/commit/57e176421262224a52837c8a5f057bc701f6aa77).\n\nRegression coverage on the fork: [test/typeunstable.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/typeunstable.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "many-arguments",
+      "role": "fix",
+      "title": "Differentiating calls with more than 32 annotated arguments loses static dispatch",
+      "summary": "A function’s gradient should not change when the annotated argument list grows beyond 32 arguments. Preserve the dispatch and batch width through the AD entry point and compare the resulting derivatives and mutations with a short-arity control.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical many-arguments topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [
+        "source-loaded-generators"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Differentiating calls with more than 32 annotated arguments loses static dispatch",
+        "body": "A function’s gradient should not change when the annotated argument list grows beyond 32 arguments. Preserve the dispatch and batch width through the AD entry point and compare the resulting derivatives and mutations with a short-arity control.\n\nOriginal fork commits in historical order: [161cae3a](https://github.com/nsiccha/Enzyme.jl/commit/161cae3a4787542f8c9cd7818be39617f969da47), [304b89db](https://github.com/nsiccha/Enzyme.jl/commit/304b89db1a017fb423bc769f07dd8af1661210af), [3380dde6](https://github.com/nsiccha/Enzyme.jl/commit/3380dde699dcba305c89cc612164dc5883d13449), [bd79cbbf](https://github.com/nsiccha/Enzyme.jl/commit/bd79cbbfb0a9ca34eb482ebea946fd1dc8c702ca).\n\nRegression coverage on the fork: [test/many_args.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/many_args.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "nested-math-symbols",
+      "role": "fix",
+      "title": "An outer derivative cannot resolve math functions injected for an inner derivative",
+      "summary": "Differentiation may introduce a math implementation into a compiled module. Taking another derivative of that computation should still resolve the injected function and return the derivative of the mathematical operation.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical nested-math-symbols topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "An outer derivative cannot resolve math functions injected for an inner derivative",
+        "body": "Differentiation may introduce a math implementation into a compiled module. Taking another derivative of that computation should still resolve the injected function and return the derivative of the mathematical operation.\n\nOriginal fork commit: [0fc5f8da](https://github.com/nsiccha/Enzyme.jl/commit/0fc5f8dae956a8d2d3a29aab7aff3b0ed180a597).\n\nRegression coverage on the fork: [test/ext/injected_math.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/injected_math.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "empty-loop-cache",
+      "role": "fix",
+      "title": "A loop that does not execute should have an empty reverse cache",
+      "summary": "A skipped loop stores no values for its reverse pass. Cache sizing should preserve this invariant even after loop transformations move the allocation. The derivative should handle empty inputs and return the same values as the corresponding empty primal computation.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical empty-loop-cache topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A loop that does not execute should have an empty reverse cache",
+        "body": "A skipped loop stores no values for its reverse pass. Cache sizing should preserve this invariant even after loop transformations move the allocation. The derivative should handle empty inputs and return the same values as the corresponding empty primal computation.\n\nOriginal fork commit: [d37d3d99](https://github.com/nsiccha/Enzyme.jl/commit/d37d3d99e2151ab4cb5d6d306ff7e03515acbfb1).\n\nRegression coverage on the fork: [test/loop_cache.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/loop_cache.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "array-tuple-layout",
+      "role": "fix",
+      "title": "AD loses tuple field layouts after a runtime type test",
+      "summary": "A runtime type test can choose between heterogeneous tuples or named tuples before reading an immutable field. Differentiation should preserve the field layout established on each path and return the tangent of the selected field.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The earlier array-tuple-layout topic combined type narrowing and array concatenation. These originals cover the type narrowing part. The split has not yet been tested independently."
+      },
+      "depends_on": [
+        "exact-type-tests"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "AD loses tuple field layouts after a runtime type test",
+        "body": "A runtime type test can choose between heterogeneous tuples or named tuples before reading an immutable field. Differentiation should preserve the field layout established on each path and return the tangent of the selected field.\n\nOriginal fork commits in historical order: [4316bfe0](https://github.com/nsiccha/Enzyme.jl/commit/4316bfe03e8f289ea8700039bd4dfaa524a9f89b), [0ba69252](https://github.com/nsiccha/Enzyme.jl/commit/0ba692520159866861edb1bdf5cae75329f8765c), [1a5cd3e2](https://github.com/nsiccha/Enzyme.jl/commit/1a5cd3e24889f9fbf853cd89f0d45e3607d7b46d), [4378667a](https://github.com/nsiccha/Enzyme.jl/commit/4378667a293584d02e0fcac30b0f243ef6fda255).\n\nRegression coverage on the fork: [test/mixed_vcat.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/mixed_vcat.jl), [test/namedtuple_fields.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/namedtuple_fields.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "concatenation-operand-activity",
+      "role": "fix",
+      "title": "Concatenating arrays or views can merge activity across operands",
+      "summary": "A loss can concatenate a constant array with an active array or view. Contributions to the output should propagate only to the selected active elements. The original changes cover dense arrays, views and stacking by block assignment.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The earlier array-tuple-layout topic combined type narrowing and array concatenation. These originals cover the concatenation part. The split has not yet been tested independently."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Concatenating arrays or views can merge activity across operands",
+        "body": "A loss can concatenate a constant array with an active array or view. Contributions to the output should propagate only to the selected active elements. The original changes cover dense arrays, views and stacking by block assignment.\n\nOriginal fork commits in historical order: [f9610e3c](https://github.com/nsiccha/Enzyme.jl/commit/f9610e3c05da799b2de58cded6b5caf0f0641a6a), [931fb6b5](https://github.com/nsiccha/Enzyme.jl/commit/931fb6b53651c82a6b75765b24c08d18e43cdff3), [ef9d8898](https://github.com/nsiccha/Enzyme.jl/commit/ef9d8898ad9188df52f8b20a5ef9986679c312f2), [30e038af](https://github.com/nsiccha/Enzyme.jl/commit/30e038af10b76f67c1c67ee51eab2b4fe3d15c2e), [752cf0cd](https://github.com/nsiccha/Enzyme.jl/commit/752cf0cdd3c2e927efadb30b754ac6a1ec9d1e6f), [fd42d7aa](https://github.com/nsiccha/Enzyme.jl/commit/fd42d7aa6b37f543477ffd4c0783ee38bf7eba47), [93c452bd](https://github.com/nsiccha/Enzyme.jl/commit/93c452bd294b2d960a534966fc11771da5d2aa73).\n\nRegression coverage on the fork: [test/concatenation.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/concatenation.jl), [test/vcat.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/vcat.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "large-const-arguments",
+      "role": "fix",
+      "title": "Large constant arguments are lowered incorrectly at a Julia call boundary",
+      "summary": "A derivative containing a Julia call with a large Const argument should use the same calling convention as the primal. Passing large immutable values by their expected representation should preserve both the call result and derivatives of the active inputs.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical large-const-arguments topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Large constant arguments are lowered incorrectly at a Julia call boundary",
+        "body": "A derivative containing a Julia call with a large Const argument should use the same calling convention as the primal. Passing large immutable values by their expected representation should preserve both the call result and derivatives of the active inputs.\n\nOriginal fork commit: [078996b3](https://github.com/nsiccha/Enzyme.jl/commit/078996b3b3b6c6b72c51e2989252ac6913adf8f1).\n\nRegression coverage on the fork: [test/large_const_arg.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/large_const_arg.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "fresh-vector-length",
+      "role": "fix",
+      "title": "AD cannot recover the known length of a freshly allocated vector on Julia 1.10",
+      "summary": "A vector allocated with a known length can flow through code that has no way to resize it. The compiler should retain that length fact where execution continues normally, including when a separate bounds-error path exits the function.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical fresh-vector-length topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [
+        "llvm-ir-helpers"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "AD cannot recover the known length of a freshly allocated vector on Julia 1.10",
+        "body": "A vector allocated with a known length can flow through code that has no way to resize it. The compiler should retain that length fact where execution continues normally, including when a separate bounds-error path exits the function.\n\nOriginal fork commits in historical order: [4fc9ac2c](https://github.com/nsiccha/Enzyme.jl/commit/4fc9ac2cf7051127d383e50d9b5998a1ab741b2e), [556d037e](https://github.com/nsiccha/Enzyme.jl/commit/556d037eddd010fda5ae8454abd8e3eec9fa3e26).\n\nRegression coverage on the fork: [test/passes.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/passes.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "loop-optimization",
+      "role": "fix",
+      "title": "Reverse loops lose vectorization or gain misplaced runtime checks",
+      "summary": "Optimizing the differentiated loop nest should preserve its runtime checks and allow applicable loops to vectorize before unrolling. Part of the ordering change already landed in upstream PR #3716. Review the remaining LLVM-version-specific behavior and regression coverage separately.",
+      "repairs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3716",
+          "relation": "related"
+        }
+      ],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical loop-optimization topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Reverse loops lose vectorization or gain misplaced runtime checks",
+        "body": "Optimizing the differentiated loop nest should preserve its runtime checks and allow applicable loops to vectorize before unrolling. Part of the ordering change already landed in upstream PR #3716. Review the remaining LLVM-version-specific behavior and regression coverage separately.\n\nOriginal fork commits in historical order: [0a2c3074](https://github.com/nsiccha/Enzyme.jl/commit/0a2c30742995151ddded069c242a70f8a0df9fc1), [4061711e](https://github.com/nsiccha/Enzyme.jl/commit/4061711e7ddc924352d6682256b85fb3e7290e49), [0d2e8720](https://github.com/nsiccha/Enzyme.jl/commit/0d2e8720a8101858bd15652f59723c3bd91244dc), [bcf7106b](https://github.com/nsiccha/Enzyme.jl/commit/bcf7106b7eac7ef2a4daf4a686407ecd642770de), [5ebd9f77](https://github.com/nsiccha/Enzyme.jl/commit/5ebd9f77cda5d06d5bf1662e50c13937ecc28cf8).\n\nRegression coverage on the fork: [test/optimize.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/optimize.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "lapack-helpers",
+      "role": "shared",
+      "title": "Share shadow and forward-return handling across LAPACK rules",
+      "summary": "Helpers for LAPACK shadows and return annotations are used by triangular solves, Householder products, and structured log determinants.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical lapack-helpers topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified. Original source: [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75), [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd), [e0b7328b](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6)."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "triangular-forward",
+      "role": "fix",
+      "title": "Forward differentiation through a triangular solve lacks the trtrs! rule",
+      "summary": "A linear solve with a triangular matrix should propagate a tangent through the LAPACK trtrs! operation. The derivative should agree with differentiating A*x=b, account for triangular wrappers, and leave structurally unused matrix entries inactive.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical triangular-forward topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [
+        "lapack-helpers"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Forward differentiation through a triangular solve lacks the trtrs! rule",
+        "body": "A linear solve with a triangular matrix should propagate a tangent through the LAPACK trtrs! operation. The derivative should agree with differentiating A*x=b, account for triangular wrappers, and leave structurally unused matrix entries inactive.\n\nOriginal fork commits in historical order: [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75), [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd), [e0b7328b](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6).\n\nRegression coverage on the fork: [test/rules/internal_rules/triangular_solve.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/triangular_solve.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "structured-logdet",
+      "role": "fix",
+      "title": "logdet needs derivative rules that preserve Symmetric and Hermitian structure",
+      "summary": "A dense matrix can be wrapped as Symmetric or Hermitian and store only one meaningful triangle. The derivative of logdet should respect the stored triangle and agree with the mathematical directional derivative. Upstream PR #4011 also changes determinant and logdet batching.",
+      "repairs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/4011",
+          "relation": "related"
+        }
+      ],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical structured-logdet topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [
+        "lapack-helpers"
+      ],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "logdet needs derivative rules that preserve Symmetric and Hermitian structure",
+        "body": "A dense matrix can be wrapped as Symmetric or Hermitian and store only one meaningful triangle. The derivative of logdet should respect the stored triangle and agree with the mathematical directional derivative. Upstream PR #4011 also changes determinant and logdet batching.\n\nOriginal fork commit: [9767a838](https://github.com/nsiccha/Enzyme.jl/commit/9767a838834e23f72e6f7038457bee9287f93f9b).\n\nRegression coverage on the fork: [test/rules/internal_rules/logdet.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/logdet.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "hypot",
+      "role": "fix",
+      "title": "The derivative of hypot can lose a small representable contribution",
+      "summary": "For two arguments with different magnitudes, the smaller derivative of hypot should retain its representable value. Constant complex inputs and inactive return annotations should preserve the real result and the active argument’s tangent.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical hypot topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "The derivative of hypot can lose a small representable contribution",
+        "body": "For two arguments with different magnitudes, the smaller derivative of hypot should retain its representable value. Constant complex inputs and inactive return annotations should preserve the real result and the active argument’s tangent.\n\nOriginal fork commits in historical order: [9ef4c676](https://github.com/nsiccha/Enzyme.jl/commit/9ef4c676c8daab0d4ddf3cc173cb256b2efc4d0f), [0eec0e57](https://github.com/nsiccha/Enzyme.jl/commit/0eec0e57a6e7ff7a8812efd88534a3f745bd04bf), [67041bef](https://github.com/nsiccha/Enzyme.jl/commit/67041befb1910a3d04f8b8a91d2962f0eb4374fc).\n\nRegression coverage on the fork: [test/rules/internal_rules/math.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/math.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "float-ranges",
+      "role": "fix",
+      "title": "A float range loses the derivatives of its first value and step",
+      "summary": "A loss can consume values of a floating-point range. Its gradient should follow changes to the first element and step through the range implementation, including Base.truncbits, and agree with differentiation of the equivalent explicit values.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical float-ranges topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "A float range loses the derivatives of its first value and step",
+        "body": "A loss can consume values of a floating-point range. Its gradient should follow changes to the first element and step through the range implementation, including Base.truncbits, and agree with differentiation of the equivalent explicit values.\n\nOriginal fork commits in historical order: [312c0129](https://github.com/nsiccha/Enzyme.jl/commit/312c0129a3ec219ef286d6997c445fcde1b96bc7), [c2ee2017](https://github.com/nsiccha/Enzyme.jl/commit/c2ee20174c025ec86666f358a3896094ce90d31e).\n\nRegression coverage on the fork: [test/rules/internal_rules/ranges.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/ranges.jl).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "fresh-storage-attributes",
+      "role": "fix",
+      "title": "Allocation routines lack information about fresh backing storage",
+      "summary": "The compiler can use fresh-storage information for a Julia allocation’s backing fields. The proposed annotations describe those fields for downstream analysis. The historical evidence for this group is package loading only, so behavior still needs a focused test.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical fresh-storage-attributes topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [],
+      "draft": {
+        "title": "Allocation routines lack information about fresh backing storage",
+        "body": "The compiler can use fresh-storage information for a Julia allocation’s backing fields. The proposed annotations describe those fields for downstream analysis. The historical evidence for this group is package loading only, so behavior still needs a focused test.\n\nOriginal fork commit: [6c75ceb2](https://github.com/nsiccha/Enzyme.jl/commit/6c75ceb2f3fe28f6c71434995710f014f1a1957d).",
+        "prepared_at": "2026-11-18T16:11:32Z"
+      }
+    },
+    {
+      "id": "literal-load-tests",
+      "role": "regression",
+      "title": "Retain regression coverage for literal-address loads during validation",
+      "summary": "Upstream PR #3782 contains the source correction. The fork group retains related regression coverage.",
+      "repairs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3782",
+          "relation": "related"
+        }
+      ],
+      "fix": {
+        "commits": [],
+        "why_together": "The original commits identify the historical literal-load-tests topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified. Original source: [c23cd5bb](https://github.com/nsiccha/Enzyme.jl/commit/c23cd5bb10f4bf3819287e7182a83ded5d1c1767)."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
     }
   ]
 }
