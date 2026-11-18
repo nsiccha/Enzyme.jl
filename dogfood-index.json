@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T18:18:32Z",
+  "prepared_at": "2026-11-18T18:30:08Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -940,8 +940,8 @@
       "summary": "When recording runtime calls made by a compiled derivative, an internal formatting helper may be reachable only when the derivative throws.",
       "draft": {
         "title": "Derivative reports should distinguish recursive error paths from work on a successful call",
-        "body": "This follow-up applies to the proposed derivative-report feature. When recording runtime calls made by a compiled derivative, an internal formatting helper may be reachable only when the derivative throws. If that helper calls another function recursively, its allocations still belong to the error path. The report should omit calls in unreachable blocks. A helper also called on a successful path should have its allocations counted there. Exported functions and functions passed as callbacks may have callers outside the module.\n\nOriginal fork commits include [ac07b121](https://github.com/nsiccha/Enzyme.jl/commit/ac07b12134476bffff5d57c8126b0f2917268161), [bccbfbcb](https://github.com/nsiccha/Enzyme.jl/commit/bccbfbcb1e88a0c4611d42d6b7d4a339c5970aa6).",
-        "prepared_at": "2026-11-18T15:47:36Z"
+        "body": "This follow-up applies to the proposed derivative-report feature. When recording runtime calls made by a compiled derivative, an internal formatting helper may be reachable only when the derivative throws. If that helper calls another function recursively, its allocations still belong to the error path. The report should omit calls in unreachable blocks. A helper also called on a successful path should have its allocations counted there. Exported functions and functions passed as callbacks may have callers outside the module.\n\nStart with the derivative-report feature ([bccbfbcb](https://github.com/nsiccha/Enzyme.jl/commit/bccbfbcb1e88a0c4611d42d6b7d4a339c5970aa6)), then apply [ac07b121](https://github.com/nsiccha/Enzyme.jl/commit/ac07b12134476bffff5d57c8126b0f2917268161). The follow-up changes which calls the report counts on the successful return path.",
+        "prepared_at": "2026-11-18T18:30:08Z"
       },
       "repairs": [
         {
@@ -1000,8 +1000,8 @@
       "summary": "Reverse-mode compilation can fail when loads pass through both a pointer select and a downstream phi that merges constant and active data.",
       "draft": {
         "title": "Split pointer selects before collecting downstream pointer phis",
-        "body": "This follow-up applies to the proposed Const/active load-splitting pass. Reverse-mode compilation can fail when loads pass through both a pointer select and a downstream phi that merges constant and active data. The constant-field optimization rewrites the select and rebuilds successor phis. A later transformation can then refer to a phi that the first rewrite replaced. The pass should process selects first and collect the current phis afterwards, independent of block order. The regression checks the resulting IR for both block orders and for multiple merges.\n\nOriginal fork commits include [0d3d5c86](https://github.com/nsiccha/Enzyme.jl/commit/0d3d5c861742c72b4feb4b053a3c1edd3c79fe09), [e515811e](https://github.com/nsiccha/Enzyme.jl/commit/e515811e1d1947278565cbdb0d414bd3f469e958).",
-        "prepared_at": "2026-11-18T15:47:36Z"
+        "body": "This follow-up applies to the proposed Const/active load-splitting pass. Reverse-mode compilation can fail when loads pass through both a pointer select and a downstream phi that merges constant and active data. The constant-field optimization rewrites the select and rebuilds successor phis. A later transformation can then refer to a phi that the first rewrite replaced. The pass should process selects first and collect the current phis afterwards, independent of block order. The regression checks the resulting IR for both block orders and for multiple merges.\n\nStart with the constant-field select transformation ([e515811e](https://github.com/nsiccha/Enzyme.jl/commit/e515811e1d1947278565cbdb0d414bd3f469e958)), then apply [0d3d5c86](https://github.com/nsiccha/Enzyme.jl/commit/0d3d5c861742c72b4feb4b053a3c1edd3c79fe09). The follow-up changes the order in which the transformation rewrites selects and downstream phi nodes.",
+        "prepared_at": "2026-11-18T18:30:08Z"
       },
       "repairs": [
         {
@@ -1067,8 +1067,8 @@
       "summary": "On Julia 1.11 and later, a Float32 or Float64 vector may reserve capacity with sizehint! and grow into it with push!, append! or resize!.",
       "draft": {
         "title": "Reverse mode loses or contaminates gradients after sizehint! followed by vector growth",
-        "body": "On Julia 1.11 and later, a Float32 or Float64 vector may reserve capacity with sizehint! and grow into it with push!, append! or resize!. Reverse mode must initialize the entire new gradient buffer before later operations accumulate into it. If pushfirst! changes the start of the vector or a later push! reallocates it, adjoints of the retained elements must still go back to their original positions. Compare first- and second-order derivatives against the equivalent computation without preallocation.\n\nOriginal fork commits include [8ffa09ea](https://github.com/nsiccha/Enzyme.jl/commit/8ffa09ea865b5e82609ac6d72752165c78c9fc09), [f3703f3b](https://github.com/nsiccha/Enzyme.jl/commit/f3703f3b3f49875954211bd89c446375905da49a).",
-        "prepared_at": "2026-11-18T15:47:36Z"
+        "body": "On Julia 1.11 and later, a Float32 or Float64 vector may reserve capacity with sizehint! and grow into it with push!, append! or resize!. Reverse mode must initialize the entire new gradient buffer before later operations accumulate into it. If pushfirst! changes the start of the vector or a later push! reallocates it, adjoints of the retained elements must still go back to their original positions. Compare first- and second-order derivatives against the equivalent computation without preallocation.\n\nStart with the reverse rule for array storage ([f3703f3b](https://github.com/nsiccha/Enzyme.jl/commit/f3703f3b3f49875954211bd89c446375905da49a)), then apply [8ffa09ea](https://github.com/nsiccha/Enzyme.jl/commit/8ffa09ea865b5e82609ac6d72752165c78c9fc09). The follow-up corrects the reserved shadow buffer and adds regressions for later growth and reallocation.",
+        "prepared_at": "2026-11-18T18:30:08Z"
       },
       "repairs": [
         {
@@ -3653,7 +3653,7 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical lapack-helpers topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified. Original source: [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75), [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd), [e0b7328b](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6)."
+        "why_together": "The helpers _lapack_shadow and _lapack_inplace_forward_return are shared portions of the triangular implementation. The same historical commits appear under the triangular rule. Cherry-picking those commits twice would repeat the change. The final original is a wrapper-test correction. Original source in order: [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75), [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd), [e0b7328b](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6)."
       },
       "depends_on": [],
       "requires": [],
@@ -3668,7 +3668,7 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical triangular-forward topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The historical commits span the LAPACK helpers and the triangular rule. 75e60dd5 adds the initial rule and tests. Its child 70f20251 revises the implementation to use trtrs!. e0b7328b changes the ldiv! tests to pass triangular wrapper types directly. When extracting the rule, include _lapack_shadow and _lapack_inplace_forward_return once. The smallest independently passing patch on current upstream still needs validation."
       },
       "depends_on": [
         "lapack-helpers"
