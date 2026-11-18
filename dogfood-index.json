@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "db46ba809db23580eb3406790dbb4a2bbfda1b14"
+    "sha": "38e0256cd28bc52013dab9174c080d71c0429631"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
     "sha": "01265672787661ba298b7baf0643a154049ba4bd"
   },
-  "prepared_at": "2026-11-18T15:26:49Z",
+  "prepared_at": "2026-11-18T15:47:36Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -856,6 +856,180 @@
           "detail": "23 of 23 passed. Julia build 6d172b025e4. The tested Git tree 9cef86309cc4 is identical to the published commit's tree."
         }
       ]
+    },
+    {
+      "id": "derivative-report",
+      "role": "fix",
+      "title": "Expose runtime dispatch and allocations in compiled derivatives",
+      "summary": "After differentiating a program it is difficult to find which source expressions still dispatch dynamically, box values or allocate.",
+      "draft": {
+        "title": "Expose runtime dispatch and allocations in compiled derivatives",
+        "body": "After differentiating a program it is difficult to find which source expressions still dispatch dynamically, box values or allocate. A report should associate those operations with the derivative and source location, including derivatives loaded from a package image. This is a diagnostic feature request.\n\nOriginal fork commits include [bccbfbcb](https://github.com/nsiccha/Enzyme.jl/commit/bccbfbcb1e88a0c4611d42d6b7d4a339c5970aa6).",
+        "prepared_at": "2026-11-18T15:47:36Z"
+      },
+      "repairs": [
+        {
+          "id": "derivative_report",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The original diagnostic feature and its tests are in bccbfbcb. A standalone upstream feature branch is still being isolated."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "derivative-report-reachability",
+      "role": "fix",
+      "title": "Derivative reports should distinguish recursive error paths from work on a successful call",
+      "summary": "When recording runtime calls made by a compiled derivative, an internal formatting helper may be reachable only when the derivative throws.",
+      "draft": {
+        "title": "Derivative reports should distinguish recursive error paths from work on a successful call",
+        "body": "This follow-up applies to the proposed derivative-report feature. When recording runtime calls made by a compiled derivative, an internal formatting helper may be reachable only when the derivative throws. If that helper calls another function recursively, its allocations still belong to the error path. The report should omit calls in unreachable blocks. A helper also called on a successful path should have its allocations counted there. Exported functions and functions passed as callbacks may have callers outside the module.\n\nOriginal fork commits include [ac07b121](https://github.com/nsiccha/Enzyme.jl/commit/ac07b12134476bffff5d57c8126b0f2917268161), [bccbfbcb](https://github.com/nsiccha/Enzyme.jl/commit/bccbfbcb1e88a0c4611d42d6b7d4a339c5970aa6).",
+        "prepared_at": "2026-11-18T15:47:36Z"
+      },
+      "repairs": [
+        {
+          "id": "derivative_report_reachability",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "The follow-up ac07b121 corrects the call analysis introduced by bccbfbcb. It applies to the fork feature. The complete prerequisite stack still needs standalone testing."
+      },
+      "depends_on": [
+        "derivative-report"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "constant-field-select",
+      "role": "fix",
+      "title": "Static reverse AD rejects a read selected from Const or active data",
+      "summary": "A read-only branch may choose either a Const input or an active input.",
+      "draft": {
+        "title": "Static reverse AD rejects a read selected from Const or active data",
+        "body": "A read-only branch may choose either a Const input or an active input. Its derivative should route a contribution only along the selected active path. Selecting the Const input alone should not require copying a constant field.\n\nOriginal fork commits include [e515811e](https://github.com/nsiccha/Enzyme.jl/commit/e515811e1d1947278565cbdb0d414bd3f469e958).",
+        "prepared_at": "2026-11-18T15:47:36Z"
+      },
+      "repairs": [
+        {
+          "id": "const_active_select",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "e515811e introduces load splitting at Const/active selects and phis. Other original changes in the same series refine path and field reasoning. A minimal set on current upstream remains under review."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "constant-merge-order",
+      "role": "fix",
+      "title": "Split pointer selects before collecting downstream pointer phis",
+      "summary": "Reverse-mode compilation can fail when loads pass through both a pointer select and a downstream phi that merges constant and active data.",
+      "draft": {
+        "title": "Split pointer selects before collecting downstream pointer phis",
+        "body": "This follow-up applies to the proposed Const/active load-splitting pass. Reverse-mode compilation can fail when loads pass through both a pointer select and a downstream phi that merges constant and active data. The constant-field optimization rewrites the select and rebuilds successor phis. A later transformation can then refer to a phi that the first rewrite replaced. The pass should process selects first and collect the current phis afterwards, independent of block order. The regression checks the resulting IR for both block orders and for multiple merges.\n\nOriginal fork commits include [0d3d5c86](https://github.com/nsiccha/Enzyme.jl/commit/0d3d5c861742c72b4feb4b053a3c1edd3c79fe09), [e515811e](https://github.com/nsiccha/Enzyme.jl/commit/e515811e1d1947278565cbdb0d414bd3f469e958).",
+        "prepared_at": "2026-11-18T15:47:36Z"
+      },
+      "repairs": [
+        {
+          "id": "constant_merge_order",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "0d3d5c86 corrects pass ordering in the fork transformation introduced by e515811e. The transformation must be present first."
+      },
+      "depends_on": [
+        "constant-field-select"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "array-storage-restoration",
+      "role": "fix",
+      "title": "Vector deletion and sizehint! lose the position of reverse adjoints",
+      "summary": "A vector can change its backing allocation between a primal operation and reverse accumulation.",
+      "draft": {
+        "title": "Vector deletion and sizehint! lose the position of reverse adjoints",
+        "body": "A vector can change its backing allocation between a primal operation and reverse accumulation. For Julia 1.11 and later, float adjoints should follow the same logical elements across deletions and sizehint!, including when the original access used an offset pointer.\n\nOriginal fork commits include [f3703f3b](https://github.com/nsiccha/Enzyme.jl/commit/f3703f3b3f49875954211bd89c446375905da49a).",
+        "prepared_at": "2026-11-18T15:47:36Z"
+      },
+      "repairs": [
+        {
+          "id": "array_storage_adjoints",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "f3703f3b introduces the Julia 1.11+ storage rules and tests. The November review group also included the Julia 1.10 deletion rule. Standalone validation of the modern storage rule is pending."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "sizehint-reserved-shadow",
+      "role": "fix",
+      "title": "Reverse mode loses or contaminates gradients after sizehint! followed by vector growth",
+      "summary": "On Julia 1.11 and later, a Float32 or Float64 vector may reserve capacity with sizehint! and grow into it with push!, append! or resize!.",
+      "draft": {
+        "title": "Reverse mode loses or contaminates gradients after sizehint! followed by vector growth",
+        "body": "On Julia 1.11 and later, a Float32 or Float64 vector may reserve capacity with sizehint! and grow into it with push!, append! or resize!. Reverse mode must initialize the entire new gradient buffer before later operations accumulate into it. If pushfirst! changes the start of the vector or a later push! reallocates it, adjoints of the retained elements must still go back to their original positions. Compare first- and second-order derivatives against the equivalent computation without preallocation.\n\nOriginal fork commits include [8ffa09ea](https://github.com/nsiccha/Enzyme.jl/commit/8ffa09ea865b5e82609ac6d72752165c78c9fc09), [f3703f3b](https://github.com/nsiccha/Enzyme.jl/commit/f3703f3b3f49875954211bd89c446375905da49a).",
+        "prepared_at": "2026-11-18T15:47:36Z"
+      },
+      "repairs": [
+        {
+          "id": "sizehint_reserved_shadow",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "fix": {
+        "commits": [],
+        "why_together": "8ffa09ea changes the sizehint! shadow rule introduced by f3703f3b. The new rule retains the post-reservation memory reference and zeroes the backing allocation. The follow-up includes its regression tests."
+      },
+      "depends_on": [
+        "array-storage-restoration"
+      ],
+      "requires": [],
+      "validation": []
     }
   ]
 }
