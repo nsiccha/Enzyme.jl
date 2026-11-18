@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Keep Forward mode memory-safe when the differentiated code allocates a
+  short memory of constant length, such as `[a, b]` of structs that hold
+  arrays. Julia's codegen allocates such a memory inline and sets its length
+  and data pointer before anything else can collect; Forward mode emitted the
+  shadow allocations in between, and a collection at one of them read the
+  stale length and pointer of the memories allocated before it. On Julia
+  1.13.1 repeated batched Forward (`BatchDuplicated`, either ABI) aborted
+  within seconds with "GC error (probable corruption)" or a segfault in
+  `gc_mark_objarray`. Each such allocation is now a valid empty memory before
+  the next shadow allocation.
+  `Enzyme.has_dogfood_repair(:forward_memory_shadow_init)` reports the repair;
+  `test/forward_memory_shadow.jl` repeats batched Forward through such a
+  memory under automatic collection.
 - Differentiate a `ccall` whose library Julia does not resolve while compiling
   the method. Julia 1.12 leaves a module-qualified library
   (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time

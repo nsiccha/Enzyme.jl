@@ -2800,6 +2800,60 @@ function has_gc_zeroing_bundle(@nospecialize(inst::LLVM.Value))::Bool
     return false
 end
 
+# Julia's codegen can allocate a `GenericMemory` of constant length inline
+# through `julia.gc_alloc_obj` (measured on Julia 1.13.1: `[a, b]` of a
+# boxed-field struct) and sets its `length` and `ptr` before the next
+# safepoint. The collector reads both from every rooted `GenericMemory`:
+# `jl_genericmemory_how` (julia.h) compares `ptr` with the inline data address
+# and otherwise reads the word there as the owner object, and an inline or
+# GC-managed memory of boxed elements is marked over `length` slots from `ptr`.
+# A shadow allocation Enzyme emits between that allocation and its
+# initialization is a safepoint, at which both fields still hold whatever the
+# pool slot held before. Make the allocation a valid empty inline memory first:
+# `length = 0` and `ptr` at its own inline data. The initialization that
+# follows overwrites both, so the stores are atomic to keep LLVM from deleting
+# them as dead.
+function store_empty_memory!(B::LLVM.IRBuilder, @nospecialize(prev::LLVM.Value))::Nothing
+    T_int8 = LLVM.Int8Type()
+    T_int64 = LLVM.Int64Type()
+    T_jlvalue = LLVM.StructType(LLVM.LLVMType[])
+    T_pjlvalue = LLVM.PointerType(T_jlvalue)
+
+    obj = bitcast!(B, prev, LLVM.PointerType(T_jlvalue, addrspace(value_type(prev))))
+    if addrspace(value_type(obj)) != Derived
+        obj = addrspacecast!(B, obj, LLVM.PointerType(T_jlvalue, Derived))
+    end
+    bytes = bitcast!(B, obj, LLVM.PointerType(T_int8, Derived))
+
+    length_field = bitcast!(B, bytes, LLVM.PointerType(T_int64, Derived))
+    st = store!(B, LLVM.ConstantInt(T_int64, 0), length_field)
+    ordering!(st, LLVM.API.LLVMAtomicOrderingRelease)
+    syncscope!(st, LLVM.SyncScope("singlethread"))
+    metadata(st)["enzymejl_atomicgc"] = LLVM.MDNode(LLVM.Metadata[])
+
+    raw = emit_pointerfromobjref!(B, obj)
+    raw = bitcast!(B, raw, LLVM.PointerType(T_int8))
+    inline_data = inbounds_gep!(
+        B,
+        T_int8,
+        raw,
+        LLVM.Value[LLVM.ConstantInt(Int64(fieldoffset(Memory{Any}, 2) + sizeof(Ptr{Cvoid})))],
+    )
+    inline_data = bitcast!(B, inline_data, T_pjlvalue)
+    ptr_field = inbounds_gep!(
+        B,
+        T_int8,
+        bytes,
+        LLVM.Value[LLVM.ConstantInt(Int64(fieldoffset(Memory{Any}, 2)))],
+    )
+    ptr_field = bitcast!(B, ptr_field, LLVM.PointerType(T_pjlvalue, Derived))
+    st = store!(B, inline_data, ptr_field)
+    ordering!(st, LLVM.API.LLVMAtomicOrderingRelease)
+    syncscope!(st, LLVM.SyncScope("singlethread"))
+    metadata(st)["enzymejl_atomicgc"] = LLVM.MDNode(LLVM.Metadata[])
+    return nothing
+end
+
 function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, Orig::LLVM.API.LLVMValueRef, idx::UInt64, prev::API.LLVMValueRef, used::UInt8)
     enzyme_ctx = enzyme_context()
     used = used != 0
@@ -2893,7 +2947,17 @@ function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradie
     end
     @static if VERSION >= v"1.11"
 	if Ty <: GenericMemory
-	    # TODO throw(AssertionError("What the heck is happening, why are we gc.alloca'ing memory, $(string(V)) $Ty"))
+            # Codegen allocates a constant-length memory inline (`memorynew`); see
+            # `store_empty_memory!`. In forward mode the original and every shadow
+            # but the last are followed by another allocation before their length
+            # and pointer are set. The stores go in even with a zeroing bundle:
+            # a bundle that clears only the GC pointer fields leaves `length`.
+            if mode == API.DEM_ForwardMode && (used || idx != 0)
+                prev = LLVM.Instruction(prev)
+                B = LLVM.IRBuilder()
+                position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(prev)))
+                store_empty_memory!(B, prev)
+            end
 	    return
 	end
     end
