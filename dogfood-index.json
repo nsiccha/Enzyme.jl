@@ -8,9 +8,9 @@
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
-    "sha": "01265672787661ba298b7baf0643a154049ba4bd"
+    "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T15:47:36Z",
+  "prepared_at": "2026-11-18T16:00:25Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -90,7 +90,7 @@
             ]
           }
         ],
-        "why_together": "One combined commit folds redundant parent phis and checks that the replacement dominates each phi. The dominance correction is required under forced bounds checking. This published November 4 candidate is prepared on an older upstream base and excludes the later data-phi load-unfolding changes."
+        "why_together": "One combined commit folds redundant parent phis and checks that the replacement dominates each phi. The dominance correction is required under forced bounds checking. This published November 4 candidate is prepared on an older upstream base and excludes the later data-phi load-unfolding changes. The published patch applies to upstream dd86d5435d."
       }
     },
     {
@@ -181,7 +181,7 @@
             ]
           }
         ],
-        "why_together": "One commit fixes runtime tag encoding, Bool singleton reuse, union-return boxing and custom-rule tape boxing, with focused regressions. It needs no other review group. The fork-only registry assertion stays on dogfood and is omitted from this upstream candidate."
+        "why_together": "One commit fixes runtime tag encoding, Bool singleton reuse, union-return boxing and custom-rule tape boxing, with focused regressions. It needs no other review group. The fork-only registry assertion stays on dogfood and is omitted from this upstream candidate. The published patch applies to upstream 0126567278."
       }
     },
     {
@@ -224,7 +224,7 @@
             ]
           }
         ],
-        "why_together": "One commit handles the module lookup in the derivative rules and runtime fallback, with tests that rebind the module and differentiate through the returned value. It applies directly to the listed upstream base."
+        "why_together": "One commit handles the module lookup in the derivative rules and runtime fallback, with tests that rebind the module and differentiate through the returned value. The published patch applies to upstream 0126567278."
       },
       "depends_on": [],
       "requires": [],
@@ -319,7 +319,7 @@
             ]
           }
         ],
-        "why_together": "One commit combines the tuple-splat inference and optimization limits from upstream PR #3994 with the active-Ref and recursive-splat regression tests. The separate runtime tuple-map change is outside this fix."
+        "why_together": "One commit combines the tuple-splat inference and optimization limits from upstream PR #3994 with the active-Ref and recursive-splat regression tests. The separate runtime tuple-map change is outside this fix. The published patch applies to upstream 0126567278."
       },
       "depends_on": [],
       "requires": [],
@@ -450,7 +450,7 @@
             ]
           }
         ],
-        "why_together": "One commit keeps bounded recursive argument signatures on Julia 1.10 and tests the affected inference, the derivative, and convergence when signatures grow."
+        "why_together": "One commit keeps bounded recursive argument signatures on Julia 1.10 and tests the affected inference, the derivative, and convergence when signatures grow. The published patch applies to upstream 0126567278."
       },
       "depends_on": [],
       "requires": [],
@@ -537,7 +537,7 @@
             ]
           }
         ],
-        "why_together": "One commit retains the original backing storage and dimensions for the sort and partial-sort reverse rules and tests mutations after each operation."
+        "why_together": "One commit retains the original backing storage and dimensions for the sort and partial-sort reverse rules and tests mutations after each operation. The published patch applies to upstream 0126567278."
       },
       "depends_on": [],
       "requires": [],
@@ -628,7 +628,7 @@
             ]
           }
         ],
-        "why_together": "One commit specializes zero-shadow construction for eligible tuples, preserves aliasing, and tests allocations, inference and the resulting gradient."
+        "why_together": "One commit specializes zero-shadow construction for eligible tuples, preserves aliasing, and tests allocations, inference and the resulting gradient. The published patch applies to upstream 0126567278."
       },
       "depends_on": [],
       "requires": [],
@@ -715,7 +715,7 @@
             ]
           }
         ],
-        "why_together": "One commit handles an invalid constant type application during abstract interpretation and tests both branches in the derivative."
+        "why_together": "One commit handles an invalid constant type application during abstract interpretation and tests both branches in the derivative. The published patch applies to upstream 0126567278."
       },
       "depends_on": [],
       "requires": [],
@@ -806,7 +806,7 @@
             ]
           }
         ],
-        "why_together": "One commit updates the stages that run the Attributor, retains a switch to restore the prior behavior, and checks the stage counters and derivatives. The tests do not set a timing threshold."
+        "why_together": "One commit updates the stages that run the Attributor, retains a switch to restore the prior behavior, and checks the stage counters and derivatives. The tests do not set a timing threshold. The published patch applies to upstream 0126567278."
       },
       "depends_on": [],
       "requires": [],
@@ -992,7 +992,16 @@
           ]
         }
       ],
-      "upstream_refs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3908",
+          "relation": "related"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3978",
+          "relation": "related"
+        }
+      ],
       "fix": {
         "commits": [],
         "why_together": "f3703f3b introduces the Julia 1.11+ storage rules and tests. The November review group also included the Julia 1.10 deletion rule. Standalone validation of the modern storage rule is pending."
@@ -1020,7 +1029,16 @@
           ]
         }
       ],
-      "upstream_refs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3908",
+          "relation": "related"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3978",
+          "relation": "related"
+        }
+      ],
       "fix": {
         "commits": [],
         "why_together": "8ffa09ea changes the sizehint! shadow rule introduced by f3703f3b. The new rule retains the post-reservation memory reference and zeroes the backing allocation. The follow-up includes its regression tests."
@@ -1030,6 +1048,97 @@
       ],
       "requires": [],
       "validation": []
+    },
+    {
+      "id": "structured-gradient-inplace",
+      "role": "fix",
+      "title": "Reverse gradient! rejects tuple or struct destinations containing mutable storage",
+      "summary": "A tuple or struct can keep all differentiable values in mutable storage. The array-only reverse gradient! signature prevents filling such destinations directly or through DifferentiationInterface.",
+      "draft": {
+        "title": "Reverse gradient! rejects tuple or struct destinations containing mutable storage",
+        "body": "Reverse mode can compute the gradient of a tuple holding a vector and a Ref. The in-place API on the upstream base accepts only AbstractArray inputs. This prevents reuse of an otherwise valid gradient destination.\n\n```julia\nusing Enzyme\nloss(p) = sum(abs2, p[1]) + p[2][]^2\nx = ([1.0, 2.0], Ref(3.0))\ndx = ([NaN, NaN], Ref(NaN))\n@assert only(Enzyme.gradient!(Reverse, dx, loss, x)) === dx\n@assert dx[1] == [2.0, 4.0] && dx[2][] == 6.0\n```\n\nUpstream raises MethodError at gradient!. Each call should overwrite the supplied mutable fields and return the destination. This also lets DifferentiationInterface reuse a prepared gradient destination. Inputs with active immutable scalar fields still require the out-of-place API.",
+        "prepared_at": "2026-11-18T16:00:25Z"
+      },
+      "repairs": [
+        {
+          "id": "structured_gradient_inplace",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/1356",
+          "relation": "related"
+        }
+      ],
+      "fix": {
+        "branch": "rebase/structured-gradient-inplace",
+        "commits": [
+          {
+            "sha": "41ace90eeeaceb746a30c8fd0f73af76ce98afbe",
+            "title": "Support reverse gradients in structured mutable storage",
+            "original": [
+              "377bc7505b85332d4270902e1c878f42169728bc"
+            ]
+          }
+        ],
+        "why_together": "One commit widens the reverse gradient! method to structured mutable destinations, rejects active immutable fields and tests both the direct and DifferentiationInterface APIs. It applies directly to upstream 1ee9a6f8."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.301+0, artifact 6c6ed7dc90243a3aefb61edc45b94cb76af71b9d",
+          "tests": [
+            "test/gradient_inplace.jl",
+            "test/integration/DifferentiationInterface/structured_gradient.jl"
+          ],
+          "result": "passed",
+          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 2d331aa. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.301+0, artifact 6c6ed7dc90243a3aefb61edc45b94cb76af71b9d",
+          "tests": [
+            "test/gradient_inplace.jl",
+            "test/integration/DifferentiationInterface/structured_gradient.jl"
+          ],
+          "result": "passed",
+          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 2d331aa. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.301+0, artifact 028bae7a87b444d2aa3f81ecb5d2da57362c10aa",
+          "tests": [
+            "test/gradient_inplace.jl",
+            "test/integration/DifferentiationInterface/structured_gradient.jl"
+          ],
+          "result": "passed",
+          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 6d172b025e4. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.301+0, artifact 028bae7a87b444d2aa3f81ecb5d2da57362c10aa",
+          "tests": [
+            "test/gradient_inplace.jl",
+            "test/integration/DifferentiationInterface/structured_gradient.jl"
+          ],
+          "result": "passed",
+          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 6d172b025e4. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+        }
+      ]
     }
   ]
 }
