@@ -29,9 +29,12 @@ cos_nested_constant(x) = ccall((:cos, CcallLibraries.Inner.constant), Float64, (
 cos_variable(x) = ccall((:cos, ccall_library_variable), Float64, (Float64,), x)
 cos_qualified_variable(x) = ccall((:cos, CcallLibraries.variable), Float64, (Float64,), x)
 cos_at_ccall(x) = @ccall CcallLibraries.constant.cos(x::Float64)::Float64
-# No library: Julia looks the symbol up in the process. While compiling, Julia 1.10 and 1.12
+# No library: Julia looks the symbol up in the process. While compiling, Julia 1.10 to 1.12
 # attribute a C library function that libjulia-internal links (libc's `memchr` and `memcmp`,
-# and `cos`) to libjulia-internal; Julia 1.13 names no library for it.
+# and `cos`) to libjulia-internal; Julia 1.13 names no library for it. Outside a package image,
+# Julia 1.10 calls such a function through the address it resolved while compiling, which
+# Enzyme names only for the functions it knows by address; `cos` is not one of them, so
+# `cos_without_library` is tested from Julia 1.11 on, which always looks the symbol up.
 cos_without_library(x) = ccall(:cos, Float64, (Float64,), x)
 # `findfirst` of an ASCII character in a `String` calls `memchr`, `cmp` of two calls `memcmp`.
 first_a(x, s) = x * something(findfirst('a', s), 0)
@@ -49,8 +52,11 @@ end
 
 const scalar_libraries = Any[
     cos_constant, cos_qualified_constant, cos_nested_constant, cos_variable, cos_qualified_variable,
-    cos_at_ccall, cos_without_library,
+    cos_at_ccall,
 ]
+@static if VERSION >= v"1.11-"
+    push!(scalar_libraries, cos_without_library)
+end
 const lapack_spellings = Pair{Symbol, Any}[
     :qualified_constant => :(BLAS.libblastrampoline),
     :variable => :ccall_lapack_variable,
