@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T22:26:41Z",
+  "prepared_at": "2026-11-18T23:06:46Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -3966,25 +3966,156 @@
     {
       "id": "gamma-family",
       "role": "fix",
-      "title": "Derivatives of gamma and polygamma need stable real-argument rules",
-      "summary": "Differentiating gamma and digamma should give the corresponding analytic partials, including on negative half-integers away from poles. Compare reverse and forward results with the real gamma and polygamma identities across signs and derivative orders.",
+      "title": "Differentiating real gamma can leave an unresolved digamma symbol",
+      "summary": "The derivative of gamma(x) is gamma(x) * digamma(x). On upstream, differentiating gamma(x) + loggamma(x) at 2.5 aborts in the JIT with a missing digamma symbol.",
       "repairs": [],
       "upstream_refs": [],
       "fix": {
-        "commits": [],
-        "why_together": "The original commits identify the historical gamma-family topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "branch": "rebase/real-gamma-derivatives",
+        "commits": [
+          {
+            "sha": "83059b7bdd0fa36f8f68ef1800e388b387fe2fdf",
+            "title": "Differentiate gamma and digamma with Julia special-function rules",
+            "original": [
+              "74ace76d2740452b074dcf7e5b6e8422c6ece39e"
+            ]
+          }
+        ],
         "originals": [
           "74ace76d2740452b074dcf7e5b6e8422c6ece39e",
-          "bb949ab5ef00f617a6655bb51e5751022122abbc"
-        ]
+          "125b5c8d5387c76fc6d0fcebc94e7446a3c47566"
+        ],
+        "why_together": "The standalone two-file patch contains the real gamma and digamma rules with their original tests. The fork merge 125b5c8d separately added the six higher-order regression checks documented in the draft."
       },
       "depends_on": [],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/ext/specialfunctions.jl on 83059b7b"
+          ],
+          "result": "passed",
+          "detail": "All 46,815 assertions passed on the standalone patch. Separate forward and reverse probes matched the analytical derivatives of gamma(x) + loggamma(x) at 2.5 and the second derivative of gamma at −0.5."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "Six additional gamma checks in the combined tree at 13049423"
+          ],
+          "result": "failed",
+          "detail": "The third derivatives matched at −2.5, −0.5 and 2.5. All three fourth derivatives raised an assertion while setting up custom-rule arguments."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/ext/specialfunctions.jl on 83059b7b"
+          ],
+          "result": "passed",
+          "detail": "All 46,815 assertions passed on the standalone patch. Separate forward and reverse probes matched the analytical derivatives of gamma(x) + loggamma(x) at 2.5 and the second derivative of gamma at −0.5."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "Six additional gamma checks in the combined tree at 13049423"
+          ],
+          "result": "failed",
+          "detail": "The third derivatives matched at −2.5, −0.5 and 2.5. All three fourth derivatives raised an assertion while setting up custom-rule arguments."
+        }
+      ],
       "draft": {
-        "title": "Derivatives of gamma and polygamma need stable real-argument rules",
-        "body": "Differentiating gamma and digamma should give the corresponding analytic partials, including on negative half-integers away from poles. Compare reverse and forward results with the real gamma and polygamma identities across signs and derivative orders.\n\nOriginal fork commits in historical order: [74ace76d](https://github.com/nsiccha/Enzyme.jl/commit/74ace76d2740452b074dcf7e5b6e8422c6ece39e), [bb949ab5](https://github.com/nsiccha/Enzyme.jl/commit/bb949ab5ef00f617a6655bb51e5751022122abbc).\n\nRegression coverage on the fork: [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl), [test/ext/digamma.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/digamma.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "title": "Differentiating real gamma can leave an unresolved digamma symbol",
+        "body": "The derivative of gamma(x) is gamma(x) * digamma(x). On upstream, differentiating gamma(x) + loggamma(x) at 2.5 aborts in the JIT with a missing digamma symbol. The expected value of the derivative of that sum is `(gamma(2.5) + 1) * digamma(2.5)`, about 1.6378911623.\n\n[83059b7b](https://github.com/nsiccha/Enzyme.jl/commit/83059b7bdd0fa36f8f68ef1800e388b387fe2fdf) applies directly to upstream `1ee9a6f8`. With Julia 1.12.7 and the upstream release of Enzyme_jll 0.0.311+0, forward and reverse matched that value and the second derivative of gamma at −0.5 (−31.6777692440). All 46,815 assertions in [specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/83059b7bdd0fa36f8f68ef1800e388b387fe2fdf/test/ext/specialfunctions.jl) passed with default and forced bounds. The implementation and its original tests came from [74ace76d](https://github.com/nsiccha/Enzyme.jl/commit/74ace76d2740452b074dcf7e5b6e8422c6ece39e).\n\nTo apply both sets of rules, use [2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) first, then [13049423](https://github.com/nsiccha/Enzyme.jl/commit/13049423e6c18044c5482d4213b614e759ab6a18). The second commit adds the gamma rule and its tests and shares the digamma rule from the first commit. The fork merge [125b5c8d](https://github.com/nsiccha/Enzyme.jl/commit/125b5c8d5387c76fc6d0fcebc94e7446a3c47566) contributed six higher-order gamma checks. In the combined series, the third derivative passed at −2.5, −0.5 and 2.5. The fourth derivative errored in custom-rule argument setup at all three inputs in both bounds modes.",
+        "prepared_at": "2026-11-18T23:06:46Z"
+      }
+    },
+    {
+      "id": "polygamma-half-integers",
+      "role": "fix",
+      "title": "Real polygamma derivatives can return NaN at negative half-integers",
+      "summary": "At x = −0.5 the derivative of digamma is finite, but upstream returns NaN in both forward and reverse mode. The forward derivative of polygamma(2, x) also returns NaN.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "branch": "rebase/real-polygamma-derivatives",
+        "commits": [
+          {
+            "sha": "2783a682cb010230cde3434028f1c0fc25cd6495",
+            "title": "Fix digamma-family derivatives at negative half-integers",
+            "original": [
+              "bb949ab5ef00f617a6655bb51e5751022122abbc"
+            ]
+          }
+        ],
+        "originals": [
+          "bb949ab5ef00f617a6655bb51e5751022122abbc"
+        ],
+        "why_together": "This two-file patch contains the three analytical real-argument rules and their direct and nested regression tests. It applies independently of the gamma patch."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "Direct digamma, trigamma and polygamma derivatives on 2783a682"
+          ],
+          "result": "passed",
+          "detail": "All 494 direct assertions passed. Independent forward and reverse probes at −0.5 matched all six analytical values."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/ext/digamma.jl on 2783a682"
+          ],
+          "result": "failed",
+          "detail": "542 of 590 assertions passed. The 24 third-derivative calls stopped at length(parmsRemoved) == 0, and the 24 fourth-derivative calls raised iterate(::Nothing). The combined tree retained all 48 errors."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "Direct digamma, trigamma and polygamma derivatives on 2783a682"
+          ],
+          "result": "passed",
+          "detail": "All 494 direct assertions passed. Independent forward and reverse probes at −0.5 matched all six analytical values."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/ext/digamma.jl on 2783a682"
+          ],
+          "result": "failed",
+          "detail": "542 of 590 assertions passed. The 24 third-derivative calls stopped at length(parmsRemoved) == 0, and the 24 fourth-derivative calls raised iterate(::Nothing). The combined tree retained all 48 errors."
+        }
+      ],
+      "draft": {
+        "title": "Real polygamma derivatives can return NaN at negative half-integers",
+        "body": "At x = −0.5 the derivative of digamma is finite, but upstream returns NaN in both forward and reverse mode. The forward derivative of polygamma(2, x) also returns NaN. The expected values are `trigamma(-0.5)` (8.9348022005) for the first example and `polygamma(3, -0.5)` (193.4090910340) for the second.\n\n[2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) applies directly to upstream `1ee9a6f8` and ports the rules from [bb949ab5](https://github.com/nsiccha/Enzyme.jl/commit/bb949ab5ef00f617a6655bb51e5751022122abbc). On Julia 1.12.7 with released Enzyme_jll 0.0.311+0, all 494 direct assertions in [digamma.jl](https://github.com/nsiccha/Enzyme.jl/blob/2783a682cb010230cde3434028f1c0fc25cd6495/test/ext/digamma.jl) passed under both bounds settings. The full file recorded 542 passes and 48 errors per run. First and second nested derivatives passed. All 24 third derivatives errored in custom-rule argument setup, and all 24 fourth derivatives errored at `iterate(::Nothing)`.\n\nTo apply both sets of rules, use [2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) first, then [13049423](https://github.com/nsiccha/Enzyme.jl/commit/13049423e6c18044c5482d4213b614e759ab6a18). The second commit adds the gamma rule and its tests and shares the digamma rule from the first commit. All ten joint analytical probes passed under both bounds settings. The combined test files recorded 47,360 passes and 51 errors per run, including the 48 nested digamma errors and three fourth derivatives of gamma.",
+        "prepared_at": "2026-11-18T23:06:46Z"
       }
     },
     {
