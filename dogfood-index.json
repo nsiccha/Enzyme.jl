@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T18:45:40Z",
+  "prepared_at": "2026-11-18T18:49:31Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -167,8 +167,8 @@
       ],
       "draft": {
         "title": "GC abort when Enzyme boxes a small-tag primal or custom-rule tape",
-        "body": "An Enzyme-generated boxed primal for a small-tag Julia type can abort the process during garbage collection. This example uses only Enzyme:\n\n```julia\nusing Enzyme\n@noinline f(x::Float64, flag::Bool) = flag ? missing : x > 0.0\nconst kept = Any[]\npush!(kept, autodiff(ForwardWithPrimal, Const(f), Const,\n                    Duplicated(2.0, 1.0), Const(false)))\nGC.gc(true)\nprintln(\"survived: \", kept[1])\n```\n\nExpected: `survived: (true,)`. The existing report records a GC corruption diagnostic and SIGABRT (exit 134) on x86_64 Linux, upstream `01265672787661ba298b7baf0643a154049ba4bd` (Enzyme 0.13.220), stock Enzyme_jll 0.0.308+0, Julia 1.10.12 and 1.12.7. A reverse-mode `Union{Nothing,Int}` primal has the same allocation-tag problem; ordinary Julia Bool and Enzyme Float64-union controls survive.\n\nThe affected boxing paths supply a DataType pointer where Julia expects its encoded small type tag. The fix uses the runtime's tag encoding and Julia's Bool singletons, including custom-rule tape boxing. Bool singleton handling is part of the fix because Julia can compare Bool objects by identity.\n\nAlready reported in https://github.com/EnzymeAD/Enzyme.jl/issues/4039.\n",
-        "prepared_at": "2026-11-18T11:03:10.385102+00:00"
+        "body": "Enzyme can produce a boxed primal value or custom reverse-rule tape that Julia’s garbage collector cannot identify correctly. The emitted tag does not follow the runtime’s representation for the concrete small-tag type. A collection may abort during an otherwise valid differentiation.\n\nBoth generated boxing paths should use Julia’s tag encoding for the concrete type. Boxed Boolean results should use Julia’s existing singleton objects. After differentiation, each boxed result should have the same Julia type, value, and Boolean identity as its ordinary Julia counterpart.\n\nThe original fix covers ordinary return values and custom-rule tapes together. Its regression tests passed in default and forced bounds modes on Julia 1.10.12 and 1.12.7. [Original fix](https://github.com/nsiccha/Enzyme.jl/commit/e1ce6518a3c94df5911220b479bc3e619c94dd31) · [Standalone patch](https://github.com/nsiccha/Enzyme.jl/commit/71d76f0639d691d0222497a761a1e18789a053fb)",
+        "prepared_at": "2026-11-18T18:49:31Z"
       },
       "depends_on": [],
       "requires": [],
