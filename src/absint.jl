@@ -775,7 +775,8 @@ function abs_typeof(
         end
         # Type tag is arg 3
         if nm == "jl_alloc_genericmemory_unchecked" ||
-                nm == "ijl_alloc_genericmemory_unchecked"
+                nm == "ijl_alloc_genericmemory_unchecked" ||
+                nm == "julia.gc_alloc_memory"
             vals = absint(arg.operands[3], enzyme_ctx, partial, true, #=typetag=# true)
             @assert !(vals[2] isa Core.Binding)
             return (vals[1], vals[2], vals[1] ? GPUCompiler.MUT_REF : nothing)
@@ -990,7 +991,7 @@ function abs_typeof(
             # to a julia object, which are not inline by type but appear so, like SparseArrays, this is a problem
             # and merits further investigation. x/ref https://github.com/EnzymeAD/Enzyme.jl/issues/2085
             @static if Base.USE_GPL_LIBS
-                cholmod_exception = typ != SparseArrays.cholmod_dense_struct && typ != SparseArrays.cholmod_sparse_struct && typ != SparseArrays.cholmod_factor_struct
+                cholmod_exception = typ != SparseArrays.LibSuiteSparse.cholmod_dense_struct && typ != SparseArrays.LibSuiteSparse.cholmod_sparse_struct && typ != SparseArrays.LibSuiteSparse.cholmod_factor_struct
             else
                 cholmod_exception = true
             end

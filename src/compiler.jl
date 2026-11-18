@@ -749,7 +749,9 @@ function prepare_llvm(interp, mod::LLVM.Module, job, meta, enzyme_ctx::EnzymeCon
             if !isa(fn, LLVM.Function)
                 continue
             end
-            if fn.name == "julia.gc_alloc_obj"
+            # Julia's AllocOpt copies this metadata to the alloca it may turn the
+            # allocation into, including (Julia 1.14+) that of a `Memory`.
+            if fn.name == "julia.gc_alloc_obj" || fn.name == "julia.gc_alloc_memory"
                 legal, RT, _ = abs_typeof(inst, enzyme_ctx)
                 if legal
                     inst.metadata["enzymejl_gc_alloc_rt"] = MDNode(LLVM.Metadata[MDString(string(convert(UInt, unsafe_to_pointer(RT))))])
@@ -2545,16 +2547,16 @@ function store_empty_memory_header!(B::LLVM.IRBuilder, @nospecialize(mem::LLVM.V
     T_int64 = LLVM.Int64Type()
     T_ptr = LLVM.PointerType(T_int8)
     T_pderived = LLVM.PointerType(T_int8, Derived)
-    mod = LLVM.parent(LLVM.parent(Base.position(B)))
+    mod = B.insert_block.parent.parent
 
     derived = addrspacecast!(B, mem, T_pderived)
-    pointer_from_objref = if haskey(functions(mod), "julia.pointer_from_objref")
-        functions(mod)["julia.pointer_from_objref"]
+    pointer_from_objref = if haskey(mod.functions, "julia.pointer_from_objref")
+        mod.functions["julia.pointer_from_objref"]
     else
         LLVM.Function(mod, "julia.pointer_from_objref", LLVM.FunctionType(T_ptr, [T_pderived]))
     end
-    fty = LLVM.function_type(pointer_from_objref)
-    objref = call!(B, fty, pointer_from_objref, [bitcast!(B, derived, LLVM.parameters(fty)[1])])
+    fty = pointer_from_objref.function_type
+    objref = call!(B, fty, pointer_from_objref, [bitcast!(B, derived, fty.parameters[1])])
     data = gep!(B, T_int8, bitcast!(B, objref, T_ptr), [LLVM.ConstantInt(T_int64, 16)])
 
     length_loc = bitcast!(B, derived, LLVM.PointerType(T_int64, Derived))
@@ -2564,9 +2566,9 @@ function store_empty_memory_header!(B::LLVM.IRBuilder, @nospecialize(mem::LLVM.V
         LLVM.PointerType(T_ptr, Derived),
     )
     for st in (store!(B, LLVM.ConstantInt(T_int64, 0), length_loc), store!(B, data, ptr_loc))
-        ordering!(st, LLVM.API.LLVMAtomicOrderingRelease)
-        syncscope!(st, LLVM.SyncScope("singlethread"))
-        metadata(st)["enzymejl_atomicgc"] = LLVM.MDNode(LLVM.Metadata[])
+        st.ordering = LLVM.AtomicOrdering.Release
+        st.syncscope = LLVM.SyncScope("singlethread")
+        st.metadata["enzymejl_atomicgc"] = LLVM.MDNode(LLVM.Metadata[])
     end
     return nothing
 end
@@ -2810,19 +2812,19 @@ function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradie
             if mode == API.DEM_ForwardMode && (used || idx != 0)
                 prev = LLVM.Instruction(prev)
                 if isa(prev, LLVM.CallInst)
-                    fn = LLVM.called_operand(prev)
-                    if isa(fn, LLVM.Function) && LLVM.name(fn) == "julia.gc_alloc_obj"
+                    fn = prev.called_operand
+                    if isa(fn, LLVM.Function) && fn.name == "julia.gc_alloc_obj"
                         B = LLVM.IRBuilder()
-                        position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(prev)))
+                        position!(B, LLVM.after(prev))
                         store_empty_memory_header!(B, prev)
                     end
                 end
             end
             if (mode == API.DEM_ReverseModePrimal || mode == API.DEM_ReverseModeCombined) && used
-                fn = LLVM.called_operand(V)
-                if isa(fn, LLVM.Function) && LLVM.name(fn) == "julia.gc_alloc_obj"
+                fn = V.called_operand
+                if isa(fn, LLVM.Function) && fn.name == "julia.gc_alloc_obj"
                     B = LLVM.IRBuilder()
-                    position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(V)))
+                    position!(B, LLVM.after(V))
                     store_empty_memory_header!(B, V)
                 end
             end
@@ -3086,7 +3088,7 @@ function zero_allocation(
     push!(wrapper_f.function_attributes, EnumAttribute(:willreturn))
     push!(wrapper_f.function_attributes, EnumAttribute(:mustprogress))
     push!(wrapper_f.parameter_attributes[1], EnumAttribute(:writeonly))
-    push!(wrapper_f.parameter_attributes[1], EnumAttribute(:nocapture))
+    push!(wrapper_f.parameter_attributes[1], nocapture_attr())
     wrapper_f.linkage = LLVM.Linkage.Internal
     let builder = IRBuilder()
         entry = BasicBlock(wrapper_f, "entry")
@@ -6957,7 +6959,8 @@ function readonly_walk!(
                             nm == "jl_alloc_genericmemory" ||
                             nm == "ijl_alloc_genericmemory" ||
                             nm == "jl_alloc_genericmemory_unchecked" ||
-                            nm == "ijl_alloc_genericmemory_unchecked"
+                            nm == "ijl_alloc_genericmemory_unchecked" ||
+                            nm == "julia.gc_alloc_memory"
                         continue
                     end
                     # The callee's parameter type says what it receives
@@ -8801,6 +8804,7 @@ function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, Stri
     job = CompilerJob(job.source, config, job.world)
     mod, meta = compile(:llvm, job)
     adjointf, augmented_primalf = meta.adjointf, meta.augmented_primalf
+    modern_write_barriers!(mod)
     value_table = meta.value_table
 
 

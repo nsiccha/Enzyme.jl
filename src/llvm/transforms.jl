@@ -880,7 +880,7 @@ function memcpy_alloca_to_loadstore(mod::LLVM.Module, world::UInt, enzyme_ctx::E
                                     if a.kind == READNONE_ATTR_KIND
                                         readonly = true
                                     end
-                                    if a.kind == NOCAPTURE_ATTR_KIND
+                                    if is_nocapture_attr(a)
                                         nocapture = true
                                     end
                                 end
@@ -3174,34 +3174,35 @@ The `extractvalue` indices that the `getelementptr` instruction `gep` appends to
 ending at a constant of type `ty`, together with the type they select, or `nothing` when
 `gep` does not address an element of that constant.
 
-It addresses one when it indexes the type of the constant, every index is a constant,
-the first is zero, and each of the others is in bounds for the aggregate it indexes.
-
-- A `getelementptr` may step outside its object: to the address past the last element,
-  a loop's bound, or to the address before the first one (index `-1`, which reads as
-  `2^64 - 1`), from which one-based indexing counts. Such an address names no element.
-- With opaque pointers a `getelementptr` names the type it indexes, and that need not
-  be the type of the constant: a struct of two `i32` and a `double` can be read as an
-  array of two `double`. Its indices then count the elements of another layout.
-
-Either way a load through the address cannot be replaced by the part of the initializer
-the indices select, and the address is left alone. The one address that is the same in
-every layout is the constant's own: when all indices are zero, the path and the type
-stay as they are, whatever type the instruction indexes.
+The first index must be zero. With opaque pointers the GEP may index the type of an
+aggregate's first element (including further nested first elements). Include that
+prefix in the path. An all-zero GEP through an unrelated type still names the address
+of the aggregate itself. Leave other type mismatches and out-of-bounds indices alone.
 """
 function constant_gep_path(@nospecialize(ty::LLVM.LLVMType), gep::LLVM.GetElementPtrInst)
     ops = gep.operands
-    same_type = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gep)) == ty
+    first_index = ops[2]
+    first_index isa LLVM.ConstantInt && LLVM.isnull(first_index) || return nothing
+    src = gep.source_element_type
     path = Cuint[]
-    for i in 2:length(ops)
-        idx = ops[i]
-        isa(idx, LLVM.ConstantInt) || return nothing
-        idx.value_type.width <= 64 || return nothing
-        val = LLVM.API.LLVMConstIntGetZExtValue(idx)
-        if i == 2 || !same_type
-            val == 0 || return nothing
-            continue
+    if src != ty
+        all_zero = true
+        for i in 3:length(ops)
+            idx = ops[i]
+            idx isa LLVM.ConstantInt || return nothing
+            all_zero &= LLVM.isnull(idx)
         end
+        all_zero && return path, ty
+        while ty != src
+            ty = constant_aggregate_element(ty, UInt64(0))
+            ty === nothing && return nothing
+            push!(path, 0)
+        end
+    end
+    for i in 3:length(ops)
+        idx = ops[i]
+        idx isa LLVM.ConstantInt && idx.value_type.width <= 64 || return nothing
+        val = LLVM.API.LLVMConstIntGetZExtValue(idx)
         ty = constant_aggregate_element(ty, val)
         ty === nothing && return nothing
         push!(path, val)
@@ -3484,7 +3485,7 @@ function propagate_returned!(mod::LLVM.Module; keep_return_roots::Bool = false)
                                 fn.linkage == LLVM.Linkage.Private
                         ) &&
                             any(
-                            attr.kind == NOCAPTURE_ATTR_KIND for
+                            is_nocapture_attr(attr) for
                                 attr in collect(fn.parameter_attributes[i])
                         )
                         val = nothing
@@ -4169,7 +4170,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
                     B = IRBuilder()
                     position!(B, LLVM.after(u))
                     cl = call!(B, funcT, rfunc, LLVM.Value[u])
-                    push!(cl.argument_attributes[1], EnumAttribute(:nocapture))
+                    push!(cl.argument_attributes[1], nocapture_attr())
                     push!(cl.argument_attributes[1], EnumAttribute(:readonly))
                 end
             end
@@ -4193,7 +4194,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
                         p = fn.parameters[idx]
                         cl = call!(B, funcT, wfunc, LLVM.Value[p])
                         if isa(p.value_type, LLVM.PointerType)
-                            push!(cl.argument_attributes[1], EnumAttribute(:nocapture))
+                            push!(cl.argument_attributes[1], nocapture_attr())
                         end
                     end
                     for u in fn.users
@@ -4212,7 +4213,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
                         inp = u.operands[idx]
                         cl = call!(B, funcT, rwfunc, LLVM.Value[inp])
                         if isa(inp.value_type, LLVM.PointerType)
-                            push!(cl.argument_attributes[1], EnumAttribute(:nocapture))
+                            push!(cl.argument_attributes[1], nocapture_attr())
                             push!(cl.argument_attributes[1], EnumAttribute(:readonly))
                         end
                     end
@@ -4243,7 +4244,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
                             inp = u.operands[idx]
                             cl = call!(B, funcT, sfunc, LLVM.Value[inp])
                             if isa(inp.value_type, LLVM.PointerType)
-                                push!(cl.argument_attributes[1], EnumAttribute(:nocapture))
+                                push!(cl.argument_attributes[1], nocapture_attr())
                                 push!(cl.argument_attributes[1], EnumAttribute(:readonly))
                             end
                         end
@@ -4258,7 +4259,7 @@ function removeDeadArgs!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
                     inp = u.operands[idx]
                     cl = call!(B, funcT, sfunc, LLVM.Value[inp])
                     if isa(inp.value_type, LLVM.PointerType)
-                        push!(cl.argument_attributes[1], EnumAttribute(:nocapture))
+                        push!(cl.argument_attributes[1], nocapture_attr())
                         push!(cl.argument_attributes[1], EnumAttribute(:readonly))
                     end
                 end
@@ -4445,6 +4446,64 @@ function get_callee(inst::LLVM.CallInst)
     return nothing
 end
 
+function md_node_name(@nospecialize(md))::String
+    md isa LLVM.MDNode || return ""
+    ops = md.operands
+    (length(ops) >= 1 && ops[1] isa LLVM.MDString) || return ""
+    return convert(String, ops[1])
+end
+
+"""
+    has_const_alias_claim(inst) -> Bool
+
+Say if `inst` carries Julia's claim that it reads constant memory: `jtbaa_const`
+TBAA, or the `jnoalias_const` alias scope.
+"""
+function has_const_alias_claim(inst::LLVM.Instruction)::Bool
+    md = inst.metadata
+    if haskey(md, "tbaa")
+        ops = md["tbaa"].operands
+        if length(ops) >= 2 && md_node_name(ops[2]) == "jtbaa_const"
+            return true
+        end
+    end
+    if haskey(md, "alias.scope")
+        for scope in md["alias.scope"].operands
+            if md_node_name(scope) == "jnoalias_const"
+                return true
+            end
+        end
+    end
+    return false
+end
+
+"""
+    drop_const_alias_metadata!(f) -> Bool
+
+Julia tags a load from an immutable object reached through an argument as a
+read of constant memory, which no store in the same function can alias. That
+holds for a Julia function on its own, but not once LLVM inlines it into a
+caller that constructs the object: there the caller's initializing stores and
+the callee's loads share a function, and LLVM folds the loads to `undef`.
+Enzyme inlines rule functions this way, so remove the claim from the loads of
+a function it is about to inline.
+"""
+function drop_const_alias_metadata!(f::LLVM.Function)::Bool
+    changed = false
+    for bb in f.blocks, inst in bb.instructions
+        isa(inst, LLVM.LoadInst) || continue
+        has_const_alias_claim(inst) || continue
+        md = inst.metadata
+        for kind in ("tbaa", "alias.scope", "noalias")
+            if haskey(md, kind)
+                delete!(md, kind)
+            end
+        end
+        changed = true
+    end
+    return changed
+end
+
 # LLVM's Inliner pass refuses to inline functions if their call sites have "jl_roots" operand bundles.
 # This pass finds all calls to alwaysinline functions carrying "jl_roots", extracts the roots,
 # wraps the call site in gc_preserve_begin/gc_preserve_end block pairs, and removes the "jl_roots" bundle
@@ -4456,6 +4515,9 @@ function remove_alwaysinline_roots!(mod::LLVM.Module)
     for f in collect(mod.functions)
         if isempty(f.blocks)
             continue
+        end
+        if haskey(f.function_attributes, :alwaysinline)
+            changed |= drop_const_alias_metadata!(f)
         end
 
         B = IRBuilder()

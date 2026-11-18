@@ -120,9 +120,9 @@ reference_key(ref::Ptr)::UInt = reinterpret(UInt, ref)
 # `v` without the constant casts around it.
 function strip_constant_casts(@nospecialize(v::LLVM.Value))::LLVM.Value
     while v isa LLVM.ConstantExpr
-        op = opcode(v)
-        if op == LLVM.API.LLVMBitCast || op == LLVM.API.LLVMAddrSpaceCast
-            v = operands(v)[1]
+        op = v.opcode
+        if op == LLVM.Opcode.BitCast || op == LLVM.Opcode.AddrSpaceCast
+            v = v.operands[1]
         else
             break
         end
@@ -132,7 +132,7 @@ end
 
 # The value of argument `i` of `call` when it is a constant integer.
 function constant_argument(call::LLVM.Instruction, i::Int)::Union{Nothing, Int}
-    ops = operands(call)
+    ops = call.operands
     # The callee is the last operand.
     i < length(ops) || return nothing
     arg = ops[i]
@@ -165,19 +165,19 @@ function called_function(
         global_names::Union{Nothing, Dict{String, String}},
         address_names::Dict{UInt, String},
     )::Tuple{Symbol, String, Int}
-    callee = LLVM.called_operand(call)
+    callee = call.called_operand
     callee isa LLVM.InlineAsm && return (:skip, "", 0)
     callee = strip_constant_casts(callee)
     if callee isa LLVM.Function
-        name = LLVM.name(callee)
+        name = callee.name
         idx = get(defined, name, 0)
         idx == 0 || return (:internal, name, idx)
         startswith(name, "llvm.") && return (:skip, "", 0)
         return (:named, foreign_function_name(name, global_names), 0)
     elseif callee isa LLVM.GlobalVariable
-        return (:named, foreign_function_name(LLVM.name(callee), global_names), 0)
-    elseif callee isa LLVM.ConstantExpr && opcode(callee) == LLVM.API.LLVMIntToPtr
-        addr = operands(callee)[1]
+        return (:named, foreign_function_name(callee.name, global_names), 0)
+    elseif callee isa LLVM.ConstantExpr && callee.opcode == LLVM.Opcode.IntToPtr
+        addr = callee.operands[1]
         addr isa LLVM.ConstantInt || return (:indirect, "", 0)
         address = convert(UInt, addr)
         name = get(address_names, address, nothing)
@@ -188,9 +188,9 @@ function called_function(
         return (:named, isempty(name) ? "(unknown address)" : name, 0)
     elseif callee isa LLVM.LoadInst
         # A foreign function called through a slot the linker or Julia fills in.
-        slot = strip_constant_casts(operands(callee)[1])
+        slot = strip_constant_casts(callee.operands[1])
         if slot isa LLVM.GlobalVariable
-            return (:named, foreign_function_name(LLVM.name(slot), global_names), 0)
+            return (:named, foreign_function_name(slot.name, global_names), 0)
         end
     end
     return (:indirect, "", 0)
@@ -219,11 +219,11 @@ function classify_callee(call::LLVM.Instruction, name::String)::Tuple{Symbol, St
     if runtime !== nothing
         if runtime in DISPATCH_RUNTIME_FUNCTIONS
             # Enzyme's run-time rules are Julia functions the code dispatches to.
-            ops = operands(call)
+            ops = call.operands
             if length(ops) >= 2
                 target = strip_constant_casts(ops[1])
                 if target isa LLVM.GlobalVariable
-                    tname = LLVM.name(target)
+                    tname = target.name
                     at = findfirst("ejl_enz_runtime_", tname)
                     if at !== nothing
                         return (:enzyme_runtime_fallback, String(SubString(tname, last(at) - 7)))
@@ -369,8 +369,8 @@ struct ScannedFunction
 end
 
 function scanned_function(fn::LLVM.Function, defined::Dict{String, Int})::ScannedFunction
-    name = LLVM.name(fn)
-    blks = collect(blocks(fn))
+    name = fn.name
+    blks = collect(fn.blocks)
     n = length(blks)
     position = Dict{UInt, Int}()
     for (i, bb) in enumerate(blks)
@@ -380,13 +380,13 @@ function scanned_function(fn::LLVM.Function, defined::Dict{String, Int})::Scanne
     returning = falses(n)
     inverted = falses(n)
     for (i, bb) in enumerate(blks)
-        inverted[i] = startswith(LLVM.name(bb), "invert")
-        term = LLVM.terminator(bb)
+        inverted[i] = startswith(bb.name, "invert")
+        term = bb.terminator
         term === nothing && continue
         if term isa LLVM.RetInst
             returning[i] = true
         end
-        for target in LLVM.successors(term)
+        for target in term.successors
             j = get(position, reference_key(target.ref), 0)
             j == 0 || j in succ[i] || push!(succ[i], j)
         end
@@ -468,11 +468,11 @@ The module is only read.
 function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{String, String}} = nothing)::Vector{DerivativeFinding}
     defined = Dict{String, Int}()
     scanned = ScannedFunction[]
-    for fn in functions(mod)
-        isempty(blocks(fn)) && continue
-        defined[LLVM.name(fn)] = length(scanned) + 1
+    for fn in mod.functions
+        isempty(fn.blocks) && continue
+        defined[fn.name] = length(scanned) + 1
         # Filled in below: a function has to know the names of all others.
-        push!(scanned, ScannedFunction(LLVM.name(fn), fn, LLVM.BasicBlock[], falses(0), falses(0), falses(0), :primal))
+        push!(scanned, ScannedFunction(fn.name, fn, LLVM.BasicBlock[], falses(0), falses(0), falses(0), :primal))
     end
     nf = length(scanned)
     for k in 1:nf
@@ -486,7 +486,7 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
     address_names = Dict{UInt, String}()
     for k in 1:nf
         for (b, bb) in enumerate(scanned[k].blocks)
-            for inst in instructions(bb)
+            for inst in bb.instructions
                 inst isa LLVM.CallBase || continue
                 how, name, idx = called_function(inst, defined, global_names, address_names)
                 if how === :internal
@@ -508,7 +508,7 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
     open = falses(nf)
     for k in 1:nf
         uses = 0
-        for _ in LLVM.uses(scanned[k].fn)
+        for _ in scanned[k].fn.uses
             uses += 1
         end
         open[k] = isempty(callers[k]) || uses != length(callers[k])
@@ -556,7 +556,7 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
         else
             classify_callee(inst, name)
         end
-        loc = LLVM.debuglocation(inst)
+        loc = inst.debug_location
         key = (loc === nothing ? UInt(0) : reference_key(loc.ref), reference_key(sf.fn.ref))
         frames = get(frames_of, key, nothing)
         if frames === nothing

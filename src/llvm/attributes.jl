@@ -103,6 +103,9 @@ const nofreefns = Set{String}(
         "gpu_signal_exception",
         "julia.ptls_states",
         "julia.write_barrier",
+        "julia.object_write_barrier",
+        "julia.field_write_barrier.p11",
+        "julia.field_write_barrier.p13",
         "julia.typeof",
         "jl_backtrace_from_here",
         "ijl_backtrace_from_here",
@@ -327,6 +330,9 @@ const inactivefns = Set{String}(
         "gpu_signal_exception",
         "julia.ptls_states",
         "julia.write_barrier",
+        "julia.object_write_barrier",
+        "julia.field_write_barrier.p11",
+        "julia.field_write_barrier.p13",
         "julia.typeof",
         "jl_backtrace_from_here",
         "ijl_backtrace_from_here",
@@ -599,7 +605,7 @@ function annotate!(mod::LLVM.Module)
         if haskey(funcs, fname)
             for fn in funcs[fname]
                 push!(fn.function_attributes, LLVM.StringAttribute("enzyme_nocache"))
-                push!(fn.parameter_attributes[1], LLVM.EnumAttribute(:nocapture))
+                push!(fn.parameter_attributes[1], nocapture_attr())
             end
         end
     end
@@ -881,6 +887,7 @@ function annotate!(mod::LLVM.Module)
             "ijl_alloc_genericmemory",
             "jl_alloc_genericmemory_unchecked",
             "ijl_alloc_genericmemory_unchecked",
+            "julia.gc_alloc_memory",
             "jl_alloc_array_1d",
             "jl_alloc_array_2d",
             "jl_alloc_array_3d",
@@ -942,6 +949,7 @@ function annotate!(mod::LLVM.Module)
             "ijl_alloc_genericmemory",
             "jl_alloc_genericmemory_unchecked",
             "ijl_alloc_genericmemory_unchecked",
+            "julia.gc_alloc_memory",
             "jl_alloc_array_1d",
             "jl_alloc_array_2d",
             "jl_alloc_array_3d",
@@ -1081,7 +1089,7 @@ function annotate!(mod::LLVM.Module)
         if haskey(funcs, fname)
             for fn in funcs[fname]
                 push!(fn.parameter_attributes[3], LLVM.EnumAttribute(:readonly))
-                push!(fn.parameter_attributes[3], LLVM.EnumAttribute(:nocapture))
+                push!(fn.parameter_attributes[3], nocapture_attr())
             end
         end
     end
@@ -1094,7 +1102,7 @@ function annotate!(mod::LLVM.Module)
                 push!(fn.parameter_attributes[4], LLVM.StringAttribute("enzyme_inactive"))
                 if fn.parameters[4].value_type isa LLVM.PointerType
                     push!(fn.parameter_attributes[4], LLVM.EnumAttribute(:writeonly))
-                    push!(fn.parameter_attributes[4], LLVM.EnumAttribute(:nocapture))
+                    push!(fn.parameter_attributes[4], nocapture_attr())
                 end
                 fn.memory_effects = LLVM.MemoryEffects(argmem = :readwrite)
             end

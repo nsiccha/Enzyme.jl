@@ -268,18 +268,11 @@
   `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
   `test/conditional_rule_return.jl` covers early returns, empty arrays,
   combined and split Reverse, batched Reverse, and Forward over Reverse.
-- Sync upstream through `9cc1c3a`, including the LLVM.jl 10 migration and
-  repository formatting. Adapt the dogfood compiler passes, retained
-  derivatives, safepoint attributes, metadata, and regression tests to the
-  new APIs. LLVM.jl now requires 10.4.3 and GPUCompiler 1.23.1 or 2.11;
-  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
-- Sync upstream through `580628c`: Julia-zeroed allocations no longer get
-  redundant null stores into their GC fields (#3766), and the
-  `LLVM.OperandBundleDef` compatibility branches are gone (#4064).
-  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
-  Upstream's LLVM.jl 10 migration (#3741) and the formatting commits after it
-  are held back: no Reactant release admits LLVM.jl 10 yet, and Reactant
-  requires Enzyme, so the two could not be installed together.
+- Sync with EnzymeAD/Enzyme.jl through `1ee9a6f8`. This brings GPUArrays 12 support,
+  Julia's newer write barriers and allocation intrinsic, and the LLVM.jl 10 API.
+  The dogfood compiler passes, retained derivatives, reports, and regression tests
+  use the new API. The minimum LLVM.jl version is 10.4.3. Enzyme_jll stays at
+  0.0.301 with the native build declared in `deps/dogfood_libenzyme.toml`.
 - Limit the runtime `map` wrapper to long-tuple calls. A custom collection's
   `map` with an imprecise return type could otherwise re-enter the wrapper
   indefinitely and overflow the stack during differentiation.

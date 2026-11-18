@@ -618,6 +618,7 @@ function restore_runtime_check_hoisting!(ptr::Ptr{Bool})
 end
 
 function post_optimize!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing}, machine::Bool = true; callconv::Bool = true, tti = nothing)
+    modern_write_barriers!(mod)
     define_ntuple_type!(mod)
     if callconv
         fixup_callconv!(mod, tm, tti)

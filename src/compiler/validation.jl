@@ -862,8 +862,8 @@ through that slot from then on, so a later change of the library is not observed
 looks a non-constant library up at every call and keeps no such slot.
 """
 function lazy_lookup_cached(inst::LLVM.CallInst)::Bool
-    for u in LLVM.uses(inst)
-        st = LLVM.user(u)
+    for u in inst.uses
+        st = u.user
         isa(st, LLVM.StoreInst) || continue
         LLVM.Value(LLVM.API.LLVMGetOperand(st, 0)) == inst || continue
         isa(LLVM.Value(LLVM.API.LLVMGetOperand(st, 1)), LLVM.GlobalVariable) && return true
@@ -894,16 +894,16 @@ Every call read through is added to `reads`, the innermost first.
 """
 function library_global_value(@nospecialize(lib::LLVM.Value), enzyme_ctx::EnzymeContext, mutable_ok::Bool, reads::Vector{LLVM.CallInst})::Union{Some{Any}, Nothing}
     isa(lib, LLVM.CallInst) || return nothing
-    fn = LLVM.called_operand(lib)
+    fn = lib.called_operand
     isa(fn, LLVM.Function) || return nothing
-    nm = LLVM.name(fn)
-    ops = arg_operands_view(lib)
+    nm = fn.name
+    ops = lib.arguments
     mod = nothing
     name = nothing
     if nm == "julia.call" && length(ops) == 4
         callee = ops[1]
         isa(callee, LLVM.Function) || return nothing
-        cname = LLVM.name(callee)
+        cname = callee.name
         (cname == "jl_apply_generic" || cname == "ijl_apply_generic") || return nothing
         legal, f = absint(ops[2], enzyme_ctx)
         (legal && unbind(f) === Base.getproperty) || return nothing
@@ -940,15 +940,15 @@ end
 function erase_library_reads!(reads::Vector{LLVM.CallInst}, calls::Vector{LLVM.CallInst})
     # The outermost read comes last and holds the only use of the one before it.
     for read in Iterators.reverse(reads)
-        isempty(LLVM.uses(read)) || continue
+        isempty(read.uses) || continue
         filter!(!=(read), calls)
-        LLVM.API.LLVMInstructionEraseFromParent(read)
+        erase!(read)
     end
     return nothing
 end
 
 # The name of the function that stands for the symbol `fname` behind the call-site slot `slot`.
-runtime_lookup_stub_name(slot::LLVM.GlobalVariable, fname::String) = "ejlrt\$" * fname * "\$" * LLVM.name(slot)
+runtime_lookup_stub_name(slot::LLVM.GlobalVariable, fname::String) = "ejlrt\$" * fname * "\$" * slot.name
 
 """
     runtime_lookup_stub!(mod, slot, fname, FT, cc) -> LLVM.Function
@@ -960,27 +960,27 @@ differentiation, and keeps its signature.
 """
 function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname::String, FT::LLVM.FunctionType, cc)::LLVM.Function
     name = runtime_lookup_stub_name(slot, fname)
-    funcs = functions(mod)
+    funcs = mod.functions
     haskey(funcs, name) && return funcs[name]
     stub = LLVM.Function(mod, name, FT)
-    linkage!(stub, LLVM.API.LLVMInternalLinkage)
-    callconv!(stub, cc)
-    attributes = function_attributes(stub)
+    stub.linkage = LLVM.Linkage.Internal
+    stub.callconv = cc
+    attributes = stub.function_attributes
     push!(attributes, StringAttribute("enzyme_math", fname))
     push!(attributes, StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*"))
-    push!(attributes, EnumAttribute("noinline", 0))
+    push!(attributes, EnumAttribute(:noinline))
     builder = IRBuilder()
-    position!(builder, BasicBlock(stub, "entry"))
-    address = load!(builder, LLVM.global_value_type(slot), slot)
-    ordering!(address, LLVM.API.LLVMAtomicOrderingUnordered)
+    position!(builder, LLVM.at_end(BasicBlock(stub, "entry")))
+    address = load!(builder, slot.global_value_type, slot)
+    address.ordering = LLVM.AtomicOrdering.Unordered
     callee = address
     T_callee = LLVM.PointerType(FT)
-    if value_type(callee) != T_callee
+    if callee.value_type != T_callee
         callee = bitcast!(builder, callee, T_callee)
     end
-    result = call!(builder, FT, callee, LLVM.Value[p for p in parameters(stub)])
-    callconv!(result, cc)
-    if LLVM.return_type(FT) == LLVM.VoidType()
+    result = call!(builder, FT, callee, LLVM.Value[p for p in stub.parameters])
+    result.callconv = cc
+    if FT.return_type == LLVM.VoidType()
         ret!(builder)
     else
         ret!(builder, result)
@@ -1008,8 +1008,8 @@ call after the function they differentiate, which has to be a routine of a known
 """
 function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fname::String)
     slot = nothing
-    for u in LLVM.uses(inst)
-        st = LLVM.user(u)
+    for u in inst.uses
+        st = u.user
         isa(st, LLVM.StoreInst) || continue
         LLVM.Value(LLVM.API.LLVMGetOperand(st, 0)) == inst || continue
         dest = LLVM.Value(LLVM.API.LLVMGetOperand(st, 1))
@@ -1019,7 +1019,7 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
         end
     end
     slot === nothing && return nothing
-    API.SetMD(slot, "enzyme_inactive", LLVM.MDNode(LLVM.Metadata[]))
+    slot.metadata["enzyme_inactive"] = LLVM.MDNode(LLVM.Metadata[])
     FFI.BLASSupport.lookup_blas_symbol(fname) === nothing || return nothing
 
     # The calls through the address: of the lookup's result or of a load of the slot, which
@@ -1030,28 +1030,28 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
     through = LLVM.CallInst[]
     seen = Set{LLVM.Value}()
     worklist = LLVM.Value[inst]
-    for u in LLVM.uses(slot)
-        ld = LLVM.user(u)
+    for u in slot.uses
+        ld = u.user
         isa(ld, LLVM.LoadInst) || continue
-        LLVM.name(LLVM.parent(LLVM.parent(ld))) == stub_name && continue
+        ld.parent.parent.name == stub_name && continue
         push!(worklist, ld)
     end
     while !isempty(worklist)
         v = pop!(worklist)
         v in seen && continue
         push!(seen, v)
-        for u in LLVM.uses(v)
-            user = LLVM.user(u)
+        for u in v.uses
+            user = u.user
             if isa(user, LLVM.CallInst)
-                called_operand(user) == v && push!(through, user)
+                user.called_operand == v && push!(through, user)
             elseif isa(user, LLVM.PHIInst) || isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst)
                 push!(worklist, user)
             end
         end
     end
     for call in through
-        stub = runtime_lookup_stub!(mod, slot, fname, called_type(call), LLVM.callconv(call))
-        LLVM.API.LLVMSetOperand(call, LLVM.API.LLVMGetNumOperands(call) - 1, stub)
+        stub = runtime_lookup_stub!(mod, slot, fname, call.called_type, call.callconv)
+        call.called_operand = stub
     end
     return nothing
 end

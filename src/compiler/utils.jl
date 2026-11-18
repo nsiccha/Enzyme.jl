@@ -140,7 +140,7 @@ function is_readonly_call_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospe
         captures_nothing = false
         for attrs in (fn.parameter_attributes[i], call.argument_attributes[i])
             reads_only |= haskey(attrs, :readonly) || haskey(attrs, :readnone)
-            captures_nothing |= haskey(attrs, :nocapture)
+            captures_nothing |= any(is_nocapture_attr, attrs)
         end
         reads_only && captures_nothing || return false
         found = true

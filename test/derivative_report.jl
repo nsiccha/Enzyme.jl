@@ -516,7 +516,7 @@ cube_sum(x) = sum(v -> v^3, x)
     names = LLVM.Context() do _
         mod = parse(LLVM.Module, d1.ir)
         try
-            [LLVM.name(fn) for fn in LLVM.functions(mod) if !isempty(LLVM.blocks(fn))]
+            [fn.name for fn in mod.functions if !isempty(fn.blocks)]
         finally
             LLVM.dispose(mod)
         end

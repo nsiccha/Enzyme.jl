@@ -155,6 +155,15 @@ function emit_pointerfromobjref!(B::LLVM.IRBuilder, @nospecialize(T::LLVM.Value)
     return call!(B, fty, func, [T])
 end
 
+# Since julia#62737 codegen emits `julia.object_write_barrier(parent, children...)` and the
+# field-aware `julia.field_write_barrier.p11/.p13(parent, slot, child, ...)` instead of
+# `julia.write_barrier(parent, children...)`, which Julia no longer lowers.
+const WRITE_BARRIER = @static if VERSION >= v"1.14.0-DEV.3304"
+    "julia.object_write_barrier"
+else
+    "julia.write_barrier"
+end
+
 # The attributes Julia's codegen declares `julia.write_barrier` with. Without them alias
 # analysis takes the barrier for a write to any memory, so a store Enzyme gives a barrier
 # (into a stack slot libEnzyme moved to the heap, say) made every load before it look
@@ -166,11 +175,29 @@ function declare_writebarrier!(mod::LLVM.Module)
         LLVM.EnumAttribute(LLVM.MemoryEffects(inaccessiblemem = :readwrite))
     end
     attrs = LLVM.Attribute[inaccessible_attr, LLVM.EnumAttribute(:norecurse), LLVM.EnumAttribute(:nounwind)]
-    return get_function!(mod, "julia.write_barrier", attrs) do
+    return get_function!(mod, WRITE_BARRIER, attrs) do
         T_jlvalue = LLVM.StructType(LLVMType[])
         T_prjlvalue = LLVM.PointerType(T_jlvalue, Tracked)
         LLVM.FunctionType(LLVM.VoidType(), [T_prjlvalue]; vararg = true)
     end
+end
+
+# Enzyme emits `julia.write_barrier` into modules that had no julia#62737 barrier to
+# take the name from. Rename those to `julia.object_write_barrier`, which has the same
+# signature, before Julia's GC lowering runs.
+function modern_write_barriers!(mod::LLVM.Module)
+    @static if VERSION >= v"1.14.0-DEV.3304"
+        fns = mod.functions
+        haskey(fns, "julia.write_barrier") || return
+        wb = fns["julia.write_barrier"]
+        if haskey(fns, "julia.object_write_barrier")
+            replace_uses!(wb, fns["julia.object_write_barrier"])
+            erase!(wb)
+        else
+            wb.name = "julia.object_write_barrier"
+        end
+    end
+    return
 end
 declare_apply_generic!(mod::LLVM.Module) =
     get_function!(mod, "ijl_apply_generic") do
@@ -569,7 +596,7 @@ function declare_ntuple_type!(mod::LLVM.Module)
         memory_effects = LLVM.MemoryEffects(:none),
     )
     if isa(fn, LLVM.Function) && isempty(collect(fn.parameter_attributes[1]))
-        push!(fn.parameter_attributes[1], EnumAttribute(:nocapture))
+        push!(fn.parameter_attributes[1], nocapture_attr())
         push!(fn.parameter_attributes[1], EnumAttribute(:readonly))
     end
     return fn, FT
@@ -636,7 +663,7 @@ function define_ntuple_type!(mod::LLVM.Module)
         )
         if isa(apply_tuple_v, LLVM.Function) && isempty(collect(apply_tuple_v.parameter_attributes[1]))
             push!(apply_tuple_v.parameter_attributes[1], EnumAttribute(:readonly))
-            push!(apply_tuple_v.parameter_attributes[1], EnumAttribute(:nocapture))
+            push!(apply_tuple_v.parameter_attributes[1], nocapture_attr())
         end
         roots = [LLVM.OperandBundle("jl_roots", LLVM.Value[eltype])]
         ret!(builder, call!(builder, apply_tuple_v_FT, apply_tuple_v, LLVM.Value[buf, n], roots))
@@ -1194,6 +1221,10 @@ function get_memory_len(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value), enz
             res = array.operands[2]
             return res
         end
+        if nm == "julia.gc_alloc_memory"
+            # julia.gc_alloc_memory(task, nbytes, type, length, zeroinit)
+            return array.operands[4]
+        end
         if nm in (
                 "jl_alloc_genericmemory_unchecked",
                 "ijl_alloc_genericmemory_unchecked",
@@ -1248,6 +1279,7 @@ function get_memory_nbytes(B::LLVM.IRBuilder, @nospecialize(array::LLVM.Value), 
         if nm in (
                 "jl_alloc_genericmemory_unchecked",
                 "ijl_alloc_genericmemory_unchecked",
+                "julia.gc_alloc_memory",
             )
             # This is number of bytes not number of elements
             res = array.operands[2]
