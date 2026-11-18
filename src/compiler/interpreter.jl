@@ -321,28 +321,40 @@ end
 
 Core.Compiler.method_table(@nospecialize(interp::EnzymeInterpreter)) = interp.method_table
 
-@static if VERSION < v"1.11-"
-    function Core.Compiler.edge_matches_sv(
-            interp::EnzymeInterpreter,
-            frame::Core.Compiler.AbsIntState,
-            method::Method,
-            @nospecialize(sig),
-            sparams::Core.SimpleVector,
-            hardlimit::Bool,
-            sv::Core.Compiler.AbsIntState,
-        )
-        matches = @invoke Core.Compiler.edge_matches_sv(
-            interp::AbstractInterpreter,
-            frame::Core.Compiler.AbsIntState,
-            method::Method,
-            sig::Any,
-            sparams::Core.SimpleVector,
-            hardlimit::Bool,
-            sv::Core.Compiler.AbsIntState,
-        )
-        if matches && !hardlimit && !isdefined(method, :recursion_relation)
-            previous = Core.Compiler.frame_instance(frame).specTypes
-            length_limit = length(Base.unwrap_unionall(previous).parameters)
+function Core.Compiler.edge_matches_sv(
+        interp::EnzymeInterpreter,
+        frame::Core.Compiler.AbsIntState,
+        method::Method,
+        @nospecialize(sig),
+        sparams::Core.SimpleVector,
+        hardlimit::Bool,
+        sv::Core.Compiler.AbsIntState,
+    )
+    matches = @invoke Core.Compiler.edge_matches_sv(
+        interp::AbstractInterpreter,
+        frame::Core.Compiler.AbsIntState,
+        method::Method,
+        sig::Any,
+        sparams::Core.SimpleVector,
+        hardlimit::Bool,
+        sv::Core.Compiler.AbsIntState,
+    )
+    if matches && !hardlimit && !isdefined(method, :recursion_relation)
+        previous = Core.Compiler.frame_instance(frame).specTypes
+        # A higher-order method can recur for a different callable, e.g.
+        # nested promote_op queries for an outer cell and its inner step.
+        # Compare nominal types in fixed slots only: there are finitely many
+        # in a world, even when type parameters or vararg lengths grow.
+        args = Base.unwrap_unionall(sig).parameters
+        prev = Base.unwrap_unionall(previous).parameters
+        nfixed = min(method.nargs - method.isva, length(args), length(prev))
+        for i in 2:nfixed
+            a, b = args[i], prev[i]
+            if a isa DataType && b isa DataType && a.name !== b.name && isconcretetype(a) && isconcretetype(b)
+                return false
+            end
+        end
+        @static if VERSION < v"1.11-"
             # Mutual recursion is normally limited against the unspecialized
             # method signature. This loses unchanged keyword argument types in
             # sum(sum, arrays), even as the array element type becomes simpler.
@@ -352,12 +364,12 @@ Core.Compiler.method_table(@nospecialize(interp::EnzymeInterpreter)) = interp.me
             # fixed-point inference.
             bounded = Core.Compiler.limit_type_size(
                 sig, previous, previous,
-                InferenceParams(interp).tuple_complexity_limit_depth, length_limit,
+                InferenceParams(interp).tuple_complexity_limit_depth, length(prev),
             )
             bounded === sig && return false
         end
-        return matches
     end
+    return matches
 end
 
 # Set in the task-local storage of a task while an `EnzymeInterpreter` infers on it. A

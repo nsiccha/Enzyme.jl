@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Keep nested result-type queries concrete when a higher-order helper is
+  reused for a different callable. For example, a loop that seeds a sum with
+  `zero(Base.promote_op(f, ...))` can now differentiate the addition
+  statically when the cell itself queries another callable's result type.
+
 - Keep the type facts of a union return buffer independent of what compiled
   earlier in the process. A function returning, for example,
   `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct
