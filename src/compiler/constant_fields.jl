@@ -745,14 +745,34 @@ function constant_field_uses_safe(cf::ConstantFields, @nospecialize(val::LLVM.Va
     return true
 end
 
-# Whether an integer, and everything computed from it, stays an integer.
+# Whether the integer `v` is an address: a `ptrtoint`, or an address plus or minus an
+# integer that is not one.
+function address_integer(@nospecialize(v::LLVM.Value))::Bool
+    isa(v, LLVM.PtrToIntInst) && return true
+    if isa(v, LLVM.AddInst)
+        a, b = operands(v)
+        return address_integer(a) != address_integer(b)
+    elseif isa(v, LLVM.SubInst)
+        a, b = operands(v)
+        return address_integer(a) && !address_integer(b)
+    end
+    return false
+end
+
+# Whether an integer, and everything computed from it, stays an integer. The
+# difference of two addresses is a byte offset, which holds no address: Julia 1.12
+# computes a `MemoryRef`'s offset from its data pointer that way, and the reverse
+# pass of an inner derivative caches it (`cache_memoryref_pointer_integers`), so a
+# nested derivative stores it into a cache or inserts it into its tape.
 function never_pointer_again(@nospecialize(val::LLVM.Value), seen::Set{LLVM.Value})::Bool
     val in seen && return true
     push!(seen, val)
     for u in LLVM.uses(val)
         user = LLVM.user(u)
         isa(user, LLVM.Instruction) || return false
-        if isa(value_type(user), LLVM.IntegerType)
+        if isa(user, LLVM.SubInst) && all(address_integer, operands(user))
+            continue
+        elseif isa(value_type(user), LLVM.IntegerType)
             never_pointer_again(user, seen) || return false
         elseif isa(user, LLVM.GetElementPtrInst)
             # An index: the GEP's activity is its pointer operand's (the byte offsets
