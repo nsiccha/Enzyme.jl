@@ -5689,6 +5689,29 @@ function strip_activity_inactive_md!(mod::LLVM.Module)
     return
 end
 
+# libEnzyme's marks of a stack slot it moved to the heap before differentiating a function
+# (`enzyme_fromstack` on the allocation that replaces it, `enzyme_caststack` and
+# `enzyme_zerostack` on the code it adds for it) and of one it moves back
+# (`enzyme_backstack`). They let libEnzyme put the slot back on the stack where the
+# derivative does not need it on the heap, which is right because a stack slot cannot
+# outlive its function. In the derivative it emits, such an allocation may outlive the
+# function: an augmented forward pass returns it in its tape. An outer derivative that
+# imports that code (`import_cached_autodiff!`) then took it for a stack slot of its own
+# and tried to move it back to the stack, which fails while a store keeps its address
+# beyond the function (`EnzymeInternalError`, "Illegal address space propagation", from
+# Reverse over Reverse through a `Threads.@threads` loop on Julia 1.12 and 1.13).
+const STACK_SLOT_MARKERS = ("enzyme_fromstack", "enzyme_caststack", "enzyme_zerostack", "enzyme_backstack")
+
+function strip_stack_slot_markers!(mod::LLVM.Module)
+    for f in functions(mod), bb in blocks(f), inst in instructions(bb)
+        md = metadata(inst)
+        for marker in STACK_SLOT_MARKERS
+            haskey(md, marker) && delete!(md, marker)
+        end
+    end
+    return
+end
+
 # Enzyme tags the loads and stores of its caches with `!invariant.group`, which
 # lets LLVM assume that every access to the same cache slot sees the same value.
 # The cache that records which branch a loop iteration took breaks that
@@ -7995,6 +8018,8 @@ end
         )
         # The activity hints that must not reach an outer differentiation of the result.
         strip_activity_inactive_md!(mod)
+        # Nor may libEnzyme's marks of the stack slots of the function it differentiated.
+        strip_stack_slot_markers!(mod)
 
         # Link deferred modules
         for otherMod in enzyme_ctx.modules_to_link

@@ -21,6 +21,32 @@
   `zero(Base.promote_op(f, ...))` can now differentiate the addition
   statically when the cell itself queries another callable's result type.
 
+- Differentiate the derivative of a function that runs part of its work in a
+  task (`Threads.@spawn` ... `wait`). Forward over Reverse of such a function,
+  a Hessian-vector product, raised `TaskFailedException` around
+  `EnzymeNoDerivativeError` ("No derivative available for indirect call
+  through an inactive function pointer") when it ran: the derivative of a task
+  runs the derivative of the task's body through a closure that reaches it by
+  its address, which an outer derivative cannot differentiate. As for a
+  `Threads.@threads` loop, the task now runs a callable, and an outer
+  derivative differentiates a variant of it that asks for the body's
+  derivative by its types. Forward over Reverse, Reverse over Forward,
+  Forward over Forward and Reverse over Reverse return the right values.
+  Several directions at once (`BatchDuplicated`) through a task are not
+  supported, nested or not. `Enzyme.has_dogfood_repair(:nested_threaded_tasks)`
+  reports the repair; `test/nested_threads.jl` covers it.
+- Compile Reverse over Reverse through a `Threads.@threads` loop on Julia 1.12
+  and 1.13, which stopped with `EnzymeInternalError` ("Illegal address space
+  propagation"). Before differentiating, libEnzyme moves to the heap a stack
+  slot whose value the reverse pass may need and marks the allocation, so that
+  it can move the slot back to the stack where the reverse pass turns out not
+  to need it. The code Enzyme keeps of a derivative for an outer one to
+  differentiate still carried that mark, although in an augmented forward pass
+  the allocation can escape through the tape; the outer derivative then tried
+  to move it back to the stack, which it cannot do while the loop's array of
+  tapes holds its address. The kept code now carries no such marks.
+  `Enzyme.has_dogfood_repair(:kept_stack_slot_markers)` reports the repair;
+  `test/nested_threads.jl` covers it.
 - Fix two defects in the reverse rule for `sizehint!` on a `Float32` or
   `Float64` vector, on Julia 1.11 and later. The rule repeats the call on the
   derivative vector, which allocates the new storage uninitialized, but zeroed
