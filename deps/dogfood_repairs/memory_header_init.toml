@@ -1,0 +1,2 @@
+summary = "A fresh Memory has a header the garbage collector can read before the shadow allocation Enzyme puts next to it (Julia 1.12 and later: an inline Memory of constant length such as zeros(64), and the length of any other Memory); Forward mode, and a derivative of a derivative, segfaulted in the collector (gc_mark_outrefs) once in many thousand calls"
+tests = ["test/memory_header_init.jl"]
