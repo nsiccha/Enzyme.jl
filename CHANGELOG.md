@@ -21,6 +21,20 @@
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
+- Differentiate the derivative of a function that runs part of its work in a
+  task (`Threads.@spawn` ... `wait`). Forward over Reverse of such a function,
+  a Hessian-vector product, raised `TaskFailedException` around
+  `EnzymeNoDerivativeError` ("No derivative available for indirect call
+  through an inactive function pointer") when it ran: the derivative of a task
+  runs the derivative of the task's body through a closure that reaches it by
+  its address, which an outer derivative cannot differentiate. As for a
+  `Threads.@threads` loop, the task now runs a callable, and an outer
+  derivative differentiates a variant of it that asks for the body's
+  derivative by its types. Forward over Reverse, Reverse over Forward,
+  Forward over Forward and Reverse over Reverse return the right values.
+  Several directions at once (`BatchDuplicated`) through a task are not
+  supported, nested or not. `Enzyme.has_dogfood_repair(:nested_threaded_tasks)`
+  reports the repair; `test/nested_threads.jl` covers it.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture
   attributes only for typed raw data pointers, and ignores uses solely in

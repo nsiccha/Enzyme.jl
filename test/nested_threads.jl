@@ -193,6 +193,87 @@ end
     end
 end
 
+# A task (`Threads.@spawn`) adds into the shadow of `x` beside the caller: gradient `4 x`,
+# Hessian `4 I`.
+function nt_spawned(x)
+    out = zeros(2)
+    task = Threads.@spawn begin
+        @inbounds out[1] = nt_sumsq(x)
+        nothing
+    end
+    @inbounds out[2] = nt_sumsq(x)
+    wait(task)
+    return out[1] + out[2]
+end
+
+@testset "Nested derivatives through a task $(Threads.nthreads())" begin
+    x = collect(1.0:6.0)
+    v = collect(6.0:-1.0:1.0)
+    w = [1.0, -1.0, 2.0, 0.5, 0.0, 3.0]
+
+    @testset "First order" begin
+        dx = zero(x)
+        nt_gradient!(nt_spawned, dx, x)
+        @test dx == 4 .* x
+        @test nt_directional(nt_spawned, x, v) == 4 * sum(x .* v)
+    end
+
+    @testset "Forward over Reverse" begin
+        dx = zero(x)
+        ddx = zero(x)
+        autodiff(Forward, Const(nt_gradient!), Const, Const(nt_spawned), Duplicated(dx, ddx), Duplicated(x, v))
+        @test dx == 4 .* x
+        @test ddx == 4 .* v
+    end
+
+    @testset "Reverse over Forward" begin
+        hv = zero(x)
+        autodiff(Reverse, Const(nt_directional), Active, Const(nt_spawned), Duplicated(x, hv), Const(v))
+        @test hv == 4 .* v
+    end
+
+    @testset "Forward over Forward" begin
+        @test autodiff(Forward, Const(nt_directional), Const(nt_spawned), Duplicated(x, w), Const(v))[1] ==
+            4 * sum(v .* w)
+    end
+
+    @testset "Reverse over Reverse" begin
+        g = zero(x)
+        autodiff(Reverse, Const(nt_gradient_sqnorm), Active, Const(nt_spawned), Duplicated(x, g))
+        @test g ≈ 32 .* x
+    end
+end
+
+@testset "The task bodies an outer derivative differentiates" begin
+    Compiler = Enzyme.Compiler
+    S = ((false,), false, false)
+    FT = Const{typeof(nt_sumsq)}
+    Forward = Compiler.ForwardModeThunk{Ptr{Cvoid}, FT, Const{Float64}, Tuple{}, 1, true}
+    Augmented = Compiler.AugmentedForwardThunk{Ptr{Cvoid}, FT, Const{Float64}, Tuple{}, 1, true, Float64}
+    Adjoint = Compiler.AdjointThunk{Ptr{Cvoid}, FT, Const{Float64}, Tuple{}, 1, Float64}
+    tape = Ref{Float64}()
+    for st in (
+            Compiler.ForwardTask{Forward, FT, S, false}(Forward(C_NULL), Const(nt_sumsq)),
+            Compiler.AugmentedTask{Augmented, FT, typeof(tape), S, false}(Augmented(C_NULL), Const(nt_sumsq), tape),
+            Compiler.ReverseTask{Adjoint, FT, typeof(tape), S, false}(Adjoint(C_NULL), Const(nt_sumsq), tape),
+        )
+        T = typeof(st)
+        R = Compiler.rederived_body(T)
+        @test R.name === T.name
+        @test R.parameters[end] === true
+        @test R.parameters[1:(end - 1)] == T.parameters[1:(end - 1)]
+        @test fieldtypes(R) == fieldtypes(T)
+        rst, rdst = Compiler.rederived_task(st, st)
+        @test typeof(rst) === R
+        @test typeof(rdst) === R
+        @test Compiler.task_fields(rst) === Compiler.task_fields(st)
+        # Already the one to differentiate
+        @test Compiler.rederived_task(rst, rdst)[1] === rst
+    end
+    # A task that holds no derivative of a body
+    @test Compiler.rederived_task(nt_sumsq, nt_sumsq) === (nt_sumsq, nt_sumsq)
+end
+
 @testset "A rule's calls keep their arguments in the code an outer derivative takes up" begin
     # The code Enzyme keeps of a derivative, for an outer derivative to differentiate, holds
     # calls that only a rule can differentiate: those of `threading_run` among them. The
