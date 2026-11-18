@@ -1,0 +1,3 @@
+summary = "Strong zero holds in every libEnzyme rule that scales the incoming derivative: a zero derivative through log at 0, exp at infinity and the like gives 0, not NaN, under set_strong_zero and in select-masked reverse rules"
+libenzyme_build = "adc222b3c2e0a5e715e3fbe4638213bf4bc68d51"
+tests = ["test/strong_zero_rules.jl"]
