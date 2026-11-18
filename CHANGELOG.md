@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Keep strong zero (`Enzyme.set_strong_zero`) in every derivative rule of a
+  math function. A zero derivative reaching `log` at 0, `exp` where it
+  overflows, or any other function whose partial derivative is infinite there
+  gave NaN (`0 / 0`, `0 * Inf`) even with strong zero on, because only the
+  rules of `*`, `/`, `^` and `rem` checked for it. A mixture with a constant
+  zero-mass component, whose `log(0)` sits in one vector with the active
+  component, therefore had NaN Forward derivatives under strong zero; it now
+  matches Reverse. Without strong zero Forward still gives NaN there, as IEEE
+  arithmetic does. The same check now also guards a call that reaches the
+  result only through a select arm in Reverse, as repair `select_strong_zero`
+  does for `/` and `*`: `ifelse(x > t, log(x), 0.0)` at `x = 0` has derivative
+  0, not NaN. Needs libEnzyme build `adc222b3`;
+  `Enzyme.has_dogfood_repair(:strong_zero_rules)` reports the repair and
+  `test/strong_zero_rules.jl` checks it.
 - Keep nested result-type queries concrete when a higher-order helper is
   reused for a different callable. For example, a loop that seeds a sum with
   `zero(Base.promote_op(f, ...))` can now differentiate the addition
