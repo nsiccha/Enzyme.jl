@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T18:49:31Z",
+  "prepared_at": "2026-11-18T19:35:49Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -138,7 +138,11 @@
             ]
           }
         ],
-        "why_together": "One combined commit folds redundant parent phis and checks that the replacement dominates each phi. The dominance correction is required under forced bounds checking. This published November 4 candidate is prepared on an older upstream base and excludes the later data-phi load-unfolding changes. The published patch applies to upstream dd86d5435d."
+        "why_together": "One combined commit folds redundant parent phis and checks that the replacement dominates each phi. The dominance correction is required under forced bounds checking. This published November 4 candidate is prepared on an older upstream base and excludes the later data-phi load-unfolding changes. The published patch applies to upstream dd86d5435d.",
+        "originals": [
+          "fdd80c1cd88c8a72f26b427d3bd65b7809fed80c",
+          "02b2678f343dac32e86e685d5834228260fe169a"
+        ]
       }
     },
     {
@@ -229,7 +233,10 @@
             ]
           }
         ],
-        "why_together": "One commit fixes runtime tag encoding, Bool singleton reuse, union-return boxing and custom-rule tape boxing, with focused regressions. It needs no other review group. The fork-only registry assertion stays on dogfood and is omitted from this upstream candidate. The published patch applies to upstream 0126567278."
+        "why_together": "One commit fixes runtime tag encoding, Bool singleton reuse, union-return boxing and custom-rule tape boxing, with focused regressions. It needs no other review group. The fork-only registry assertion stays on dogfood and is omitted from this upstream candidate. The published patch applies to upstream 0126567278.",
+        "originals": [
+          "e1ce6518a3c94df5911220b479bc3e619c94dd31"
+        ]
       }
     },
     {
@@ -272,7 +279,10 @@
             ]
           }
         ],
-        "why_together": "One commit handles the module lookup in the derivative rules and runtime fallback, with tests that rebind the module and differentiate through the returned value. The published patch applies to upstream 0126567278."
+        "why_together": "One commit handles the module lookup in the derivative rules and runtime fallback, with tests that rebind the module and differentiate through the returned value. The published patch applies to upstream 0126567278.",
+        "originals": [
+          "8b672541c919fb8111844100e9fa2f223abf8319"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -367,7 +377,10 @@
             ]
           }
         ],
-        "why_together": "One commit combines the tuple-splat inference and optimization limits from upstream PR #3994 with the active-Ref and recursive-splat regression tests. The separate runtime tuple-map change is outside this fix. The published patch applies to upstream 0126567278."
+        "why_together": "One commit combines the tuple-splat inference and optimization limits from upstream PR #3994 with the active-Ref and recursive-splat regression tests. The separate runtime tuple-map change is outside this fix. The published patch applies to upstream 0126567278.",
+        "originals": [
+          "7c18ff8596927d25e7e236d554590b4fe893ea2f"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -498,7 +511,10 @@
             ]
           }
         ],
-        "why_together": "One commit keeps bounded recursive argument signatures on Julia 1.10 and tests the affected inference, the derivative, and convergence when signatures grow. The published patch applies to upstream 0126567278."
+        "why_together": "One commit keeps bounded recursive argument signatures on Julia 1.10 and tests the affected inference, the derivative, and convergence when signatures grow. The published patch applies to upstream 0126567278.",
+        "originals": [
+          "71c203f9a2f6ee6af8e53f0d095ea4d9be4d623a"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -585,7 +601,10 @@
             ]
           }
         ],
-        "why_together": "One commit retains the original backing storage and dimensions for the sort and partial-sort reverse rules and tests mutations after each operation. The published patch applies to upstream 0126567278."
+        "why_together": "One commit retains the original backing storage and dimensions for the sort and partial-sort reverse rules and tests mutations after each operation. The published patch applies to upstream 0126567278.",
+        "originals": [
+          "20a4b7fc2169c4ba02eeabd863a626ce5570f0bf"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -676,7 +695,10 @@
             ]
           }
         ],
-        "why_together": "One commit specializes zero-shadow construction for eligible tuples, preserves aliasing, and tests allocations, inference and the resulting gradient. The published patch applies to upstream 0126567278."
+        "why_together": "One commit specializes zero-shadow construction for eligible tuples, preserves aliasing, and tests allocations, inference and the resulting gradient. The published patch applies to upstream 0126567278.",
+        "originals": [
+          "629979ff39426671e0909ea5180f61f2066592af"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -763,7 +785,10 @@
             ]
           }
         ],
-        "why_together": "One commit handles an invalid constant type application during abstract interpretation and tests both branches in the derivative. The published patch applies to upstream 0126567278."
+        "why_together": "One commit handles an invalid constant type application during abstract interpretation and tests both branches in the derivative. The published patch applies to upstream 0126567278.",
+        "originals": [
+          "39ffdb75887c6271f053e2067306e38b152491f9"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -854,7 +879,10 @@
             ]
           }
         ],
-        "why_together": "One commit updates the stages that run the Attributor, retains a switch to restore the prior behavior, and checks the stage counters and derivatives. The tests do not set a timing threshold. The published patch applies to upstream 0126567278."
+        "why_together": "One commit updates the stages that run the Attributor, retains a switch to restore the prior behavior, and checks the stage counters and derivatives. The tests do not set a timing threshold. The published patch applies to upstream 0126567278.",
+        "originals": [
+          "29ddfdf709602d407d92eb2b3c6dc31cb0d3b6ed"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -927,7 +955,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original diagnostic feature and its tests are in bccbfbcb. A standalone upstream feature branch is still being isolated."
+        "why_together": "The original diagnostic feature and its tests are in bccbfbcb. A standalone upstream feature branch is still being isolated.",
+        "originals": [
+          "bccbfbcb1e88a0c4611d42d6b7d4a339c5970aa6"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -955,7 +986,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The follow-up ac07b121 corrects the call analysis introduced by bccbfbcb. It applies to the fork feature. The complete prerequisite stack still needs standalone testing."
+        "why_together": "The follow-up ac07b121 corrects the call analysis introduced by bccbfbcb. It applies to the fork feature. The complete prerequisite stack still needs standalone testing.",
+        "originals": [
+          "ac07b12134476bffff5d57c8126b0f2917268161"
+        ]
       },
       "depends_on": [
         "derivative-report"
@@ -985,7 +1019,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "e515811e introduces load splitting at Const/active selects and phis. Other original changes in the same series refine path and field reasoning. A minimal set on current upstream remains under review. The original modifies the constant-field proof introduced by the by-reference shadow fix."
+        "why_together": "e515811e introduces load splitting at Const/active selects and phis. Other original changes in the same series refine path and field reasoning. A minimal set on current upstream remains under review. The original modifies the constant-field proof introduced by the by-reference shadow fix.",
+        "originals": [
+          "e515811e1d1947278565cbdb0d414bd3f469e958"
+        ]
       },
       "depends_on": [
         "byref-const-field-shadow"
@@ -1015,7 +1052,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "0d3d5c86 corrects pass ordering in the fork transformation introduced by e515811e. The transformation must be present first."
+        "why_together": "0d3d5c86 corrects pass ordering in the fork transformation introduced by e515811e. The transformation must be present first.",
+        "originals": [
+          "0d3d5c861742c72b4feb4b053a3c1edd3c79fe09"
+        ]
       },
       "depends_on": [
         "constant-field-select"
@@ -1054,7 +1094,10 @@
       ],
       "fix": {
         "commits": [],
-        "why_together": "f3703f3b introduces the Julia 1.11+ storage rules and tests. The November review group also included the Julia 1.10 deletion rule. Standalone validation of the modern storage rule is pending."
+        "why_together": "f3703f3b introduces the Julia 1.11+ storage rules and tests. The November review group also included the Julia 1.10 deletion rule. Standalone validation of the modern storage rule is pending.",
+        "originals": [
+          "f3703f3b3f49875954211bd89c446375905da49a"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1091,7 +1134,10 @@
       ],
       "fix": {
         "commits": [],
-        "why_together": "8ffa09ea changes the sizehint! shadow rule introduced by f3703f3b. The new rule retains the post-reservation memory reference and zeroes the backing allocation. The follow-up includes its regression tests."
+        "why_together": "8ffa09ea changes the sizehint! shadow rule introduced by f3703f3b. The new rule retains the post-reservation memory reference and zeroes the backing allocation. The follow-up includes its regression tests.",
+        "originals": [
+          "8ffa09ea865b5e82609ac6d72752165c78c9fc09"
+        ]
       },
       "depends_on": [
         "array-storage-restoration"
@@ -1135,7 +1181,10 @@
             ]
           }
         ],
-        "why_together": "One commit widens the reverse gradient! method to structured mutable destinations, rejects active immutable fields and tests both the direct and DifferentiationInterface APIs. It applies directly to upstream 1ee9a6f8. Upstream 1ee9a6f8 requires Enzyme_jll 0.0.311. Both default and forced bounds passed on Julia 1.10.12 and 1.12.7. The four older checks used 0.0.301+0."
+        "why_together": "One commit widens the reverse gradient! method to structured mutable destinations, rejects active immutable fields and tests both the direct and DifferentiationInterface APIs. It applies directly to upstream 1ee9a6f8. Upstream 1ee9a6f8 requires Enzyme_jll 0.0.311. Both default and forced bounds passed on Julia 1.10.12 and 1.12.7. The four older checks used 0.0.301+0.",
+        "originals": [
+          "377bc7505b85332d4270902e1c878f42169728bc"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1255,7 +1304,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "f231d95062554914b6dfd7f1abedd59d533c963c",
+          "a6051d4c6466ece3eb373b997f0d1677cda24ad6"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1283,7 +1336,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "ac7b9ce5f9cfb52f4ec1769ab1c4c9ef1f985b77",
+          "af62fb548bca0250935f5b6fe1f571600efd4be9"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1311,7 +1368,12 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "3c41abf65b428dc8b602703d2ef7e1bce1c7b34b",
+          "5edf51256f88ce2653c3391eb2d32b8a8764a7b7",
+          "baf5d4d387dad93d5ec9164fdcf16a4758650328"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1339,7 +1401,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "d7d957b9ef7e002a718bd647cdd54d105d5bc14a"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1367,7 +1432,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "f35a4991cb7532522bc3bf1455dfa6d626e28589",
+          "05337e5dc9b2f6ecddf6c71824024a87ed7666fa"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1395,7 +1464,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "5da35cd51b0c27eaf0c592872fd868c72eea19ec"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1423,7 +1495,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "2709bb33e33eb862d047df6d24996b817b48f011"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1451,7 +1526,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "eb0b2e0a026567339b439f9563d7b48b56201cf0"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1479,7 +1557,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "af6d0b0e4658c308482f2023747727a2e225d520"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1507,7 +1588,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "9274d18a55eac866a0e17df40e93ff6255f25f4e"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1535,7 +1619,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "fb67b277e860218b21d800488e5ec42c48220b2a"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1563,7 +1650,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "ec6a56dc802342b19df0c1f1f80dc1599a3dcbc4"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1591,7 +1681,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "c9c78f6c45bee16602e4223b3eab7f7e2df9628f",
+          "8353ad3fda2c8707df788d795bf967e4548502d5",
+          "a818aa3891b7c7e5a06b3cdc9c2ca336ee5b4b71",
+          "3a43d2bb8992b6299fdd067c64a926d6d11c0f5e"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1619,7 +1715,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "29d026f03df8166b032a168924be3c7b4cab2622"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1647,7 +1746,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "1b319f90e427ba6e30af78c72b32caeafb3203de",
+          "1a3d0fdf59dabf93d71e4784e49fede7c0842a67",
+          "111b98ba3d9e13fe7ef9b138047df3707c742888",
+          "39cf973655a2274ae99bf214e3670a8601807ab5"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1675,7 +1780,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "7c14b2a0a0e5db9f6d6f6f2e51b09413141ded36"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1703,7 +1811,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "6082b9a62c91a6a5c5e99fface7967c04d6eadd3"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1731,7 +1842,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. This changes the retained-object scanner introduced with package-image derivative retention."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. This changes the retained-object scanner introduced with package-image derivative retention.",
+        "originals": [
+          "13bfdbe04094306c9cfd45277caef62649633e6c"
+        ]
       },
       "depends_on": [
         "retained-derivatives"
@@ -1761,7 +1875,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The second compiled variant belongs to a derivative retained in a package image."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The second compiled variant belongs to a derivative retained in a package image.",
+        "originals": [
+          "b7bceb71c79f2f4d0cc7a8bb6472256a6d17e282"
+        ]
       },
       "depends_on": [
         "retained-derivatives"
@@ -1791,7 +1908,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "5bf535f253ce78b7cf9b7bf0df2d1ba738dd3e0c"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -1819,7 +1939,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. This correction narrows the runtime wrapper introduced for long tuples."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. This correction narrows the runtime wrapper introduced for long tuples.",
+        "originals": [
+          "6660aba30dd263c9116ee8be0333cc0604c5d944"
+        ]
       },
       "depends_on": [
         "runtime-tuple-map"
@@ -1849,7 +1972,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The runtime wrapper delegates to the existing long-tuple rewrite."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The runtime wrapper delegates to the existing long-tuple rewrite.",
+        "originals": [
+          "7a0e51db52697ca6561b8e8809169fac57020d2d"
+        ]
       },
       "depends_on": [
         "long-tuple-map"
@@ -1888,7 +2014,10 @@
             ]
           }
         ],
-        "why_together": "One commit handles payload-free AbstractFloat subtypes in get_offsets and typetree and tests layout, forward derivatives and reverse derivatives. It applies directly to upstream 1ee9a6f8. The separate MeasureTheory integration case in the original commit is outside this two-file patch. Upstream 1ee9a6f8 requires Enzyme_jll 0.0.311. Both default and forced bounds passed on Julia 1.10.12 and 1.12.7. The four older checks used 0.0.301+0."
+        "why_together": "One commit handles payload-free AbstractFloat subtypes in get_offsets and typetree and tests layout, forward derivatives and reverse derivatives. It applies directly to upstream 1ee9a6f8. The separate MeasureTheory integration case in the original commit is outside this two-file patch. Upstream 1ee9a6f8 requires Enzyme_jll 0.0.311. Both default and forced bounds passed on Julia 1.10.12 and 1.12.7. The four older checks used 0.0.301+0.",
+        "originals": [
+          "50a22372272fe1940c82c00d06615a89db77a4dc"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2005,7 +2134,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The cache table belongs to a tape produced by the threaded-loop derivative."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract. The cache table belongs to a tape produced by the threaded-loop derivative.",
+        "originals": [
+          "544db199b2f24ae2f9dda6bb88bfba21f5d272e6",
+          "dea509a9841af0904d2d7428488a36a6232a3800"
+        ]
       },
       "depends_on": [
         "nested-threaded-loops"
@@ -2035,7 +2168,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "c373fa99c7bcdea7069e9fa92caaf97ecd3bf62d",
+          "374b26919d00dad713cb9995fc1373e0e640d931"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2063,7 +2200,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks apply directly to upstream 1ee9a6f8. Standalone runtime validation is pending."
+        "why_together": "The original source and test hunks apply directly to upstream 1ee9a6f8. Standalone runtime validation is pending.",
+        "originals": [
+          "c505b17ce3b5225da060ba37707db0e19040b0e5"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2091,7 +2231,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "4a050a0f77eaf557724e6cd269d93948e77af584"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2119,7 +2262,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract."
+        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "originals": [
+          "d4c94819d1213fa052afabd5a19ae1169fb46e7d"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2156,7 +2302,10 @@
             ]
           }
         ],
-        "why_together": "One commit updates the reverse deletion rule and adds its analytic regression. Each lane uses its own shadow, and the byte count covers every restored element. This patch applies directly to upstream 1ee9a6f8."
+        "why_together": "One commit updates the reverse deletion rule and adds its analytic regression. Each lane uses its own shadow, and the byte count covers every restored element. This patch applies directly to upstream 1ee9a6f8.",
+        "originals": [
+          "8377bbbe86124196707f626c5b38df27d5716fdd"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2206,7 +2355,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "9d12993c50675f838c0f84ec696115d1db649856"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2234,7 +2386,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "d38966c1531c8c8d3fec2f6e25b68a04b106bcd1",
+          "86f6156cc423e26e66c2cc31cc1f14434cb64554"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2267,7 +2423,12 @@
       ],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "a3ce94d7de93e62d79f7e78529cba6b43e958d7f",
+          "71164202404bb80375d0f2e89a2c952d7c90105c",
+          "047f40ca54dcebe3623c9dab307cd2150bdfaff4"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2294,7 +2455,12 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "e515811e1d1947278565cbdb0d414bd3f469e958",
+          "b44500bb6a4eba1f8a415cbc062ba81895d2b9dc",
+          "6b95a93d25e71ff9077418566c84058d07639478"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2322,7 +2488,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "0dbdf8ddb38832e04229bf850589d22ec8ad1296"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2349,7 +2518,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "c81892cf522e18ff72b3873cbf22081d3659826b",
+          "fb305e041c0b160acae1d22dff66542ed0dc62a2"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2377,7 +2550,12 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the nodecayed-phis review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used llvm-ir-helpers. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the nodecayed-phis review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used llvm-ir-helpers. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "9202c81b2bd7317144535893d8ddbb56f07e788a",
+          "7aec561920ffcb24faa69643951f4b2fe632aa4b",
+          "acc6883a2aa7d9fa599eecfea7b9707718bfb0ea"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2405,7 +2583,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the deferred-trampoline review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+        "why_together": "The original commits were selected from the deferred-trampoline review group. The smallest independently passing subset on 1ee9a6f8 still needs testing.",
+        "originals": [
+          "0817916c44ef9abfb7c0494fa1a4b614141d9a84"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2433,7 +2614,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The first original commit adds the real-valued erfcx derivative rules and tests. The second changes only how much precision the test reference uses at high derivative orders and large arguments. The combined patch touches only the SpecialFunctions extension and its regression suite. On upstream 1ee9a6f8 the two commits together correct the measured first derivative. Nested differentiation still stops in custom-rule argument setup and nested compiler paths. The necessary additional change is unresolved. The original commits are [708afc1b](https://github.com/nsiccha/Enzyme.jl/commit/708afc1b7b40c2fe59ac9553d31d6272511e50bc), [f85c0425](https://github.com/nsiccha/Enzyme.jl/commit/f85c0425c1a06504d380381878aa53a86571050a)."
+        "why_together": "The first original commit adds the real-valued erfcx derivative rules and tests. The second changes only how much precision the test reference uses at high derivative orders and large arguments. The combined patch touches only the SpecialFunctions extension and its regression suite. On upstream 1ee9a6f8 the two commits together correct the measured first derivative. Nested differentiation still stops in custom-rule argument setup and nested compiler paths. The necessary additional change is unresolved. The original commits are [708afc1b](https://github.com/nsiccha/Enzyme.jl/commit/708afc1b7b40c2fe59ac9553d31d6272511e50bc), [f85c0425](https://github.com/nsiccha/Enzyme.jl/commit/f85c0425c1a06504d380381878aa53a86571050a).",
+        "originals": [
+          "708afc1b7b40c2fe59ac9553d31d6272511e50bc",
+          "f85c0425c1a06504d380381878aa53a86571050a"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2506,7 +2691,12 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the erfcx review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The seeded rules extend the stable erfcx partial derivative implementation."
+        "why_together": "The original commits were selected from the erfcx review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The seeded rules extend the stable erfcx partial derivative implementation.",
+        "originals": [
+          "69d5529225f30cc03122aba62d9da5eb3278a909",
+          "cd2acaa3848d676fa97bc5044b5c3c3e5ea8381a",
+          "cb364c929fb4e4f92924a66fe04ad1cb13fd3c8a"
+        ]
       },
       "depends_on": [
         "erfcx-derivatives"
@@ -2536,7 +2726,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "43db7511accb1a1f17a2389544be2d22359e5ebd"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2564,7 +2757,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "0a1262ac499ea01486b1cabc4a4b857920a99ca6",
+          "1aef4fb1c34d1f6d5709bfe461e48d8b723d3365",
+          "c99a9e2acb3869a5cb8c56403a6d2f6e628363fd",
+          "8fec4bf13f464556357bf5f8d4acafaf9ca0aad6"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2592,7 +2791,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "bcefef27e6af24963faaec8e3a8089cf88147d4c"
+        ]
       },
       "depends_on": [],
       "requires": [
@@ -2627,7 +2829,14 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the householder-products review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used lapack-helpers. Its prerequisites have yet to be verified for this issue alone. The Householder rules use the shared LAPACK shadow and return helpers."
+        "why_together": "The original commits were selected from the householder-products review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used lapack-helpers. Its prerequisites have yet to be verified for this issue alone. The Householder rules use the shared LAPACK shadow and return helpers.",
+        "originals": [
+          "d5dffdf2a7c0dc79695c2dc449952876c66dc837",
+          "930ec4bebe5a2a9839b455b544944224a31ee553",
+          "0f6d362b2cc9016679c383a3273294df554a8a69",
+          "6c6b9ad716e7bc71b6a2e7e55094ea3b3637a419",
+          "de6bb994ea8cdb6787d461dd8c80dccaeadb711d"
+        ]
       },
       "depends_on": [
         "lapack-helpers"
@@ -2657,7 +2866,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "fe3611ed4e367da64b0436d6569cbafb615422d1"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2685,7 +2897,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "9e7c276ea752fda6e5285215768fe024dfa1be06",
+          "cd22f7673d8977267a674e5ba9779cd5bcabd441",
+          "03156b23f82120bd29542ba79ef7c218f368e9eb",
+          "16c8d85f4ea07407314dfc0a748405dde2cb7791"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2713,7 +2931,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "1232a97d96205d399cd7636aab8d60c1cdf55db8"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2741,7 +2962,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the logger-world review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+        "why_together": "The original commits were selected from the logger-world review group. The smallest independently passing subset on 1ee9a6f8 still needs testing.",
+        "originals": [
+          "90ac1dde7d86804f9ec35b4a63d8d39026f97df4",
+          "3292bc480e651affbfc2c6d7f50b2dd842a035db"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2769,7 +2994,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the tuple-map review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used array-tuple-layout, wide-active-calls. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the tuple-map review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used array-tuple-layout, wide-active-calls. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "0ed72ccc189e04eebeb9aabddd2192616de00f31"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2797,7 +3025,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the atomic-make-zero review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+        "why_together": "The original commits were selected from the atomic-make-zero review group. The smallest independently passing subset on 1ee9a6f8 still needs testing.",
+        "originals": [
+          "d91e7405396e4a4436953a4f6f13ce7272c2205d"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2825,7 +3056,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the memoryref-root review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+        "why_together": "The original commits were selected from the memoryref-root review group. The smallest independently passing subset on 1ee9a6f8 still needs testing.",
+        "originals": [
+          "d0abfb098857430a2051fc08f6c2e2e6a4ba19b9",
+          "887f864d0545f9d502dd1132d475ec820a26c0b5",
+          "5d4fbb0b830ae07fa029ac8a38e1d93b98883fcf",
+          "2ad4f3d1f5a2c3374929116a8f12742c58e2cc20"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2853,7 +3090,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "765aa9772c24ad4ad78e463b12aa57bbfbeaedb0"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2880,7 +3120,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "abdb9f1c533f9dce65c78a87dcc9caa1c0541385",
+          "c6af79b7f494d3e353502f76664d0fb1cdd02b86"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2908,7 +3152,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "056d0a3cbe96639ddbb15e5299b2a9fa8594f5a6",
+          "5fcaef3a5d204bec1a09257faa83c63156869d14"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2936,7 +3184,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "bb67e327c86fb82100e525c63215f4d4dc751d93"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2964,7 +3215,12 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "55ceb10919c8f4501332cde508141283e335cbf2",
+          "5c01a3125c11f4299080aad9a7b3a0a9048809d3",
+          "58356e2459702e6b495b737ceb241492549d85ae"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -2992,7 +3248,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "f39f2ded75768e1077345585ce2ea60c044a341b",
+          "86565ac3c34f4e5eb7a626a4c10d94939001bcb9"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3019,7 +3279,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "213d370deb680d4aba1e77cf8a52f011751d465d"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3047,7 +3310,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "66f485845837751888f8dcdceb13aaf50665408f",
+          "c5d7107e86347be703e85e872931ada521fd419e"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3075,7 +3342,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "f4d7aa9dade38e553b3da59382ee58553fd74a4d"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3103,7 +3373,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "4c01852e969d6e2d15a5f7ad46b3eb03a108dc89"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3131,7 +3404,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone. This changes cache lookup for derivatives already retained in package images."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone. This changes cache lookup for derivatives already retained in package images.",
+        "originals": [
+          "53ee304324ae17d180b09f95f862862dc3ba151a"
+        ]
       },
       "depends_on": [
         "retained-derivatives"
@@ -3160,7 +3436,12 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "de5bc5a6a299c5f4c256a945158349e65cc206b1",
+          "afa716866723a75b8ae13c5fb66c1b346fcbcb07",
+          "68ca91375a531c5cfc5355210c013370d0a007cf"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3188,7 +3469,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "fe5325a60791950ad4463ab2b07db213257d3396",
+          "de0f766e8ff369a14d604ca5823233aa1b599f25",
+          "7dd28c878d8fb154950f94365dcda55101781355",
+          "67b443f4285fea61dfeb8642cc214b202a359b17"
+        ]
       },
       "depends_on": [],
       "requires": [
@@ -3223,7 +3510,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the source-loaded-generators review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+        "why_together": "The original commits were selected from the source-loaded-generators review group. The smallest independently passing subset on 1ee9a6f8 still needs testing.",
+        "originals": [
+          "6a1a5c5cd1b9a4cd525cf171427a9c89c27cf6ff",
+          "10e171e744e686d671d363ec5984b894369f965d"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3251,7 +3542,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the compiler-modes review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used constant-storage. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "b3a7f50cbf8343db17a7a8e1beb9d4e1b615ead4",
+          "ac7807a9252f36b89b6be598d54a6f6876eacc71",
+          "8a4716777a62178e52ba79a4216e7e346418195f",
+          "84ec4fec31ba542d8173ad12fadfc5e1f35bc43a"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3279,7 +3576,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the supplied-gradients review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+        "why_together": "The original commits were selected from the supplied-gradients review group. The smallest independently passing subset on 1ee9a6f8 still needs testing.",
+        "originals": [
+          "fe7300a308153edf923673f0b4e58ee6e5c5c4ff",
+          "8fc1c1e58e82f3de41de1387c08db25587c3b338",
+          "a79988cbb70de9f6729aee7d8cada4f7c2126d3f",
+          "a4a368c30df853677dc1f2ef59ebacd032c16a6d"
+        ]
       },
       "depends_on": [],
       "requires": [
@@ -3314,7 +3617,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "3f5c9edd7145acc829f3f42035d58000f142ebcb"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3342,7 +3648,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "ffae0f349b0fd76ed1ff48b382063c70fad49708",
+          "c353ffe2ba55d769190a1fc4bbef0dc7f3d0df9b"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3370,7 +3680,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone."
+        "why_together": "The original commits were selected from the constant-storage review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used nodecayed-phis, call-result-types, exact-type-tests. Its prerequisites have yet to be verified for this issue alone.",
+        "originals": [
+          "350886f7ae20d6135a7f8a0e6aea1d62baba0c37",
+          "d9192503ebdea0044b959c5098c5e11a8d774a43"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3390,7 +3704,12 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "Original introducing commits: retarget_phis! in e515811e, split_edge! in 361e5020, callsite_function_attributes in a3ce94d7. Each also contains other changes. Extract the helpers required by the dependent patch. Original source: [a3ce94d7](https://github.com/nsiccha/Enzyme.jl/commit/a3ce94d7de93e62d79f7e78529cba6b43e958d7f), [e515811e](https://github.com/nsiccha/Enzyme.jl/commit/e515811e1d1947278565cbdb0d414bd3f469e958), [361e5020](https://github.com/nsiccha/Enzyme.jl/commit/361e502048d3ff7a7545533c592c62390c7b8541)."
+        "why_together": "Original introducing commits: retarget_phis! in e515811e, split_edge! in 361e5020, callsite_function_attributes in a3ce94d7. Each also contains other changes. Extract the helpers required by the dependent patch. Original source: [a3ce94d7](https://github.com/nsiccha/Enzyme.jl/commit/a3ce94d7de93e62d79f7e78529cba6b43e958d7f), [e515811e](https://github.com/nsiccha/Enzyme.jl/commit/e515811e1d1947278565cbdb0d414bd3f469e958), [361e5020](https://github.com/nsiccha/Enzyme.jl/commit/361e502048d3ff7a7545533c592c62390c7b8541).",
+        "originals": [
+          "a3ce94d7de93e62d79f7e78529cba6b43e958d7f",
+          "e515811e1d1947278565cbdb0d414bd3f469e958",
+          "361e502048d3ff7a7545533c592c62390c7b8541"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3405,7 +3724,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical call-result-types topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical call-result-types topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "4f68c8e808203dbc58505b1b102e88fc595aa71d"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3425,7 +3747,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical exact-type-tests topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical exact-type-tests topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "f390d0b21d24f280a4118d8c17e92b89e06d7de1"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3445,7 +3770,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical gamma-family topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical gamma-family topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "74ace76d2740452b074dcf7e5b6e8422c6ece39e",
+          "bb949ab5ef00f617a6655bb51e5751022122abbc"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3474,7 +3803,15 @@
       ],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical incomplete-gamma topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical incomplete-gamma topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "c01a581a6fbb85c2bd776533efc6542d79e0f588",
+          "f23adee5365fa364a4eea5a9e9dc4224b34d6608",
+          "3605c459909d8f697c65f86a42b2a6cef2ca19dc",
+          "9a5ceac1c1b6db0542e450c864bb977f8a751640",
+          "4b243985916450881167da7dd882fcbfd2356096",
+          "2d58e88749e2ddb6341ef63d413e25cbebb9cdd8"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3494,7 +3831,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical boxed-forward topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical boxed-forward topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "ff4fcff3fdc56ac3fa2a6bb6827274ea029811a4",
+          "57e176421262224a52837c8a5f057bc701f6aa77"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3514,7 +3855,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical many-arguments topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical many-arguments topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "161cae3a4787542f8c9cd7818be39617f969da47",
+          "304b89db1a017fb423bc769f07dd8af1661210af",
+          "3380dde699dcba305c89cc612164dc5883d13449",
+          "bd79cbbfb0a9ca34eb482ebea946fd1dc8c702ca"
+        ]
       },
       "depends_on": [
         "source-loaded-generators"
@@ -3536,7 +3883,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical nested-math-symbols topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical nested-math-symbols topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "0fc5f8dae956a8d2d3a29aab7aff3b0ed180a597"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3556,7 +3906,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical empty-loop-cache topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical empty-loop-cache topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "d37d3d99e2151ab4cb5d6d306ff7e03515acbfb1"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3576,7 +3929,13 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The earlier array-tuple-layout topic combined type narrowing and array concatenation. These originals cover the type narrowing part. The split has not yet been tested independently."
+        "why_together": "The earlier array-tuple-layout topic combined type narrowing and array concatenation. These originals cover the type narrowing part. The split has not yet been tested independently.",
+        "originals": [
+          "4316bfe03e8f289ea8700039bd4dfaa524a9f89b",
+          "0ba692520159866861edb1bdf5cae75329f8765c",
+          "1a5cd3e24889f9fbf853cd89f0d45e3607d7b46d",
+          "4378667a293584d02e0fcac30b0f243ef6fda255"
+        ]
       },
       "depends_on": [
         "exact-type-tests"
@@ -3598,7 +3957,16 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The earlier array-tuple-layout topic combined type narrowing and array concatenation. These originals cover the concatenation part. The split has not yet been tested independently."
+        "why_together": "The earlier array-tuple-layout topic combined type narrowing and array concatenation. These originals cover the concatenation part. The split has not yet been tested independently.",
+        "originals": [
+          "f9610e3c05da799b2de58cded6b5caf0f0641a6a",
+          "931fb6b53651c82a6b75765b24c08d18e43cdff3",
+          "ef9d8898ad9188df52f8b20a5ef9986679c312f2",
+          "30e038af10b76f67c1c67ee51eab2b4fe3d15c2e",
+          "752cf0cdd3c2e927efadb30b754ac6a1ec9d1e6f",
+          "fd42d7aa6b37f543477ffd4c0783ee38bf7eba47",
+          "93c452bd294b2d960a534966fc11771da5d2aa73"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3618,7 +3986,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical large-const-arguments topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical large-const-arguments topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "078996b3b3b6c6b72c51e2989252ac6913adf8f1"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3638,7 +4009,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical fresh-vector-length topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical fresh-vector-length topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "4fc9ac2cf7051127d383e50d9b5998a1ab741b2e",
+          "556d037eddd010fda5ae8454abd8e3eec9fa3e26"
+        ]
       },
       "depends_on": [
         "llvm-ir-helpers"
@@ -3665,7 +4040,14 @@
       ],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical loop-optimization topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical loop-optimization topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "0a2c30742995151ddded069c242a70f8a0df9fc1",
+          "4061711e7ddc924352d6682256b85fb3e7290e49",
+          "0d2e8720a8101858bd15652f59723c3bd91244dc",
+          "bcf7106b7eac7ef2a4daf4a686407ecd642770de",
+          "5ebd9f77cda5d06d5bf1662e50c13937ecc28cf8"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3685,7 +4067,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The helpers _lapack_shadow and _lapack_inplace_forward_return are shared portions of the triangular implementation. The same historical commits appear under the triangular rule. Cherry-picking those commits twice would repeat the change. The final original is a wrapper-test correction. Original source in order: [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75), [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd), [e0b7328b](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6)."
+        "why_together": "The shadow-selection and forward-return helpers are parts of the two original triangular-rule commits. Include them once wherever triangular, Householder or structured log-determinant rules share them. The later ldiv! fixture change only affects the tests. [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75) · [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd)",
+        "originals": [
+          "75e60dd595eb6524dfe33839d5fb884061f88d75",
+          "70f202515eb045337f6ca5931201b51a89464dbd"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3700,7 +4086,11 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The historical commits span the LAPACK helpers and the triangular rule. 75e60dd5 adds the initial rule and tests. Its child 70f20251 revises the implementation to use trtrs!. e0b7328b changes the ldiv! tests to pass triangular wrapper types directly. When extracting the rule, include _lapack_shadow and _lapack_inplace_forward_return once. The smallest independently passing patch on current upstream still needs validation."
+        "why_together": "The first original introduces the forward rule and tests. The second revises the implementation to use LAPACK.trtrs!. These commits also contain the shared LAPACK helpers. The later wrapper-type fixture is optional and needs separate changes in test dispatch and boxed-tuple tangents. [Later fixture](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6) · [Test dispatch](https://github.com/nsiccha/Enzyme.jl/commit/ff4fcff3fdc56ac3fa2a6bb6827274ea029811a4) · [Tuple tangents](https://github.com/nsiccha/Enzyme.jl/commit/57e176421262224a52837c8a5f057bc701f6aa77)",
+        "originals": [
+          "75e60dd595eb6524dfe33839d5fb884061f88d75",
+          "70f202515eb045337f6ca5931201b51a89464dbd"
+        ]
       },
       "depends_on": [
         "lapack-helpers"
@@ -3709,8 +4099,8 @@
       "validation": [],
       "draft": {
         "title": "Forward differentiation through a triangular solve lacks the trtrs! rule",
-        "body": "A linear solve with a triangular matrix should propagate a tangent through the LAPACK trtrs! operation. The derivative should agree with differentiating A*x=b, account for triangular wrappers, and leave structurally unused matrix entries inactive.\n\nOriginal fork commits in historical order: [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75), [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd), [e0b7328b](https://github.com/nsiccha/Enzyme.jl/commit/e0b7328b31fe4593247b40efcd2272df054e7bd6).\n\nRegression coverage on the fork: [test/rules/internal_rules/triangular_solve.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/triangular_solve.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "body": "A linear solve with a triangular matrix should propagate a tangent through the LAPACK trtrs! operation. The derivative should agree with differentiating A*x=b, account for triangular wrappers, and leave structurally unused matrix entries inactive.\n\nOriginal rule changes, in apply order. [75e60dd5](https://github.com/nsiccha/Enzyme.jl/commit/75e60dd595eb6524dfe33839d5fb884061f88d75) · [70f20251](https://github.com/nsiccha/Enzyme.jl/commit/70f202515eb045337f6ca5931201b51a89464dbd)\n\nRegression coverage on the fork: [test/rules/internal_rules/triangular_solve.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/triangular_solve.jl).",
+        "prepared_at": "2026-11-18T19:35:49Z"
       }
     },
     {
@@ -3727,7 +4117,10 @@
       ],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical structured-logdet topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical structured-logdet topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "9767a838834e23f72e6f7038457bee9287f93f9b"
+        ]
       },
       "depends_on": [
         "lapack-helpers"
@@ -3749,7 +4142,12 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical hypot topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical hypot topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "9ef4c676c8daab0d4ddf3cc173cb256b2efc4d0f",
+          "0eec0e57a6e7ff7a8812efd88534a3f745bd04bf",
+          "67041befb1910a3d04f8b8a91d2962f0eb4374fc"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3787,7 +4185,10 @@
             ]
           }
         ],
-        "why_together": "Range construction and conversion between the first element, step and stored reference. This commit works on upstream 1ee9a6f8 without the arithmetic rules."
+        "why_together": "Range construction and conversion between the first element, step and stored reference. This commit works on upstream 1ee9a6f8 without the arithmetic rules.",
+        "originals": [
+          "312c0129a3ec219ef286d6997c445fcde1b96bc7"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3866,7 +4267,10 @@
             ]
           }
         ],
-        "why_together": "Apply the construction commit first. The arithmetic rules call its four tangent helpers and the regression file uses its batched reverse-mode test helper. The regression distinguishes constructing a range from differentiating subsequent twice-precision arithmetic."
+        "why_together": "Apply the construction commit first. The arithmetic rules call its four tangent helpers and the regression file uses its batched reverse-mode test helper. The regression distinguishes constructing a range from differentiating subsequent twice-precision arithmetic.",
+        "originals": [
+          "c2ee20174c025ec86666f358a3896094ce90d31e"
+        ]
       },
       "depends_on": [
         "float-ranges"
@@ -3933,7 +4337,10 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical fresh-storage-attributes topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "why_together": "The original commits identify the historical fresh-storage-attributes topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "originals": [
+          "6c75ceb2f3fe28f6c71434995710f014f1a1957d"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3958,7 +4365,10 @@
       ],
       "fix": {
         "commits": [],
-        "why_together": "The original commits identify the historical literal-load-tests topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified. Original source: [c23cd5bb](https://github.com/nsiccha/Enzyme.jl/commit/c23cd5bb10f4bf3819287e7182a83ded5d1c1767)."
+        "why_together": "The original commits identify the historical literal-load-tests topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified. Original source: [c23cd5bb](https://github.com/nsiccha/Enzyme.jl/commit/c23cd5bb10f4bf3819287e7182a83ded5d1c1767).",
+        "originals": [
+          "c23cd5bb10f4bf3819287e7182a83ded5d1c1767"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -3978,7 +4388,10 @@
       },
       "fix": {
         "commits": [],
-        "why_together": "This commit introduces the constant-field proof for by-reference structs and tests the allocation behavior. The fork has subsequent extensions. The isolated set on the current upstream base still needs verification."
+        "why_together": "This commit introduces the constant-field proof for by-reference structs and tests the allocation behavior. The fork has subsequent extensions. The isolated set on the current upstream base still needs verification.",
+        "originals": [
+          "dc7758fd6dc5ff9814cf89b9f0860c5248b78e4c"
+        ]
       },
       "depends_on": [],
       "requires": [],
@@ -4006,7 +4419,11 @@
       },
       "fix": {
         "commits": [],
-        "why_together": "The first commit extends the constant-field proof to recognize a difference between two addresses. The second handles addresses combined by a phi or select, which the forced-bounds regression exercises. The proof itself was introduced in the prerequisite. Additional intervening changes may be needed to apply the originals to upstream."
+        "why_together": "The first commit extends the constant-field proof to recognize a difference between two addresses. The second handles addresses combined by a phi or select, which the forced-bounds regression exercises. The proof itself was introduced in the prerequisite. Additional intervening changes may be needed to apply the originals to upstream.",
+        "originals": [
+          "c3849ddaf643b70d9ff8fbc3ae5a43405e32c177",
+          "be6b854561097ab3fbd35bbecb0557bbe973c3c0"
+        ]
       },
       "depends_on": [
         "byref-const-field-shadow"
@@ -4036,7 +4453,10 @@
       },
       "fix": {
         "commits": [],
-        "why_together": "The commit changes the generated task callables and adds numerical regressions together. It uses rederived_forward and rederived_split from the nested threaded-loop change to recover the derivative of the body. That helper dependency is explicit in the original source."
+        "why_together": "The commit changes the generated task callables and adds numerical regressions together. It uses rederived_forward and rederived_split from the nested threaded-loop change to recover the derivative of the body. That helper dependency is explicit in the original source.",
+        "originals": [
+          "c755757a51eddd14d794f2d0afd07e3368db8539"
+        ]
       },
       "depends_on": [
         "nested-threaded-loops"
@@ -4066,7 +4486,10 @@
       },
       "fix": {
         "commits": [],
-        "why_together": "This commit contains the compiler change and the analytical and saved-code assertions. Its existing regression uses the nested threaded-loop and retained-derivative facilities. The follow-up 06ad8a01 only clarifies comments."
+        "why_together": "This commit contains the compiler change and the analytical and saved-code assertions. Its existing regression uses the nested threaded-loop and retained-derivative facilities. The follow-up 06ad8a01 only clarifies comments.",
+        "originals": [
+          "4cf1fc174bbf19d2911bf26048774aaebf4cef4d"
+        ]
       },
       "depends_on": [
         "nested-threaded-loops",
