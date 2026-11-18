@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "01265672787661ba298b7baf0643a154049ba4bd"
   },
-  "prepared_at": "2026-11-18T11:40:48.711166Z",
+  "prepared_at": "2026-11-18T11:50:54.357442Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -127,47 +127,47 @@
       "validation": [
         {
           "base": "01265672787661ba298b7baf0643a154049ba4bd",
-          "julia": "\\\",VERSION,\\\"",
+          "julia": "1.10.12",
           "bounds": "default",
           "native_build": "Enzyme_jll 0.0.308+0; libEnzyme-15.so; artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
           "tests": [
             "test/small_typetag_boxes.jl"
           ],
           "result": "passed",
-          "detail": "77/77 passed; exit 0. Julia build \\\",Base.GIT_VERSION_INFO.commit_short,\\n. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+          "detail": "77/77 passed; exit 0. Julia build 6822c3c. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
         },
         {
           "base": "01265672787661ba298b7baf0643a154049ba4bd",
-          "julia": "\\\",VERSION,\\\"",
+          "julia": "1.10.12",
           "bounds": "forced",
           "native_build": "Enzyme_jll 0.0.308+0; libEnzyme-15.so; artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
           "tests": [
             "test/small_typetag_boxes.jl"
           ],
           "result": "passed",
-          "detail": "77/77 passed; exit 0. Julia build \\\",Base.GIT_VERSION_INFO.commit_short,\\n. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+          "detail": "77/77 passed; exit 0. Julia build 6822c3c. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
         },
         {
           "base": "01265672787661ba298b7baf0643a154049ba4bd",
-          "julia": "\\\",VERSION,\\\"",
+          "julia": "1.12.7",
           "bounds": "default",
           "native_build": "Enzyme_jll 0.0.308+0; libEnzyme-18.so; artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
           "tests": [
             "test/small_typetag_boxes.jl"
           ],
           "result": "passed",
-          "detail": "77/77 passed; exit 0. Julia build \\\",Base.GIT_VERSION_INFO.commit_short,\\n. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+          "detail": "77/77 passed; exit 0. Julia build 6d172b025e4. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
         },
         {
           "base": "01265672787661ba298b7baf0643a154049ba4bd",
-          "julia": "\\\",VERSION,\\\"",
+          "julia": "1.12.7",
           "bounds": "forced",
           "native_build": "Enzyme_jll 0.0.308+0; libEnzyme-18.so; artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
           "tests": [
             "test/small_typetag_boxes.jl"
           ],
           "result": "passed",
-          "detail": "77/77 passed; exit 0. Julia build \\\",Base.GIT_VERSION_INFO.commit_short,\\n. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+          "detail": "77/77 passed; exit 0. Julia build 6d172b025e4. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
         }
       ],
       "fix": {
