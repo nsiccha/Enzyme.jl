@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T20:09:06Z",
+  "prepared_at": "2026-11-18T20:30:37Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -4187,6 +4187,28 @@
             "LAPACK helper contract"
           ],
           "detail": "15/15 assertions for active, constant and batched shadows and forward return annotations. The helper alone still raises EnzymeNoDerivativeError for the solve. Julia build 6d172b025e4."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.13.1",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 72555a7568142c5448b7d67541e922db147c5515",
+          "tests": [
+            "LAPACK helper contract"
+          ],
+          "result": "passed",
+          "detail": "All 15 helper assertions passed. The helper alone still raises EnzymeNoDerivativeError at trtrs!. Julia build 96ca370cf0e."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.13.1",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 72555a7568142c5448b7d67541e922db147c5515",
+          "tests": [
+            "LAPACK helper contract"
+          ],
+          "result": "passed",
+          "detail": "All 15 helper assertions passed. The helper alone still raises EnzymeNoDerivativeError at trtrs!. Julia build 96ca370cf0e."
         }
       ]
     },
@@ -4263,12 +4285,36 @@
             "test/rules/internal_rules/triangular_solve.jl"
           ],
           "detail": "20,472 assertions passed and 12 were marked broken. The triangular-solve tangent matched the analytical 1.375. The full suite uses the original wrapper constructors. A separate trial of the later Const-wrapper fixture had 48 failures per run without its two prerequisites. Julia build 6d172b025e4."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.13.1",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 72555a7568142c5448b7d67541e922db147c5515",
+          "tests": [
+            "test/rules/internal_rules/triangular_solve.jl",
+            "analytical trtrs! tangent"
+          ],
+          "result": "failed",
+          "detail": "The direct forward tangent matched 1.375. The full file had 20,440 passing assertions, 8 errors in static forward-over-reverse Hessian-vector tests and 12 marked broken. The eight errors raised EnzymeRuntimeActivityError while differentiating generic triangular division with a constant matrix. Julia build 96ca370cf0e."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.13.1",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 72555a7568142c5448b7d67541e922db147c5515",
+          "tests": [
+            "test/rules/internal_rules/triangular_solve.jl",
+            "analytical trtrs! tangent"
+          ],
+          "result": "failed",
+          "detail": "The direct forward tangent matched 1.375. The full file had 20,440 passing assertions, 8 errors in static forward-over-reverse Hessian-vector tests and 12 marked broken. The eight errors raised EnzymeRuntimeActivityError while differentiating generic triangular division with a constant matrix. Julia build 96ca370cf0e."
         }
       ],
       "draft": {
         "title": "Forward differentiation cannot compute the tangent of a LAPACK triangular solve",
-        "body": "Forward differentiation of a two-by-two upper-triangular solve raises `EnzymeNoDerivativeError` at `LAPACK.trtrs!` on upstream `1ee9a6f8` with Enzyme_jll 0.0.311+0. This occurs on Julia 1.10.12 and 1.12.7.\n\n```julia\nusing Enzyme, LinearAlgebra\n\nobjective(A, b) = sum(LAPACK.trtrs!('U', 'N', 'N', A, copy(b)))\nA = [2.0 1.0; 0.0 3.0]\ndA = [0.5 -1.0; 9.0 0.25]\nb, db = [5.0, 6.0], [2.0, -1.0]\nautodiff(Forward, objective, Duplicated(A, dA), Duplicated(b, db))\n```\n\nThe solution is `x = [1.5, 2.0]`. Differentiating `A*x = b` gives `A*dx = db - dA*x`, using only the upper triangle. The expected derivative of the sum is `1.375`. The patched rule returns that value, including when the unused lower triangle of `dA` is nonzero.\n\n[Shared helper](https://github.com/nsiccha/Enzyme.jl/commit/a17f475adf8f46679740d19feac022a079a70fce) · [Rule and numerical regression](https://github.com/nsiccha/Enzyme.jl/commit/7394520b66b5a8be57f6146b1f2be8c572e37684)",
-        "prepared_at": "2026-11-18T20:09:06Z"
+        "body": "Forward differentiation of a two-by-two upper-triangular solve raises `EnzymeNoDerivativeError` at `LAPACK.trtrs!` on upstream `1ee9a6f8` with Enzyme_jll 0.0.311+0. This occurs on Julia 1.10.12 and 1.12.7.\n\n```julia\nusing Enzyme, LinearAlgebra\n\nobjective(A, b) = sum(LAPACK.trtrs!('U', 'N', 'N', A, copy(b)))\nA = [2.0 1.0; 0.0 3.0]\ndA = [0.5 -1.0; 9.0 0.25]\nb, db = [5.0, 6.0], [2.0, -1.0]\nautodiff(Forward, objective, Duplicated(A, dA), Duplicated(b, db))\n```\n\nThe solution is `x = [1.5, 2.0]`. Differentiating `A*x = b` gives `A*dx = db - dA*x`, using only the upper triangle. The expected derivative of the sum is `1.375`. The patched rule returns that value, including when the unused lower triangle of `dA` is nonzero.\n\nOn Julia 1.13.1 the two-commit patch also gives the expected first derivative. Eight static forward-over-reverse cases in the full test file raise `EnzymeRuntimeActivityError`.\n\n[Shared helper](https://github.com/nsiccha/Enzyme.jl/commit/a17f475adf8f46679740d19feac022a079a70fce) · [Rule and numerical regression](https://github.com/nsiccha/Enzyme.jl/commit/7394520b66b5a8be57f6146b1f2be8c572e37684)",
+        "prepared_at": "2026-11-18T20:30:37Z"
       }
     },
     {
