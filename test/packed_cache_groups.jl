@@ -286,9 +286,10 @@ if GROUPED
         grouped = allocation_sites(event_walk, argtypes)
         ungrouped = with_ungrouped(() -> allocation_sites(event_walk, argtypes))
         # Each inner loop that caches values allocates its table and grows its
-        # buffer at one site each, rather than at two sites per cached value:
-        # 13 packed caches in two inner loops, 26 sites against 4. Other
-        # allocations, such as those bounds checking adds, are the same.
-        @test grouped <= ungrouped - 16
+        # buffer at one site each, rather than at two sites per cached value.
+        # Which values are cached depends on the Julia version: 26 sites
+        # against 4 on Julia 1.10, 8 against 4 on 1.12 and 1.13. Allocations
+        # that bounds checking adds are the same either way.
+        @test grouped <= ungrouped - 4
     end
 end
