@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T18:30:08Z",
+  "prepared_at": "2026-11-18T18:45:40Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -2133,8 +2133,8 @@
     {
       "id": "array-del-end-adjoints",
       "role": "fix",
-      "title": "Batched reverse deletion leaves adjoints in restored array elements",
-      "summary": "On Julia 1.10 the reverse of array_del_end restores elements to a vector. Every restored element should start with a zero adjoint in each batch lane. Stale values can otherwise be added to the gradient.",
+      "title": "Reverse differentiation leaves nonzero adjoints for elements deleted from a vector on Julia 1.10",
+      "summary": "On Julia 1.10, shrinking a vector during reverse differentiation can leave stale adjoints in restored entries. The problem affects scalar and batched derivatives.",
       "repairs": [
         {
           "id": "array_del_end_adjoints",
@@ -2146,16 +2146,48 @@
       ],
       "upstream_refs": [],
       "fix": {
-        "commits": [],
-        "why_together": "The original commits were selected from the array-storage-adjoints review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used memoryref-root, resized-sort-shadows. Its prerequisites have yet to be verified for this issue alone."
+        "branch": "rebase/array-del-end-adjoints",
+        "commits": [
+          {
+            "sha": "cd5713b73b6aea04b7cc24717ac4888badda3bc8",
+            "title": "Clear restored adjoints in each reverse array deletion lane",
+            "original": [
+              "8377bbbe86124196707f626c5b38df27d5716fdd"
+            ]
+          }
+        ],
+        "why_together": "One commit updates the reverse deletion rule and adds its analytic regression. Each lane uses its own shadow, and the byte count covers every restored element. This patch applies directly to upstream 1ee9a6f8."
       },
       "depends_on": [],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/array_del_end.jl"
+          ],
+          "result": "passed",
+          "detail": "80/80 assertions passed with Float32 and Float64, scalar and batched derivatives, and runtime activity both enabled and disabled. The upstream control retained the seed in the last two adjoints. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/array_del_end.jl"
+          ],
+          "result": "passed",
+          "detail": "80/80 assertions passed with Float32 and Float64, scalar and batched derivatives, and runtime activity both enabled and disabled. The upstream control retained the seed in the last two adjoints. Julia build d93beab124c."
+        }
+      ],
       "draft": {
-        "title": "Batched reverse deletion leaves adjoints in restored array elements",
-        "body": "On Julia 1.10 the reverse of array_del_end restores elements to a vector. Every restored element should start with a zero adjoint in each batch lane. Stale values can otherwise be added to the gradient.\n\nOriginal fork commit: [8377bbbe](https://github.com/nsiccha/Enzyme.jl/commit/8377bbbe86124196707f626c5b38df27d5716fdd).\n\nRegression coverage on the fork: [test/array_del_end.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/array_del_end.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "title": "Reverse differentiation leaves nonzero adjoints for elements deleted from a vector on Julia 1.10",
+        "body": "Start with eight Float64 values, 1 through 8, and seed each input adjoint with 17. Delete the last three entries of the vector and return the sum of squares of the remaining entries. The surviving adjoints should be 19, 21, 23, 25 and 27. All three deleted entries should receive zero.\n\n```julia\nusing Enzyme\n\nfunction objective!(x, count)\n    Base._deleteend!(x, count)\n    return sum(abs2, x)\nend\n\nx = collect(1.0:8.0)\ndx = fill(17.0, 8)\nautodiff(Reverse, objective!, Active, Duplicated(x, dx), Const(3))\n```\n\nOn Julia 1.10.12 with upstream Enzyme.jl `1ee9a6f8` and released Enzyme_jll 0.0.311+0, the last three adjoints are `[0.0, 17.0, 17.0]`. This happens with default and forced bounds checking. The reverse rule must zero every restored element in each batch lane. Julia 1.11 and later use a different array path.\n\n[Original fork change](https://github.com/nsiccha/Enzyme.jl/commit/8377bbbe86124196707f626c5b38df27d5716fdd) · [Two-file fix and regression](https://github.com/nsiccha/Enzyme.jl/commit/cd5713b73b6aea04b7cc24717ac4888badda3bc8)",
+        "prepared_at": "2026-11-18T18:45:40Z"
       }
     },
     {
