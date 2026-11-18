@@ -2265,8 +2265,10 @@ function set_module_types!(interp, mod::LLVM.Module, primalf::Union{Nothing, LLV
                 idx = 0
                 if !in(0, parmsRemoved)
                     @assert sret <: Ptr
-                    sret_et = eltype(sret)
-                    rest = copy(typetree_in_world(world, sret_et, ctx, dl, seen))
+                    # Ptr{RT} can reuse an equivalent cached type whose parameter
+                    # represents a union of tuples as a tuple of unions. The sret
+                    # buffer follows the original return convention, so retain RT.
+                    rest = copy(typetree_in_world(world, RT, ctx, dl, seen))
                     sret_size = @dispose layout = LLVM.DataLayout(dl) begin
                         LLVM.sizeof(layout, sret_ty(f, 1))
                     end
@@ -2668,6 +2670,41 @@ function julia_undef_value_for_type(
     throw(AssertionError("Unknown type to val: $(Ty)"))
 end
 
+# Store the header of an empty `GenericMemory` with inline data, i.e. a length of
+# zero and a data pointer to the data following the header, into `mem`, an
+# allocation of a `GenericMemory` whose header is not yet written. The stores
+# are atomic so that they are not removed as dead before the header is written.
+function store_empty_memory_header!(B::LLVM.IRBuilder, @nospecialize(mem::LLVM.Value))::Nothing
+    T_int8 = LLVM.Int8Type()
+    T_int64 = LLVM.Int64Type()
+    T_ptr = LLVM.PointerType(T_int8)
+    T_pderived = LLVM.PointerType(T_int8, Derived)
+    mod = LLVM.parent(LLVM.parent(Base.position(B)))
+
+    derived = addrspacecast!(B, mem, T_pderived)
+    pointer_from_objref = if haskey(functions(mod), "julia.pointer_from_objref")
+        functions(mod)["julia.pointer_from_objref"]
+    else
+        LLVM.Function(mod, "julia.pointer_from_objref", LLVM.FunctionType(T_ptr, [T_pderived]))
+    end
+    fty = LLVM.function_type(pointer_from_objref)
+    objref = call!(B, fty, pointer_from_objref, [bitcast!(B, derived, LLVM.parameters(fty)[1])])
+    data = gep!(B, T_int8, bitcast!(B, objref, T_ptr), [LLVM.ConstantInt(T_int64, 16)])
+
+    length_loc = bitcast!(B, derived, LLVM.PointerType(T_int64, Derived))
+    ptr_loc = bitcast!(
+        B,
+        gep!(B, T_int8, derived, [LLVM.ConstantInt(T_int64, 8)]),
+        LLVM.PointerType(T_ptr, Derived),
+    )
+    for st in (store!(B, LLVM.ConstantInt(T_int64, 0), length_loc), store!(B, data, ptr_loc))
+        ordering!(st, LLVM.API.LLVMAtomicOrderingRelease)
+        syncscope!(st, LLVM.SyncScope("singlethread"))
+        metadata(st)["enzymejl_atomicgc"] = LLVM.MDNode(LLVM.Metadata[])
+    end
+    return nothing
+end
+
 # If count is nothing, it represents that we have an allocation of one of `Ty`. If it is a tuple LLVM values, it represents {the total size in bytes, the aligned size of each element}
 function create_recursive_stores(B::LLVM.IRBuilder, @nospecialize(Ty::DataType), @nospecialize(prev::LLVM.Value), @nospecialize(count::Union{Nothing, Tuple{LLVM.Value, LLVM.ConstantInt}}))::Nothing
     if Base.datatype_pointerfree(Ty)
@@ -2893,7 +2930,32 @@ function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradie
     end
     @static if VERSION >= v"1.11"
 	if Ty <: GenericMemory
-	    # TODO throw(AssertionError("What the heck is happening, why are we gc.alloca'ing memory, $(string(V)) $Ty"))
+            # Julia allocates a small `Memory` with `julia.gc_alloc_obj` and only
+            # then stores its length and data pointer. In forward mode all shadow
+            # allocations run before those stores, so a collection triggered by one
+            # of them would find the preceding allocation with an undefined header
+            # (#3698). Give it the header of an empty `Memory` with inline data,
+            # which Julia overwrites. Reverse mode does likewise, except the shadow
+            # is allocated before the original.
+            if mode == API.DEM_ForwardMode && (used || idx != 0)
+                prev = LLVM.Instruction(prev)
+                if isa(prev, LLVM.CallInst)
+                    fn = LLVM.called_operand(prev)
+                    if isa(fn, LLVM.Function) && LLVM.name(fn) == "julia.gc_alloc_obj"
+                        B = LLVM.IRBuilder()
+                        position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(prev)))
+                        store_empty_memory_header!(B, prev)
+                    end
+                end
+            end
+            if (mode == API.DEM_ReverseModePrimal || mode == API.DEM_ReverseModeCombined) && used
+                fn = LLVM.called_operand(V)
+                if isa(fn, LLVM.Function) && LLVM.name(fn) == "julia.gc_alloc_obj"
+                    B = LLVM.IRBuilder()
+                    position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(V)))
+                    store_empty_memory_header!(B, V)
+                end
+            end
 	    return
 	end
     end
@@ -3651,6 +3713,7 @@ include("compiler/constant_fields.jl")
 include("compiler/empty_array_types.jl")
 include("compiler/retained_shadows.jl")
 include("compiler/slot_field_types.jl")
+include("compiler/memory_lengths.jl")
 
 function enzyme!(
     job::CompilerJob,
@@ -4071,6 +4134,7 @@ function enzyme!(
     end
     run!(DCEPass(), mod)
     fix_decayaddr!(mod)
+    store_empty_memory_lengths!(mod)
     adjointf = adjointf == nothing ? nothing : functions(mod)[adjointfname]
     augmented_primalf =
         augmented_primalf == nothing ? nothing : functions(mod)[augmented_primalfname]
@@ -9178,7 +9242,10 @@ end
 function compile_and_publish(@nospecialize(job::CompilerJob), key::UInt)::CompileResult
     Threads.atomic_add!(compiled_derivatives, 1)
     mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table, by_threads = _thunk(job)
+    # The JIT takes the module: read what its code calls first (see `derivative_report`).
+    record, ir = compiled_derivative_record(job, mod)
     obj = _link(job, mod, edges, adjoint_name, primal_name, TapeType, prepost)
+    publish_derivative_record!(record, ir, obj.adjoint, obj.primal)
     several_threads = Ref{Any}(nothing)
     lock(cache_publish_lock)
     try
@@ -9234,6 +9301,7 @@ locks of its own, held without blocking.
     end
 end
 
+include("compiler/derivative_report.jl")
 include("compiler/retained.jl")
 
 """
@@ -9266,6 +9334,9 @@ function clear_caches!()
     empty!(Enzyme.captured_constants)
     empty!(Enzyme.captured_addresses)
     empty!(materialized_derivatives)
+    empty!(derivative_records)
+    empty!(inlined_derivative_records)
+    unrecorded_derivative_calls[] = 0
     compiled_derivatives[] = 0
     reset_retained_statistics!()
 
@@ -9683,18 +9754,24 @@ What the derivative does depend on stays an edge of that code (see
 
 @inline function lazy_thunk(cell::LazyThunk{T}) where {T}
     compiled = @atomic :acquire cell.compiled
-    if compiled === nothing || !lazy_valid(compiled)
-        return T(first_call_of_thunk(cell))
+    ptr = if compiled === nothing || !lazy_valid(compiled)
+        first_call_of_thunk(cell)
+    else
+        compiled.value
     end
-    return T(compiled.value)
+    # The caller is about to call the derivative (see `derivative_report`).
+    note_derivative_use(ptr)
+    return T(ptr)
 end
 
 @inline function lazy_split_thunks(cell::LazySplitThunks)::Tuple{Any, Any}
     compiled = @atomic :acquire cell.compiled
-    if compiled === nothing || !lazy_valid(compiled)
-        return first_call_of_thunk(cell)
+    thunks = if compiled === nothing || !lazy_valid(compiled)
+        first_call_of_thunk(cell)
+    else
+        compiled.value
     end
-    return compiled.value
+    return noted_thunks(thunks)
 end
 
 """
@@ -9905,23 +9982,26 @@ end
     ctx = context(ts_ctx)
     activate(ctx)
     try
-        return thunkbase(
-            mi,
-            nothing,
-            FA,
-            A,
-            TT,
-            Mode,
-            width,
-            ModifiedBetween,
-            ReturnPrimal,
-            ShadowInit,
-            ABI,
-            ErrIfFuncWritten,
-            RuntimeActivity,
-            StrongZero,
-            AtomicAdd,
-            nothing
+        # The caller is about to call the derivative (see `derivative_report`).
+        return noted_thunks(
+            thunkbase(
+                mi,
+                nothing,
+                FA,
+                A,
+                TT,
+                Mode,
+                width,
+                ModifiedBetween,
+                ReturnPrimal,
+                ShadowInit,
+                ABI,
+                ErrIfFuncWritten,
+                RuntimeActivity,
+                StrongZero,
+                AtomicAdd,
+                nothing
+            ),
         )
     finally
         deactivate(ctx)
@@ -10136,7 +10216,16 @@ function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, sou
             dispose(ts_ctx)
         end
         holds_address = true
-        Any[Core.Compiler.ReturnNode(result)]
+        if Interpreter.in_enzyme_inference()
+            # An outer derivative needs the inner one's thunk as a constant.
+            Any[Core.Compiler.ReturnNode(result)]
+        else
+            # The caller is about to call the derivative (see `derivative_report`).
+            Any[
+                Expr(:call, GlobalRef(Compiler, :noted_thunks), QuoteNode(result)),
+                Core.Compiler.ReturnNode(Core.SSAValue(1)),
+            ]
+        end
     end
     ci = create_fresh_codeinfo(fn, source, world, slotnames, code)
     if holds_address && generating_output()

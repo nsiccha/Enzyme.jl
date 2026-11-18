@@ -538,6 +538,85 @@ autodiff(set_atomic_add(Reverse, false), g, Active, Duplicated(x, dx))  # `f` ac
 
 The caller cannot know which method a dynamic call reaches, so a callee that itself starts or waits for a task or runs a threaded loop does not raise the error under `false`. It is compiled with the default instead, and so are the functions it calls dynamically, since those may run while its tasks do. The bodies of `Threads.@threads` loops and spawned tasks are compiled separately and keep the default under every setting, together with what they call dynamically, so `true` does not reach them in a process with one thread.
 
+## [What a compiled derivative calls at run time](@id faq-derivative-report)
+
+Enzyme differentiates a function by compiling a second program, the derivative, and Julia's own tools do not describe that program: `@code_warntype` shows the function you wrote, and `@allocated` counts Julia's heap, not the native memory of Enzyme's tape. [`Enzyme.derivative_report`](@ref) runs a piece of code and reports the derivatives Enzyme used for it:
+
+```julia
+using Enzyme
+
+@noinline dispatched(v) = Base.inferencebarrier(sin)(v)   # Julia looks `sin` up when this runs
+
+function f(x)
+    s = 0.0
+    for i in eachindex(x)
+        s += dispatched(x[i])::Float64
+    end
+    return s
+end
+
+report = Enzyme.derivative_report() do
+    Enzyme.gradient(Reverse, f, [0.3, -0.2, 0.5])
+end
+```
+
+`report.value` is what the block returned. `report.derivatives` has one [`Enzyme.ReportedDerivative`](@ref) for each derivative that was compiled, linked from a package image, or asked for again while the block ran, on the calling task and the tasks it started. The block may take derivatives directly (`autodiff`, `autodiff_thunk`, `gradient`, `jacobian`) or through another package. Here there are two: the derivative of `f`, and the derivative of `sin`, which Enzyme compiled when the dispatched call first ran.
+
+Each entry says what was differentiated (`func`, `mode`, `arguments`, `return_annotation`), where its code came from (`origin`: `:compiled` during the block, `:cached` from earlier in the session, `:image` from a package image, `:inlined`), and lists the calls in its compiled code that leave it (`findings`, see [`Enzyme.DerivativeFinding`](@ref)):
+
+| `kind` | The call |
+| --- | --- |
+| `:dynamic_dispatch` | Julia looks the method up when the call runs |
+| `:enzyme_runtime_fallback` | Enzyme differentiates the callee when the call runs, and compiles a further derivative for it then |
+| `:box` | a value is boxed |
+| `:gc_allocation` | an allocation on Julia's heap |
+| `:native_allocation` | `malloc` and friends: Enzyme's tape and caches, and temporaries of foreign calls |
+| `:runtime_call` | any other call into the Julia runtime, a native library such as BLAS, or separately compiled Julia code |
+
+A finding also names the callee, the compiled function and the sweep that hold the call, the source lines it comes from, whether it is in a loop (`in_loop`), whether it is only reached on a path that ends in an error (`throw_only`), and the size of an allocation when that is a constant (`bytes`). Printing the report of the example, run from a file `example.jl` on Julia 1.10, shows (the directory of the file is left out)
+
+```
+DerivativeReport(2 derivatives)
+[1] reverse derivative of typeof(f) with (Duplicated{Vector{Float64}}) -> Active{Float64}; compiled during the report
+  on paths that return: 2 enzyme_runtime_fallback, 4 gc_allocation, 1 native_allocation, 9 runtime_call
+  on error paths: 2 runtime_call
+  - enzyme_runtime_fallback runtime_generic_augfwd in augmented_julia_dispatched_110 (forward), in a loop
+    at dispatched @ example.jl:3
+       f @ example.jl:8
+  - enzyme_runtime_fallback runtime_generic_rev in diffejulia_dispatched_110 (reverse), in a loop
+    at dispatched @ example.jl:3
+       f @ example.jl:8
+  - gc_allocation jl_gc_pool_alloc (16 bytes) ×2 in augmented_julia_dispatched_110 (forward), in a loop
+    at dispatched @ example.jl:3
+       f @ example.jl:8
+  - gc_allocation jl_gc_alloc_typed ×2 in diffejulia_f_107wrap (combined)
+    at getindex @ ./essentials.jl:13
+       f @ example.jl:8
+  - native_allocation malloc in diffejulia_f_107wrap (combined)
+    at getindex @ ./essentials.jl:13
+       f @ example.jl:8
+[2] reverse_split derivative of typeof(sin) with (Active{Float64}) -> Active{Float64}; compiled during the report
+  on paths that return: none
+  on error paths: 1 dynamic_dispatch, 1 gc_allocation, 1 runtime_call
+```
+
+The numbers in the names of compiled functions differ from session to session, and what a derivative calls differs between Julia versions.
+
+The report judges nothing. A check that a derivative is free of run-time dispatch is a filter over it:
+
+```julia
+unstable = [
+    (d.func, f) for d in report.derivatives for f in something(d.findings, [])
+        if !f.throw_only && f.kind in (:dynamic_dispatch, :enzyme_runtime_fallback, :box)
+]
+```
+
+Enzyme reads the code of every derivative once, when it compiles it, and keeps what it found with the compiled code and with the machine code a package image keeps. So a report costs no second compile, and it does not depend on when a derivative was compiled. `Enzyme.derivative_report(f; ir = true)` also returns, as `ir`, the LLVM bitcode of the optimized module of each derivative compiled during the block.
+
+Two things are not inspected. A derivative nested in another one, such as the inner one of Forward over Reverse, runs as part of the outer one's code and is reported there. A derivative compiled for inlining into its caller (`InlineABI`) is listed with the origin `:inlined` and `findings === nothing`, and `note` says why: Julia optimizes it as part of that caller. `sweep` is `:combined` for a call in a function that holds both sweeps, where the call cannot be proven to be in the reverse one.
+
+A derivative compiled before the block ran is seen when the block asks Enzyme for it, which every call of `autodiff`, `autodiff_thunk`, `gradient` and `jacobian` does. Two uses of such a derivative are not seen: a call through `autodiff_deferred`, and a call of a split-mode thunk that the caller got from `autodiff_thunk` before the report and kept. Code that runs on a device shares the code of these calls, and it cannot ask the host whether a report is running. Take the report around the first call to see them.
+
 ## Complex numbers
 
 Differentiation of a function which returns a complex number is ambiguous, because there are several different gradients which may be desired. Rather than assume a specific of these conventions and potentially result in user error when the resulting derivative is not the desired one, Enzyme forces users to specify the desired convention by returning a real number instead.

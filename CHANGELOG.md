@@ -2,6 +2,99 @@
 
 ## Unreleased
 
+- Keep nested result-type queries concrete when a higher-order helper is
+  reused for a different callable. For example, a loop that seeds a sum with
+  `zero(Base.promote_op(f, ...))` can now differentiate the addition
+  statically when the cell itself queries another callable's result type.
+
+- Differentiate the derivative of a function that runs part of its work in a
+  task (`Threads.@spawn` ... `wait`). Forward over Reverse of such a function,
+  a Hessian-vector product, raised `TaskFailedException` around
+  `EnzymeNoDerivativeError` ("No derivative available for indirect call
+  through an inactive function pointer") when it ran: the derivative of a task
+  runs the derivative of the task's body through a closure that reaches it by
+  its address, which an outer derivative cannot differentiate. As for a
+  `Threads.@threads` loop, the task now runs a callable, and an outer
+  derivative differentiates a variant of it that asks for the body's
+  derivative by its types. Forward over Reverse, Reverse over Forward,
+  Forward over Forward and Reverse over Reverse return the right values.
+  Several directions at once (`BatchDuplicated`) through a task are not
+  supported, nested or not. `Enzyme.has_dogfood_repair(:nested_threaded_tasks)`
+  reports the repair; `test/nested_threads.jl` covers it.
+- Compile Reverse over Reverse through a `Threads.@threads` loop on Julia 1.12
+  and 1.13, which stopped with `EnzymeInternalError` ("Illegal address space
+  propagation"). Before differentiating, libEnzyme moves to the heap a stack
+  slot whose value the reverse pass may need and marks the allocation, so that
+  it can move the slot back to the stack where the reverse pass turns out not
+  to need it. The code Enzyme keeps of a derivative for an outer one to
+  differentiate still carried that mark, although in an augmented forward pass
+  the allocation can escape through the tape; the outer derivative then tried
+  to move it back to the stack, which it cannot do while the loop's array of
+  tapes holds its address. The kept code now carries no such marks.
+  `Enzyme.has_dogfood_repair(:kept_stack_slot_markers)` reports the repair;
+  `test/nested_threads.jl` covers it.
+- Keep the type facts of a union return buffer independent of what compiled
+  earlier in the process. A function returning, for example,
+  `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct
+  `T` returns through a buffer whose type Enzyme read back from the `Ptr` type
+  of that buffer. Julia can reuse an equivalent `Ptr` type cached earlier, whose
+  element type spells the union as the abstract `Tuple{Union{Nothing, T}, T}`,
+  and Enzyme then annotated the buffer's `Float64` fields as pointers. Plain
+  Reverse raised `IllegalTypeAnalysisException` only after other code had
+  compiled: DynamicPPL's `gp_pois_regr` catalogue model failed after
+  `diamonds` in one process and passed alone. The buffer is now annotated from
+  the inferred return type itself. Strict aliasing and static activity stay on.
+  `Enzyme.has_dogfood_repair(:union_return_types)` reports the repair;
+  `test/union_return_types.jl` caches the equivalent pointer type first and
+  checks Reverse gradients on both return branches.
+- Allocate the reverse caches of a ragged loop nest together. In a combined
+  Reverse derivative (`autodiff(Reverse, ...)`, `gradient`, and
+  DifferentiationInterface's `gradient` with
+  `AutoEnzyme(; mode = Enzyme.Reverse)`), the packed caches of repair
+  `packed_ragged_cache` that share an element type and a loop nest now share
+  one offset table and one growing buffer of records, one slot per cached
+  value. Before, every cached value had a table and a buffer of its own, so a
+  gradient made a native `malloc` and `free` per cached value and per capacity
+  doubling of each. Now the nest makes one table and one growth per doubling,
+  however many values it caches. An event walk that caches 13 values made 39,
+  91 and 117 allocations per gradient at 2, 20 and 100 groups, and makes 6,
+  14 and 18 (Julia 1.10.12). Split mode (`autodiff_thunk`) keeps a table and
+  a buffer per cached value. Needs libEnzyme build `15345e27`;
+  `Enzyme.has_dogfood_repair(:packed_cache_groups)` reports the repair and
+  `test/packed_cache_groups.jl` checks it.
+- Give a fresh `Memory` a header the garbage collector can read before the
+  next safepoint. Julia 1.12 and later leave part of that header to the code
+  that allocates: a `Memory` of a constant length that fits a pool cell
+  (`zeros(64)`, `[a, b]`) is an object allocation followed by stores of its
+  data pointer and its length, and any other `Memory` comes from
+  `jl_alloc_genericmemory_unchecked` without its length. Enzyme allocates the
+  shadow, which is a safepoint, next to such an allocation: Forward mode right
+  after the original, Reverse mode right before it. A collection that started
+  there marked a `Memory` whose header held what its cell held before, and
+  followed what it found: a segmentation fault in `gc_try_claim_and_push`
+  under `gc_mark_outrefs`, once in many thousand calls, since a cell that last
+  held a `Memory` of the same size has a valid header left. Plain Forward mode
+  on one thread was affected, and so were Forward over Reverse, where it was
+  first seen through a `Threads.@threads` loop, and Reverse over Forward.
+  - For the object allocation, Enzyme stores the header of an empty `Memory`
+    with inline data, atomically, right after it: in Forward mode into the
+    allocation a shadow allocation follows, in Reverse mode into the shadow.
+    These are the two commits of upstream pull request #3723 for upstream
+    issue #3698, which is open.
+  - For `jl_alloc_genericmemory_unchecked`, Enzyme stores a length of zero
+    right after the allocation wherever a call that can collect comes before
+    the store of the real length, which is the case for the original in
+    Forward mode. A `Memory` whose elements hold references, such as the
+    `Vector` of tapes of a `Threads.@threads` loop's derivative, had that many
+    elements scanned.
+  `Enzyme.has_dogfood_repair(:memory_header_init)` reports the repair;
+  `test/memory_header_init.jl` checks the stores in the derivative's code and
+  takes derivatives while fresh `Memory` objects land on cells without a valid
+  header. The same repair was found independently from repeated batched
+  Forward through `[a, b]` of structs that hold arrays, which aborted on
+  Julia 1.13.1 within seconds; `test/forward_memory_shadow.jl` repeats that
+  under automatic collection, and `Enzyme.has_dogfood_repair(:forward_memory_shadow_init)`
+  reports the repair under that name too.
 - Differentiate a `ccall` whose library Julia does not resolve while compiling
   the method. Julia 1.12 leaves a module-qualified library
   (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
@@ -21,31 +114,42 @@
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
-- Differentiate the derivative of a function that runs part of its work in a
-  task (`Threads.@spawn` ... `wait`). Forward over Reverse of such a function,
-  a Hessian-vector product, raised `TaskFailedException` around
-  `EnzymeNoDerivativeError` ("No derivative available for indirect call
-  through an inactive function pointer") when it ran: the derivative of a task
-  runs the derivative of the task's body through a closure that reaches it by
-  its address, which an outer derivative cannot differentiate. As for a
-  `Threads.@threads` loop, the task now runs a callable, and an outer
-  derivative differentiates a variant of it that asks for the body's
-  derivative by its types. Forward over Reverse, Reverse over Forward,
-  Forward over Forward and Reverse over Reverse return the right values.
-  Several directions at once (`BatchDuplicated`) through a task are not
-  supported, nested or not. `Enzyme.has_dogfood_repair(:nested_threaded_tasks)`
-  reports the repair; `test/nested_threads.jl` covers it.
-- Compile Reverse over Reverse through a `Threads.@threads` loop on Julia 1.12
-  and 1.13, which stopped with `EnzymeInternalError` ("Illegal address space
-  propagation"). Before differentiating, libEnzyme moves a stack slot the
-  reverse pass may need to the heap and marks the allocation, so that it can
-  move it back where the derivative does not need it there. The code Enzyme
-  keeps of a derivative for an outer one to differentiate still carried that
-  mark, although in an augmented forward pass the allocation can escape
-  through the tape; the outer derivative then moved it back to the stack while
-  the loop's array of tapes held its address. The kept code now carries no
-  such marks. `Enzyme.has_dogfood_repair(:kept_stack_slot_markers)` reports
-  the repair; `test/nested_threads.jl` covers it.
+- Add `Enzyme.derivative_report(f)`, which runs `f()` and reports the
+  derivatives Enzyme used for it: each one compiled, linked from a package
+  image or asked for again meanwhile, with the calls its compiled code makes
+  at run time. A finding names the kind of call (run-time dispatch, Enzyme's own
+  run-time differentiation of a call it could not resolve, a box, an
+  allocation on Julia's heap, a native allocation such as the tape, or any
+  other call into the runtime or a library), the callee, the compiled function
+  and sweep, the source lines, whether the call is in a loop or only on an
+  error path, and an allocation's size when it is a constant. Until now the
+  code a derivative runs could only be read from the text the `DumpPostOpt`
+  debug flag prints to standard error, or by compiling it a second time with
+  `enzyme_code_llvm`, which does not see a derivative compiled at run time and
+  needs the job's settings repeated by hand. Enzyme now reads the optimized
+  module of every derivative once, before its JIT takes it, and keeps what it
+  found with the compiled code and with the machine code a package image
+  keeps. A report therefore costs no second compile and covers code compiled
+  earlier in the session. `ir = true` also returns the LLVM bitcode of what
+  the block compiled. Where the host hands a compiled derivative to its
+  caller (`autodiff`, `autodiff_thunk`, Enzyme's run-time rules), it reads one
+  counter more while no report is running. The code of the call itself is
+  unchanged, because kernels on a device share it; so a later call through
+  `autodiff_deferred`, or of a split-mode thunk the caller kept, is not seen.
+  `Enzyme.has_dogfood_repair(:derivative_report)` reports the API;
+  `test/derivative_report.jl` covers the scan and the report, and
+  `test/precompile.jl` a derivative linked from an image.
+- Differentiate a `ccall` that names no library on Julia 1.13, such as the
+  `memchr` call behind `findfirst` of a character in a `String`. Julia 1.13 no
+  longer attributes a C library function to libjulia-internal while compiling,
+  so the call reached Enzyme as a lookup in no library and was named
+  `ejlptr$memchr$0`, which libEnzyme does not know: Reverse mode raised "No
+  create nofree of empty function (ejlptr$memchr$0)", and a package image
+  either failed to precompile or kept no derivative calling such a function.
+  The call is now named by its symbol, which the JIT looks up in the process,
+  as Julia does. `Enzyme.has_dogfood_repair(:ccall_without_library)` reports
+  the repair; `test/ccall_library.jl` covers `findfirst`, `cmp` and
+  `ccall(:cos, ...)`, and `test/precompile.jl` derivatives kept in an image.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture
   attributes only for typed raw data pointers, and ignores uses solely in

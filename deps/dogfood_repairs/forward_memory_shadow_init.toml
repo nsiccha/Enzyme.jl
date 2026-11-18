@@ -1,0 +1,2 @@
+summary = "Forward and batched Forward stay memory-safe when the primal allocates a constant-length memory inline: each allocation is a valid empty memory before the next shadow allocation can collect"
+tests = ["test/forward_memory_shadow.jl"]

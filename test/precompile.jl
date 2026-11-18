@@ -63,6 +63,24 @@ print(Int(Base.JLOptions().use_pkgimages), " ", Int(Base.JLOptions().code_covera
 flush(stdout)
 """
 
+# For a child that reads the code a `MethodInstance` was inferred to: that of the first
+# `CodeInstance` in its cache that holds any, compressed into a `String` or as a `CodeInfo`, which
+# Julia 1.13 keeps for some code it loads from an image. `nothing` where none holds code.
+const INFERRED_CODE = """
+function inferred_code(mi::Core.MethodInstance)
+    isdefined(mi, :cache) || return nothing
+    ci = mi.cache
+    while true
+        # Before Julia 1.12 the field is undefined where the JIT dropped the code.
+        src = isdefined(ci, :inferred) ? ci.inferred : nothing
+        src isa String && return Base._uncompressed_ir(ci, src)
+        src isa Core.CodeInfo && return src
+        isdefined(ci, :next) || return nothing
+        ci = ci.next
+    end
+end
+"""
+
 function child_command(load_path, code)
     return addenv(
         `$(child_julia_cmd()) --project=$(Base.active_project()) --startup-file=no -e $code`,
@@ -660,17 +678,15 @@ print(stats.compiled, " ", stats.materialized, " ", reason, " ", join(g, " "))
             code = """
             using Enzyme, EnzymeRetained
             const C = Enzyme.Compiler
+            $INFERRED_CODE
             function cells()
                 found = Any[]
                 for m in methods(C.thunk), mi in Base.specializations(m)
                     mi === nothing && continue
                     occursin("EnzymeRetained.through_callee", string(mi.specTypes)) || continue
                     occursin("DEM_ReverseModeCombined", string(mi.specTypes)) || continue
-                    ci = mi.cache
-                    while !(ci.inferred isa String) && isdefined(ci, :next)
-                        ci = ci.next
-                    end
-                    src = Base._uncompressed_ir(ci, ci.inferred)
+                    src = inferred_code(mi)
+                    src === nothing && continue
                     for st in src.code, arg in (st isa Expr ? st.args : ())
                         arg isa C.LazyThunk && push!(found, arg)
                         if arg isa Expr
@@ -751,16 +767,13 @@ end
 const RETAINED_CALLEES_HELD = """
 using Enzyme, EnzymeRetainedCallees
 const C = Enzyme.Compiler
+$INFERRED_CODE
 function held(callee, setting)
     for m in methods(C.runtime_thunk), mi in Base.specializations(m)
         mi isa Core.MethodInstance || continue
         occursin("EnzymeRetainedCallees." * callee, string(mi.specTypes)) || continue
-        isdefined(mi, :cache) || continue
-        ci = mi.cache
-        while !(ci.inferred isa String) && isdefined(ci, :next)
-            ci = ci.next
-        end
-        src = Base._uncompressed_ir(ci, ci.inferred)
+        src = inferred_code(mi)
+        src === nothing && continue
         for st in src.code, arg in (st isa Expr ? st.args : ())
             arg isa C.LazySplitThunks || continue
             arg.job.config.params.atomicAdd === setting || continue
@@ -982,17 +995,13 @@ print(stats.compiled, " ", stats.materialized, " ", isempty(stats.rejected), " "
 const RETAINED_THREADS_HELD = """
 using Enzyme, EnzymeRetainedThreads
 const C = Enzyme.Compiler
+$INFERRED_CODE
 function held(f, setting, mode)
     for m in methods(C.thunk), mi in Base.specializations(m)
         mi isa Core.MethodInstance || continue
         occursin("typeof(EnzymeRetainedThreads." * f * ")", string(mi.specTypes)) || continue
-        isdefined(mi, :cache) || continue
-        ci = mi.cache
-        while !(ci.inferred isa String) && isdefined(ci, :next)
-            ci = ci.next
-        end
-        ci.inferred isa String || continue
-        src = Base._uncompressed_ir(ci, ci.inferred)
+        src = inferred_code(mi)
+        src === nothing && continue
         for st in src.code, arg in (st isa Expr ? st.args : ())
             arg isa C.LazyThunk || continue
             params = arg.job.config.params
@@ -1270,5 +1279,59 @@ end
         @test parse(Int, fields[1]) == 1
         @test parse(Int, fields[2]) == 0
         @test parse.(Float64, fields[3:5]) == [6.0, 8.0, 10.0]
+    end
+end
+
+# What `Enzyme.derivative_report` says about a derivative that a session links from an image.
+# That session has no module to read, so the image carries what the scan of the compiled code
+# found when the image was written. The same function defined in the session is compiled
+# there, and its code makes the same calls on the paths that return. Code for an image names
+# every address, and the paths that end in an error can come out arranged differently.
+const RETAINED_REPORT = """
+using Enzyme, EnzymeRetained
+X = [1.0 2.0 3.0; 4.0 5.0 6.0; 7.0 8.0 10.0; 1.0 0.0 1.0; 0.0 1.0 0.0]
+y = [1.0, 0.0, 1.0, 0.0, 1.0]
+b = [1.0, 2.0, 3.0]
+linked = Enzyme.derivative_report() do
+    EnzymeRetained.least_squares_gradient(b, X, y)
+end
+session_least_squares(b, X, y) = 0.5 * sum(abs2, y .- X * b)
+compiled = Enzyme.derivative_report() do
+    db = zero(b)
+    Enzyme.autodiff(Reverse, session_least_squares, Active, Duplicated(b, db), Const(X), Const(y))
+    db
+end
+calls(d) = sort([(String(f.kind), f.callee, f.in_loop, something(f.bytes, -1), f.count) for f in d.findings if !f.throw_only])
+l = only(linked.derivatives)
+c = only(compiled.derivatives)
+stats = Enzyme.Compiler.retained_derivative_stats()
+print(
+    stats.materialized, " ", l.origin, " ", c.origin, " ", l.findings !== nothing && !isempty(l.findings), " ",
+    any(f -> f.kind === :gc_allocation && !f.throw_only, l.findings), " ",
+    any(f -> occursin("gemv", f.callee) && !f.throw_only, l.findings), " ",
+    calls(l) == calls(c), " ", linked.value == compiled.value, " ", Enzyme.Compiler.unrecorded_derivative_calls[],
+)
+"""
+
+@testset "a report on a derivative linked from an image" begin
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymeRetained.jl"), RETAINED)
+        retained = Enzyme.Compiler.retention_supported()
+        for _ in 1:2
+            ok, fields = run_child(load_path, RETAINED_REPORT)
+            @test ok
+            ok || continue
+            @test length(fields) == 9
+            length(fields) == 9 || continue
+            @test fields[1] == (retained ? "1" : "0")
+            @test fields[2] == (retained ? "image" : "compiled")
+            @test fields[3] == "compiled"
+            # The linked derivative has findings: an allocation and the BLAS product, by name.
+            @test fields[4:6] == ["true", "true", "true"]
+            # On returning paths they are the calls the same code makes when the session compiles it.
+            @test fields[7] == "true"
+            @test fields[8] == "true"
+            @test fields[9] == "0"
+        end
     end
 end
