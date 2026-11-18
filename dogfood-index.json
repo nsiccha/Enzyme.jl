@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T16:11:32Z",
+  "prepared_at": "2026-11-18T16:49:43Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -1780,16 +1780,70 @@
       ],
       "upstream_refs": [],
       "fix": {
-        "commits": [],
-        "why_together": "The original source and test hunks apply directly to upstream 1ee9a6f8. Standalone runtime validation is pending."
+        "branch": "rebase/singleton-float-layouts",
+        "commits": [
+          {
+            "sha": "0c375520d6d1004e435e097bfa2a6e2263379f6b",
+            "title": "Handle singleton floating-point types in layout metadata",
+            "original": [
+              "50a22372272fe1940c82c00d06615a89db77a4dc"
+            ]
+          }
+        ],
+        "why_together": "One commit handles payload-free AbstractFloat subtypes in get_offsets and typetree and tests layout, forward derivatives and reverse derivatives. It applies directly to upstream 1ee9a6f8. The separate MeasureTheory integration case in the original commit is outside this two-file patch."
       },
       "depends_on": [],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.301+0, artifact 6c6ed7dc90243a3aefb61edc45b94cb76af71b9d",
+          "tests": [
+            "test/float_layouts.jl"
+          ],
+          "result": "passed",
+          "detail": "31/31 layout and AD assertions passed on Julia build 2d331aa. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.301+0, artifact 6c6ed7dc90243a3aefb61edc45b94cb76af71b9d",
+          "tests": [
+            "test/float_layouts.jl"
+          ],
+          "result": "passed",
+          "detail": "31/31 layout and AD assertions passed on Julia build 2d331aa. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.301+0, artifact 028bae7a87b444d2aa3f81ecb5d2da57362c10aa",
+          "tests": [
+            "test/float_layouts.jl"
+          ],
+          "result": "passed",
+          "detail": "31/31 layout and AD assertions passed on Julia build 6d172b025e4. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.301+0, artifact 028bae7a87b444d2aa3f81ecb5d2da57362c10aa",
+          "tests": [
+            "test/float_layouts.jl"
+          ],
+          "result": "passed",
+          "detail": "31/31 layout and AD assertions passed on Julia build 6d172b025e4. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+        }
+      ],
       "draft": {
         "title": "Type-layout metadata misclassifies singleton floating-point types",
-        "body": "A floating-point subtype can be a singleton with no payload. The derivative compiler should use its actual storage layout when building type metadata and preserve differentiation of its containing structure.\n\nOriginal fork commit: [50a22372](https://github.com/nsiccha/Enzyme.jl/commit/50a22372272fe1940c82c00d06615a89db77a4dc).\n\nRegression coverage on the fork: [test/float_layouts.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/float_layouts.jl), [test/integration/MeasureTheory/runtests.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/integration/MeasureTheory/runtests.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "body": "An AbstractFloat subtype can have exactly one instance and occupy zero bytes. Enzyme asserts while building layout metadata for such a type. This can also prevent differentiation through a tuple or named tuple that contains the singleton alongside an active float.\n\n```julia\nusing Enzyme\nstruct StaticFloat{V} <: AbstractFloat end\nT = StaticFloat{2.0}\n@assert Base.issingletontype(T) && sizeof(T) == 0\n@assert isempty(Enzyme.get_offsets(T))\n```\n\nOn upstream 1ee9a6f8 the last line raises AssertionError inside get_offsets. Both get_offsets and typetree should describe an empty payload. In a tuple containing the singleton and a Float64, only the Float64 should contribute storage to the derivative layout.",
+        "prepared_at": "2026-11-18T16:49:43Z"
       }
     },
     {
@@ -3187,12 +3241,12 @@
       "id": "incomplete-gamma",
       "role": "fix",
       "title": "Differentiate the incomplete gamma function and its inverse with respect to shape",
-      "summary": "A scalar objective can use both components of gamma_inc or the inverse function. Shape and argument derivatives should agree with analytic partials and finite differences, including when the result is composed with the inverse. Existing upstream issue #3580 and PR #3599 are related.",
+      "summary": "A scalar objective can use both components of gamma_inc or the inverse function. Shape and argument derivatives should agree with analytic partials and finite differences, including when the result is composed with the inverse. Upstream issue #3580 reports zero shape derivatives at integer and half-integer shapes. The inverse-function cases extend that report. PR #3599 is related.",
       "repairs": [],
       "upstream_refs": [
         {
           "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3580",
-          "relation": "related"
+          "relation": "reports"
         },
         {
           "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3599",
@@ -3208,8 +3262,8 @@
       "validation": [],
       "draft": {
         "title": "Differentiate the incomplete gamma function and its inverse with respect to shape",
-        "body": "A scalar objective can use both components of gamma_inc or the inverse function. Shape and argument derivatives should agree with analytic partials and finite differences, including when the result is composed with the inverse. Existing upstream issue #3580 and PR #3599 are related.\n\nOriginal fork commits in historical order: [c01a581a](https://github.com/nsiccha/Enzyme.jl/commit/c01a581a6fbb85c2bd776533efc6542d79e0f588), [f23adee5](https://github.com/nsiccha/Enzyme.jl/commit/f23adee5365fa364a4eea5a9e9dc4224b34d6608), [3605c459](https://github.com/nsiccha/Enzyme.jl/commit/3605c459909d8f697c65f86a42b2a6cef2ca19dc), [9a5ceac1](https://github.com/nsiccha/Enzyme.jl/commit/9a5ceac1c1b6db0542e450c864bb977f8a751640), [4b243985](https://github.com/nsiccha/Enzyme.jl/commit/4b243985916450881167da7dd882fcbfd2356096), [2d58e887](https://github.com/nsiccha/Enzyme.jl/commit/2d58e88749e2ddb6341ef63d413e25cbebb9cdd8).\n\nRegression coverage on the fork: [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "body": "A scalar objective can use both components of gamma_inc or the inverse function. Shape and argument derivatives should agree with analytic partials and finite differences, including when the result is composed with the inverse. Upstream issue #3580 reports zero shape derivatives at integer and half-integer shapes. The inverse-function cases extend that report. PR #3599 is related.\n\nOriginal fork commits in historical order: [c01a581a](https://github.com/nsiccha/Enzyme.jl/commit/c01a581a6fbb85c2bd776533efc6542d79e0f588), [f23adee5](https://github.com/nsiccha/Enzyme.jl/commit/f23adee5365fa364a4eea5a9e9dc4224b34d6608), [3605c459](https://github.com/nsiccha/Enzyme.jl/commit/3605c459909d8f697c65f86a42b2a6cef2ca19dc), [9a5ceac1](https://github.com/nsiccha/Enzyme.jl/commit/9a5ceac1c1b6db0542e450c864bb977f8a751640), [4b243985](https://github.com/nsiccha/Enzyme.jl/commit/4b243985916450881167da7dd882fcbfd2356096), [2d58e887](https://github.com/nsiccha/Enzyme.jl/commit/2d58e88749e2ddb6341ef63d413e25cbebb9cdd8).\n\nRegression coverage on the fork: [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl).",
+        "prepared_at": "2026-11-18T16:49:43Z"
       }
     },
     {
