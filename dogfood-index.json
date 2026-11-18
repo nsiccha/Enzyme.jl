@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T21:07:04Z",
+  "prepared_at": "2026-11-18T21:07:48Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -4342,8 +4342,8 @@
     {
       "id": "structured-logdet",
       "role": "fix",
-      "title": "logdet needs derivative rules that preserve Symmetric and Hermitian structure",
-      "summary": "A dense matrix can be wrapped as Symmetric or Hermitian and store only one meaningful triangle. The derivative of logdet should respect the stored triangle and agree with the mathematical directional derivative. Upstream PR #4011 also changes determinant and logdet batching.",
+      "title": "Reverse differentiation of logdet fails on a matrix wrapped as Symmetric",
+      "summary": "Differentiating logdet of a matrix wrapped as Symmetric fails during derivative compilation. Only the stored triangle should receive derivatives, including the contributions from its reflected entries.",
       "repairs": [],
       "upstream_refs": [
         {
@@ -4352,21 +4352,79 @@
         }
       ],
       "fix": {
-        "commits": [],
-        "why_together": "The original commits identify the historical structured-logdet topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified.",
+        "branch": "rebase/structured-logdet-storage",
         "originals": [
           "9767a838834e23f72e6f7038457bee9287f93f9b"
-        ]
+        ],
+        "commits": [
+          {
+            "sha": "3dd18c4052aaf643d9ed457f27c8e6c260df0ba5",
+            "title": "Differentiate logdet of dense symmetric and Hermitian matrices",
+            "original": [
+              "9767a838834e23f72e6f7038457bee9287f93f9b"
+            ]
+          }
+        ],
+        "why_together": "Apply the shared LAPACK helper, then the two-file structured logdet patch. The rule uses the helper for batched or inactive shadows. It extends the current logdet rule traits and carries the original numerical regressions for real and complex backing storage, views and overwritten inputs. The triangular-solve rule is independent."
       },
       "depends_on": [
         "lapack-helpers"
       ],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "result": "passed",
+          "tests": [
+            "test/rules/internal_rules/logdet.jl",
+            "stored upper-triangle adjoint"
+          ],
+          "detail": "1,119 assertions passed including the independent two-by-two adjoint. The upstream and helper-only controls both raised EnzymeNoDerivativeError. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "result": "passed",
+          "tests": [
+            "test/rules/internal_rules/logdet.jl",
+            "stored upper-triangle adjoint"
+          ],
+          "detail": "1,119 assertions passed including the independent two-by-two adjoint. The upstream and helper-only controls both raised EnzymeNoDerivativeError. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "result": "passed",
+          "tests": [
+            "test/rules/internal_rules/logdet.jl",
+            "stored upper-triangle adjoint"
+          ],
+          "detail": "1,119 assertions passed including the independent two-by-two adjoint. The upstream and helper-only controls both raised IllegalTypeAnalysisException. Julia build 6d172b025e4."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "result": "passed",
+          "tests": [
+            "test/rules/internal_rules/logdet.jl",
+            "stored upper-triangle adjoint"
+          ],
+          "detail": "1,119 assertions passed including the independent two-by-two adjoint. The upstream and helper-only controls both raised IllegalTypeAnalysisException. Julia build 6d172b025e4."
+        }
+      ],
       "draft": {
-        "title": "logdet needs derivative rules that preserve Symmetric and Hermitian structure",
-        "body": "A dense matrix can be wrapped as Symmetric or Hermitian and store only one meaningful triangle. The derivative of logdet should respect the stored triangle and agree with the mathematical directional derivative. Upstream PR #4011 also changes determinant and logdet batching.\n\nOriginal fork commit: [9767a838](https://github.com/nsiccha/Enzyme.jl/commit/9767a838834e23f72e6f7038457bee9287f93f9b).\n\nRegression coverage on the fork: [test/rules/internal_rules/logdet.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/logdet.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "title": "Reverse differentiation of logdet fails on a matrix wrapped as Symmetric",
+        "body": "On Enzyme.jl `1ee9a6f8` with Enzyme_jll 0.0.311+0, the reverse derivative of this two-by-two log determinant fails to compile. Julia 1.10.12 reports a missing derivative for LAPACK `dgetrf`. Julia 1.12.7 reports `IllegalTypeAnalysisException`.\n\n```julia\nusing Enzyme, LinearAlgebra\n\nupper_logdet(M) = logdet(Symmetric(M, :U))\nM = [4.0 1.0; 0.3 3.0]\ndM = zeros(2, 2)\nautodiff(Reverse, upper_logdet, Active, Duplicated(M, dM))\n```\n\nThe determinant is `4*3 - 1^2 = 11`. The expected adjoint of the backing matrix is `[3.0 -2.0; 0.0 4.0] / 11`. The unused lower entry receives zero and the stored off-diagonal entry receives both reflected contributions.\n\n[Shared LAPACK helper](https://github.com/nsiccha/Enzyme.jl/commit/a17f475adf8f46679740d19feac022a079a70fce) · [Structured rule and tests](https://github.com/nsiccha/Enzyme.jl/commit/3dd18c4052aaf643d9ed457f27c8e6c260df0ba5)",
+        "prepared_at": "2026-11-18T21:07:48Z"
       }
     },
     {
