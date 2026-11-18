@@ -399,6 +399,28 @@ _zero_unused_elements!(X, ::LowerTriangular) = tril!(X)
 _zero_unused_elements!(X, ::UnitUpperTriangular) = triu!(X, 1)
 _zero_unused_elements!(X, ::UnitLowerTriangular) = tril!(X, -1)
 
+# The shadow of A in batch lane b, or nothing if A is inactive. A shadow that is the primal
+# itself holds no derivative: Enzyme passes one for data that is inactive at run time.
+_lapack_shadow(::Const, b, N) = nothing
+function _lapack_shadow(A::Annotation, b, N)
+    dA = N == 1 ? A.dval : A.dval[b]
+    return dA === A.val ? nothing : dA
+end
+
+# What a forward rule returns for a LAPACK routine that overwrites B with its result X.
+function _lapack_inplace_forward_return(config::EnzymeRules.FwdConfig, X, B)
+    N = EnzymeRules.width(config)
+    if EnzymeRules.needs_primal(config) && EnzymeRules.needs_shadow(config)
+        return N == 1 ? Duplicated(X, B.dval) : BatchDuplicated(X, B.dval)
+    elseif EnzymeRules.needs_shadow(config)
+        return B.dval
+    elseif EnzymeRules.needs_primal(config)
+        return X
+    else
+        return nothing
+    end
+end
+
 function EnzymeRules.augmented_primal(
         config::EnzymeRules.RevConfig,
         func::Const{typeof(LinearAlgebra.mul!)},
