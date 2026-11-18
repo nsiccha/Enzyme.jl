@@ -61,6 +61,17 @@
   `Enzyme.has_dogfood_repair(:derivative_report)` reports the API;
   `test/derivative_report.jl` covers the scan and the report, and
   `test/precompile.jl` a derivative linked from an image.
+- Differentiate a `ccall` that names no library on Julia 1.13, such as the
+  `memchr` call behind `findfirst` of a character in a `String`. Julia 1.13 no
+  longer attributes a C library function to libjulia-internal while compiling,
+  so the call reached Enzyme as a lookup in no library and was named
+  `ejlptr$memchr$0`, which libEnzyme does not know: Reverse mode raised "No
+  create nofree of empty function (ejlptr$memchr$0)", and a package image
+  either failed to precompile or kept no derivative calling such a function.
+  The call is now named by its symbol, which the JIT looks up in the process,
+  as Julia does. `Enzyme.has_dogfood_repair(:ccall_without_library)` reports
+  the repair; `test/ccall_library.jl` covers `findfirst`, `cmp` and
+  `ccall(:cos, ...)`, and `test/precompile.jl` derivatives kept in an image.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture
   attributes only for typed raw data pointers, and ignores uses solely in
