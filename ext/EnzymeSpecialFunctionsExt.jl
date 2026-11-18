@@ -11,6 +11,43 @@ function __init__()
     return Enzyme.Compiler.cmplx_known_ops[typeof(SpecialFunctions.besselk)] = (:cmplx_kn, 2, nothing)
 end
 
+# Differentiating logabsbeta's recursive argument swap in Reverse otherwise
+# allocates a tape per call. Keep its sign inactive and compute scalar partials.
+function _logabsbeta_partials(a, b)
+    if a > b
+        db, da = _logabsbeta_partials(b, a)
+        return da, db
+    end
+    # Preserve the branch used by SpecialFunctions at nonpositive integers,
+    # including the finite continuation when both gamma poles cancel.
+    if a <= 0 && isinteger(a)
+        if a + b <= 0 && isinteger(b)
+            dc, db = _logabsbeta_partials(1 - a - b, b)
+            return -dc, db - dc
+        end
+        return zero(a), zero(b)
+    end
+    if a > 0 && b > 8
+        # digamma(b) - digamma(a + b) loses accuracy for a << b (it can
+        # round to zero). Differentiate the stable log-gamma ratio instead.
+        da, db = autodiff(
+            Forward, SpecialFunctions.loggammadiv,
+            BatchDuplicated(a, (one(a), zero(a))),
+            BatchDuplicated(b, (zero(b), one(b))),
+        )[1]
+        return da + SpecialFunctions.digamma(a), db
+    end
+    psi = SpecialFunctions.digamma(a + b)
+    return SpecialFunctions.digamma(a) - psi, SpecialFunctions.digamma(b) - psi
+end
+
+EnzymeRules.@easy_rule(
+    SpecialFunctions.logabsbeta(a::Real, b::Real),
+    @setup((da, db) = _logabsbeta_partials(a, b)),
+    (da, db),
+    (@Constant, @Constant),
+)
+
 # Exponentially scaled Bessel functions (x/ref: https://github.com/EnzymeAD/Enzyme.jl/issues/2880)
 # besselix(nu, x) = besseli(nu, x) * exp(-abs(x)) for real x, hence the extra -sign(x)*Ω term.
 EnzymeRules.@easy_rule(
