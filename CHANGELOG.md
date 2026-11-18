@@ -21,6 +21,18 @@
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
+- Fix a crash while compiling a static Reverse derivative whose code has a
+  load through a select of pointers in a block that flows into a phi of
+  pointers, where both merge constant data or data the function made with
+  other data. Splitting the select rebuilt the phis after it, and the phi was
+  then split from freed memory: the process segfaulted in `merge_load_tree`,
+  or compiling raised `UndefRefError` from `merge_predecessors_branch`,
+  depending on what reused that memory (a Gaussian-process posterior with a
+  Cholesky-factored covariance hit it). Every select is now split before the
+  phis are collected.
+  `Enzyme.has_dogfood_repair(:constant_merge_order)` reports the repair;
+  `test/constant_merge_order.jl` covers the select's block placed before and
+  after the phi's block, and two selects flowing into two phis.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture
   attributes only for typed raw data pointers, and ignores uses solely in
