@@ -296,6 +296,10 @@ function get_trampoline(job)
         # 2. Call MR.replace(symbolAliases({"my_deferred_decision_sym.1" -> "foo.rt.impl"})).
         GPUCompiler.JuliaContext() do ctx
             mod, edges, adjoint_name, primal_name = Compiler._thunk(job)
+            # Tell a running report what was compiled (see `derivative_report`). Later calls
+            # through the trampoline are not seen: they share their code with device kernels.
+            record, ir = Compiler.compiled_derivative_record(job, mod)
+            Compiler.publish_derivative_record!(record, ir, pointer(addr), nothing)
             func_name = use_primal ? primal_name : adjoint_name
             other_name = !use_primal ? primal_name : adjoint_name
 

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Keep the type facts of a union return buffer independent of what compiled
+  earlier in the process. A function returning, for example,
+  `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct
+  `T` returns through a buffer whose type Enzyme read back from the `Ptr` type
+  of that buffer. Julia can reuse an equivalent `Ptr` type cached earlier, whose
+  element type spells the union as the abstract `Tuple{Union{Nothing, T}, T}`,
+  and Enzyme then annotated the buffer's `Float64` fields as pointers. Plain
+  Reverse raised `IllegalTypeAnalysisException` only after other code had
+  compiled: DynamicPPL's `gp_pois_regr` catalogue model failed after
+  `diamonds` in one process and passed alone. The buffer is now annotated from
+  the inferred return type itself. Strict aliasing and static activity stay on.
+  `Enzyme.has_dogfood_repair(:union_return_types)` reports the repair;
+  `test/union_return_types.jl` caches the equivalent pointer type first and
+  checks Reverse gradients on both return branches.
 - Allocate the reverse caches of a ragged loop nest together. In a combined
   Reverse derivative (`autodiff(Reverse, ...)`, `gradient`, and
   DifferentiationInterface's `gradient` with
@@ -69,6 +83,31 @@
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
+- Add `Enzyme.derivative_report(f)`, which runs `f()` and reports the
+  derivatives Enzyme used for it: each one compiled, linked from a package
+  image or asked for again meanwhile, with the calls its compiled code makes
+  at run time. A finding names the kind of call (run-time dispatch, Enzyme's own
+  run-time differentiation of a call it could not resolve, a box, an
+  allocation on Julia's heap, a native allocation such as the tape, or any
+  other call into the runtime or a library), the callee, the compiled function
+  and sweep, the source lines, whether the call is in a loop or only on an
+  error path, and an allocation's size when it is a constant. Until now the
+  code a derivative runs could only be read from the text the `DumpPostOpt`
+  debug flag prints to standard error, or by compiling it a second time with
+  `enzyme_code_llvm`, which does not see a derivative compiled at run time and
+  needs the job's settings repeated by hand. Enzyme now reads the optimized
+  module of every derivative once, before its JIT takes it, and keeps what it
+  found with the compiled code and with the machine code a package image
+  keeps. A report therefore costs no second compile and covers code compiled
+  earlier in the session. `ir = true` also returns the LLVM bitcode of what
+  the block compiled. Where the host hands a compiled derivative to its
+  caller (`autodiff`, `autodiff_thunk`, Enzyme's run-time rules), it reads one
+  counter more while no report is running. The code of the call itself is
+  unchanged, because kernels on a device share it; so a later call through
+  `autodiff_deferred`, or of a split-mode thunk the caller kept, is not seen.
+  `Enzyme.has_dogfood_repair(:derivative_report)` reports the API;
+  `test/derivative_report.jl` covers the scan and the report, and
+  `test/precompile.jl` a derivative linked from an image.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture
   attributes only for typed raw data pointers, and ignores uses solely in
