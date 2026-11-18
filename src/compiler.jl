@@ -2265,8 +2265,10 @@ function set_module_types!(interp, mod::LLVM.Module, primalf::Union{Nothing, LLV
                 idx = 0
                 if !in(0, parmsRemoved)
                     @assert sret <: Ptr
-                    sret_et = eltype(sret)
-                    rest = copy(typetree_in_world(world, sret_et, ctx, dl, seen))
+                    # Ptr{RT} can reuse an equivalent cached type whose parameter
+                    # represents a union of tuples as a tuple of unions. The sret
+                    # buffer follows the original return convention, so retain RT.
+                    rest = copy(typetree_in_world(world, RT, ctx, dl, seen))
                     sret_size = @dispose layout = LLVM.DataLayout(dl) begin
                         LLVM.sizeof(layout, sret_ty(f, 1))
                     end
