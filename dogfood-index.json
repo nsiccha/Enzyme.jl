@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T17:20:52Z",
+  "prepared_at": "2026-11-18T17:27:47Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -1085,7 +1085,7 @@
             ]
           }
         ],
-        "why_together": "One commit widens the reverse gradient! method to structured mutable destinations, rejects active immutable fields and tests both the direct and DifferentiationInterface APIs. It applies directly to upstream 1ee9a6f8. Upstream 1ee9a6f8 requires Enzyme_jll 0.0.311. 2 of four planned upstream-compatible runs have passed. The four older checks used 0.0.301+0."
+        "why_together": "One commit widens the reverse gradient! method to structured mutable destinations, rejects active immutable fields and tests both the direct and DifferentiationInterface APIs. It applies directly to upstream 1ee9a6f8. Upstream 1ee9a6f8 requires Enzyme_jll 0.0.311. Both default and forced bounds passed on Julia 1.10.12 and 1.12.7. The four older checks used 0.0.301+0."
       },
       "depends_on": [],
       "requires": [],
@@ -1166,25 +1166,25 @@
           "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
           "julia": "1.12.7",
           "bounds": "default",
-          "native_build": "Enzyme_jll 0.0.311+0",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
           "tests": [
             "test/gradient_inplace.jl",
             "test/integration/DifferentiationInterface/structured_gradient.jl"
           ],
-          "result": "not-run",
-          "detail": "Awaiting execution in a freshly resolved upstream environment."
+          "result": "passed",
+          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed. The pristine upstream control raises MethodError for the same tuple destination. Julia build 6d172b025e4. EnzymeCore 0.8.27 and both loaded native products were verified."
         },
         {
           "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
           "julia": "1.12.7",
           "bounds": "forced",
-          "native_build": "Enzyme_jll 0.0.311+0",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
           "tests": [
             "test/gradient_inplace.jl",
             "test/integration/DifferentiationInterface/structured_gradient.jl"
           ],
-          "result": "not-run",
-          "detail": "Awaiting execution in a freshly resolved upstream environment."
+          "result": "passed",
+          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed. The pristine upstream control raises MethodError for the same tuple destination. Julia build 6d172b025e4. EnzymeCore 0.8.27 and both loaded native products were verified."
         }
       ]
     },
