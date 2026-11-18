@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Keep strong zero (`Enzyme.set_strong_zero`) in every derivative rule of a
+  math function. A zero derivative reaching `log` at 0, `exp` where it
+  overflows, or any other function whose partial derivative is infinite there
+  gave NaN (`0 / 0`, `0 * Inf`) even with strong zero on, because only the
+  rules of `*`, `/`, `^` and `rem` checked for it. A mixture with a constant
+  zero-mass component, whose `log(0)` sits in one vector with the active
+  component, therefore had NaN Forward derivatives under strong zero; it now
+  matches Reverse. Without strong zero Forward still gives NaN there, as IEEE
+  arithmetic does. The same check now also guards a call that reaches the
+  result only through a select arm in Reverse, as repair `select_strong_zero`
+  does for `/` and `*`: `ifelse(x > t, log(x), 0.0)` at `x = 0` has derivative
+  0, not NaN. Needs libEnzyme build `adc222b3`;
+  `Enzyme.has_dogfood_repair(:strong_zero_rules)` reports the repair and
+  `test/strong_zero_rules.jl` checks it.
 - Keep nested result-type queries concrete when a higher-order helper is
   reused for a different callable. For example, a loop that seeds a sum with
   `zero(Base.promote_op(f, ...))` can now differentiate the addition
@@ -51,6 +65,20 @@
   `Enzyme.has_dogfood_repair(:sizehint_reserved_shadow)` reports both repairs.
   `test/array_storage.jl` grows into reserved storage after leaving freed
   storage nonzero, and `test/nested_unalias_view.jl` covers the original case.
+- Stop Forward over Reverse from copying a `Const` array that a struct holds
+  beside active data on Julia 1.12 and later. Since the inner reverse pass
+  caches the byte offsets of a `MemoryRef` (the `filter!` and `sizehint!`
+  repair), the outer derivative stores integers computed from the `Const`
+  array's data pointer into its caches and tape, and the constant-field proof
+  took such a store as a possible pointer. It then made a zero-filled copy of
+  the whole array per call, 800 KB for 100,000 `Float64` in
+  `test/const_element_store.jl`. A difference of two addresses holds no
+  address, so the proof now accepts it. The same caching repaired Forward over
+  Reverse of that generator `sum` with runtime activity, whose
+  `EnzymeNoDerivativeError` ("cannot handle unknown binary operator: sub i64")
+  the test no longer marks broken.
+  `Enzyme.has_dogfood_repair(:constant_field_cached_offsets)` reports the
+  repair.
 - Keep the type facts of a union return buffer independent of what compiled
   earlier in the process. A function returning, for example,
   `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct
