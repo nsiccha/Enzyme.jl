@@ -122,7 +122,8 @@ function get_offsets(@nospecialize(T::Type))
         end
     end
 
-    @assert !(T <: AbstractFloat)
+    # Singleton floats have no runtime payload to describe.
+    @assert !(T <: AbstractFloat) || Base.issingletontype(T)
 
     if fieldcount(T) == 0
         return ()
@@ -474,7 +475,7 @@ function typetree_inner(@nospecialize(T::Type), ctx, dl, seen::TypeTreeTable)
         return TypeTree()
     end
 
-    if T <: AbstractFloat
+    if T <: AbstractFloat && !Base.issingletontype(T)
         throw(AssertionError("Unknown floating point type $T"))
     end
 
