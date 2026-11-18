@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Keep the type facts of a union return buffer independent of what compiled
+  earlier in the process. A function returning, for example,
+  `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct
+  `T` returns through a buffer whose type Enzyme read back from the `Ptr` type
+  of that buffer. Julia can reuse an equivalent `Ptr` type cached earlier, whose
+  element type spells the union as the abstract `Tuple{Union{Nothing, T}, T}`,
+  and Enzyme then annotated the buffer's `Float64` fields as pointers. Plain
+  Reverse raised `IllegalTypeAnalysisException` only after other code had
+  compiled: DynamicPPL's `gp_pois_regr` catalogue model failed after
+  `diamonds` in one process and passed alone. The buffer is now annotated from
+  the inferred return type itself. Strict aliasing and static activity stay on.
+  `Enzyme.has_dogfood_repair(:union_return_types)` reports the repair;
+  `test/union_return_types.jl` caches the equivalent pointer type first and
+  checks Reverse gradients on both return branches.
 - Allocate the reverse caches of a ragged loop nest together. In a combined
   Reverse derivative (`autodiff(Reverse, ...)`, `gradient`, and
   DifferentiationInterface's `gradient` with
@@ -17,6 +31,39 @@
   a buffer per cached value. Needs libEnzyme build `15345e27`;
   `Enzyme.has_dogfood_repair(:packed_cache_groups)` reports the repair and
   `test/packed_cache_groups.jl` checks it.
+- Give a fresh `Memory` a header the garbage collector can read before the
+  next safepoint. Julia 1.12 and later leave part of that header to the code
+  that allocates: a `Memory` of a constant length that fits a pool cell
+  (`zeros(64)`, `[a, b]`) is an object allocation followed by stores of its
+  data pointer and its length, and any other `Memory` comes from
+  `jl_alloc_genericmemory_unchecked` without its length. Enzyme allocates the
+  shadow, which is a safepoint, next to such an allocation: Forward mode right
+  after the original, Reverse mode right before it. A collection that started
+  there marked a `Memory` whose header held what its cell held before, and
+  followed what it found: a segmentation fault in `gc_try_claim_and_push`
+  under `gc_mark_outrefs`, once in many thousand calls, since a cell that last
+  held a `Memory` of the same size has a valid header left. Plain Forward mode
+  on one thread was affected, and so were Forward over Reverse, where it was
+  first seen through a `Threads.@threads` loop, and Reverse over Forward.
+  - For the object allocation, Enzyme stores the header of an empty `Memory`
+    with inline data, atomically, right after it: in Forward mode into the
+    allocation a shadow allocation follows, in Reverse mode into the shadow.
+    These are the two commits of upstream pull request #3723 for upstream
+    issue #3698, which is open.
+  - For `jl_alloc_genericmemory_unchecked`, Enzyme stores a length of zero
+    right after the allocation wherever a call that can collect comes before
+    the store of the real length, which is the case for the original in
+    Forward mode. A `Memory` whose elements hold references, such as the
+    `Vector` of tapes of a `Threads.@threads` loop's derivative, had that many
+    elements scanned.
+  `Enzyme.has_dogfood_repair(:memory_header_init)` reports the repair;
+  `test/memory_header_init.jl` checks the stores in the derivative's code and
+  takes derivatives while fresh `Memory` objects land on cells without a valid
+  header. The same repair was found independently from repeated batched
+  Forward through `[a, b]` of structs that hold arrays, which aborted on
+  Julia 1.13.1 within seconds; `test/forward_memory_shadow.jl` repeats that
+  under automatic collection, and `Enzyme.has_dogfood_repair(:forward_memory_shadow_init)`
+  reports the repair under that name too.
 - Differentiate a `ccall` whose library Julia does not resolve while compiling
   the method. Julia 1.12 leaves a module-qualified library
   (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
