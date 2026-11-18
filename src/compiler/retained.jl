@@ -80,8 +80,9 @@ takes to use it in another process.
 - `relocations`: the words of its data to write (a slot holding a Julia value).
 - `values`: symbols that stand for the address of a Julia value.
 - `foreign`: symbols that stand for the address of a C function.
-- `by_threads`: whether the number of threads decided if it accumulates into shadow memory
-  atomically (see `atomic_add_by_threads`).
+- `by_threads`: whether the number of threads decided anything in its code: whether it
+  accumulates into shadow memory atomically (see `atomic_add_by_threads`), or whether a
+  derivative linked into it does (see `ForSeveralThreads`).
 - `findings`: what the code calls (see [`scan_derivative`](@ref)), for a
   [`derivative_report`](@ref) in the session that links it: that session has no module to
   read. `nothing` if the scan failed, and `findings_note` then says why.
@@ -107,10 +108,14 @@ end
 What an image keeps of one derivative, or why it does not. A derivative accumulates into
 shadow memory atomically when it runs with more than one thread (see `atomic_add_for`), and an
 image is written with one thread, so a job that leaves that choice open has two: `serial` and
-`threaded`. Either is a [`RetainedDerivative`](@ref) or the reason there is none. A job whose
-`AtomicAdd` setting settles the choice has one, in `serial`, and `threaded` is `nothing`: one
-compiled with `set_atomic_add`, and a callee that inherits plain accumulation through dynamic
-dispatch and runs no work in parallel itself.
+`threaded`. Either is a [`RetainedDerivative`](@ref) or the reason there is none. The second
+is the whole derivative as a process with several threads compiles it, the derivatives linked
+into it included (see `ForSeveralThreads`).
+
+A job in whose code the number of threads decides nothing has one, in `serial`, and `threaded`
+is `nothing`: one compiled with `set_atomic_add`, or a callee that inherits plain accumulation
+through dynamic dispatch, that runs no threaded loop and has no derivative with the default
+setting linked into it.
 """
 struct RetainedDerivatives
     serial::Union{RetainedDerivative, String}
@@ -569,7 +574,7 @@ function compile_retained(@nospecialize(job::CompilerJob))::RetainedDerivative
         records,
         symbols.values,
         symbols.foreign,
-        atomic_add_by_threads(meta.callee_atomic_add),
+        meta.by_threads,
         findings,
         findings_note,
     )
@@ -762,10 +767,13 @@ function with_atomic_add(@nospecialize(job::CompilerJob), setting::Union{AtomicA
     return CompilerJob(job.source, CompilerConfig(job.config; params), job.world)
 end
 
-# `job`, with the choice `atomic_add_for` leaves to the number of threads made as a process
-# with several makes it.
-for_several_threads(@nospecialize(job::CompilerJob)) =
-    with_atomic_add(job, ForSeveralThreads(job.config.params.atomicAdd))
+# `job`, with every choice the number of threads decides made as a process with several
+# makes it (see `ForSeveralThreads`).
+function for_several_threads(@nospecialize(job::CompilerJob))
+    setting = job.config.params.atomicAdd
+    setting isa ForSeveralThreads && return job
+    return with_atomic_add(job, ForSeveralThreads(setting))
+end
 
 function retained_variant(@nospecialize(job::CompilerJob))::Union{RetainedDerivative, String}
     ts_ctx = JuliaContext()
@@ -798,7 +806,9 @@ function retained_derivatives!(@nospecialize(job::CompilerJob), edges::Vector{An
     retains_derivatives(job) || return nothing
     serial = retained_variant(job)
     setting = job.config.params.atomicAdd
-    # A variant that did not compile does not say whether the number of threads matters.
+    # Whether the number of threads decides anything is known once the derivative is compiled,
+    # since it may do so in a derivative linked into it only. A variant that did not compile
+    # does not say.
     by_threads = serial isa RetainedDerivative ? serial.by_threads :
         setting === nothing || setting === InheritedPlainAdd
     threaded = by_threads ? retained_variant(for_several_threads(job)) : nothing

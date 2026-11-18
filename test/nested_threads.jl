@@ -302,7 +302,7 @@ end
 @testset "The loop bodies an outer derivative differentiates" begin
     Compiler = Enzyme.Compiler
     Thunk = Compiler.ForwardModeThunk{Ptr{Cvoid}, Const{typeof(nt_sumsq)}, Const{Nothing}, Tuple{Const{Int}}, 1, false}
-    settings = ((false, false), false, false, nothing)
+    settings = ((false, false), false, false)
     for T in (
             Compiler.ForwardPFor{Thunk, Const{typeof(nt_sumsq)}, settings, false},
             Compiler.AugmentedPFor{Thunk, Const{typeof(nt_sumsq)}, true, false, Vector{Float64}, settings, false},
