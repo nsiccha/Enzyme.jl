@@ -232,7 +232,7 @@ end
         if VERSION < v"1.11-"
             @test occursin(tape_free_distance, ir)
         else
-            # Fresh Memory merged with the shared empty singleton (above).
+            # Fresh Memory merged with the shared empty singleton above.
             @test_broken occursin(tape_free_distance, ir)
         end
     end
@@ -242,7 +242,7 @@ end
 # fields and readouts: they write only arrays they allocate, but through calls
 # that write the arrays they are given (a matrix product filling the result
 # through gemv! and BLAS), or by filling an array with arrays they compute
-# (collect). The product takes x itself: on Julia 1.12 with bounds checks,
+# collect. The product takes x itself: on Julia 1.12 with bounds checks,
 # `reshape` of a Const array needs runtime activity whatever follows it.
 @noinline fresh_buffer_mix(x) = fill(0.5, length(x), length(x)) * x
 
@@ -290,7 +290,7 @@ end
         if VERSION < v"1.11-"
             @test occursin(tape_free_distance, ir)
         else
-            # Fresh Memory merged with the shared empty singleton (above).
+            # Fresh Memory merged with the shared empty singleton above.
             @test_broken occursin(tape_free_distance, ir)
         end
     end

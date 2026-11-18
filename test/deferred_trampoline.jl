@@ -1,5 +1,5 @@
 using Enzyme, Test
-using LLVM
+using LLVM, LLVM.IR, LLVM.Build
 
 # `autodiff_deferred` called outside of a differentiated function jumps through a lazy JIT
 # trampoline, whose materializer compiles the derivative and emits its module against a
@@ -17,7 +17,7 @@ const DT_JIT = Enzyme.Compiler.JIT
 
 function dt_return_constant!(fn::LLVM.Function, value::Integer)
     @dispose builder = IRBuilder() begin
-        position!(builder, BasicBlock(fn, "top"))
+        position!(builder, LLVM.at_end(BasicBlock(fn, "top")))
         ret!(builder, ConstantInt(LLVM.Int64Type(), value))
     end
     return fn
@@ -25,14 +25,14 @@ end
 
 function dt_defined_function!(mod::LLVM.Module, name::String, linkage, value::Integer)
     fn = dt_return_constant!(LLVM.Function(mod, name, LLVM.FunctionType(LLVM.Int64Type())), value)
-    linkage!(fn, linkage)
+    fn.linkage = linkage
     return fn
 end
 
 function dt_defined_global!(mod::LLVM.Module, name::String, linkage, value::Integer)
     gv = GlobalVariable(mod, LLVM.Int64Type(), name)
-    initializer!(gv, ConstantInt(LLVM.Int64Type(), value))
-    linkage!(gv, linkage)
+    gv.initializer = ConstantInt(LLVM.Int64Type(), value)
+    gv.linkage = linkage
     return gv
 end
 
@@ -53,14 +53,14 @@ end
 
         DT_JIT.export_only!(mod, "entry")
 
-        @test linkage(entry) == LLVM.API.LLVMExternalLinkage
+        @test entry.linkage == LLVM.API.LLVMExternalLinkage
         for value in (other, odr, weak, internal, cache, weak_odr, common)
-            @test linkage(value) == LLVM.API.LLVMInternalLinkage
+            @test value.linkage == LLVM.API.LLVMInternalLinkage
         end
         @test LLVM.API.LLVMGetLinkage(alias) == LLVM.API.LLVMInternalLinkage
-        @test linkage(private) == LLVM.API.LLVMPrivateLinkage
-        @test isdeclaration(declared) && linkage(declared) == LLVM.API.LLVMExternalLinkage
-        @test isdeclaration(external_global) && linkage(external_global) == LLVM.API.LLVMExternalLinkage
+        @test private.linkage == LLVM.API.LLVMPrivateLinkage
+        @test isdeclaration(declared) && declared.linkage == LLVM.API.LLVMExternalLinkage
+        @test isdeclaration(external_global) && external_global.linkage == LLVM.API.LLVMExternalLinkage
         @test (LLVM.verify(mod); true)
     end
 end

@@ -1,5 +1,3 @@
-
-
 @generated function create_shadow_ret(::Val{atup}, ::Val{aref}, primarg::PT, batchshadowarg::BSA, ::Val{RuntimeActivity}) where {atup, aref, PT, BSA, RuntimeActivity}
     if aref == AnyState
         return quote
@@ -9,26 +7,26 @@
     else
         if !atup
             if (aref == DupState || aref == MixedState) &&
-               if RuntimeActivity
-                return quote
-                    Base.@_inline_meta
-                    primarg
-                end
+                    if RuntimeActivity
+                    return quote
+                        Base.@_inline_meta
+                        primarg
+                    end
                 else
-                return quote
-                    Base.@_inline_meta
+                    return quote
+                        Base.@_inline_meta
                         # This field is constant even though its type can hold derivatives.
                         # Give the active aggregate separate zero storage; its adjoint is
                         # discarded when the constructor's reverse skips this argument.
                         Enzyme.make_zero(primarg)
+                    end
                 end
-              end
             end
         end
         if aref == DupState
 
             if batchshadowarg === Nothing && primarg !== Nothing
-                # in this case the arg is inactive [as we passed nothing for the shadow]. 
+                # in this case the arg is inactive [as we passed nothing for the shadow].
                 # However, we still have to return a duplicated value, as it is required by type.
                 if RuntimeActivity
                     return quote
@@ -40,10 +38,10 @@
                         Base.@_inline_meta
                         throw(
                             EnzymeRuntimeActivityError{String, Nothing, Nothing}(
-                            "Error cannot store inactive but differentiable variable "*string(primarg)*" into active tuple",
-                            nothing,
-                            nothing
-                        )
+                                "Error cannot store inactive but differentiable variable " * string(primarg) * " into active tuple",
+                                nothing,
+                                nothing
+                            )
                         )
                     end
                 end
@@ -55,7 +53,7 @@
             end
         else
             if batchshadowarg === Nothing && primarg !== Nothing
-                # in this case the arg is inactive [as we passed nothing for the shadow]. 
+                # in this case the arg is inactive [as we passed nothing for the shadow].
                 # However, we still have to return a duplicated value, as it is required by type.
                 if aref == ActiveState
                     return quote
@@ -66,9 +64,9 @@
                         Base.@_inline_meta
                         throw(
                             EnzymeRuntimeActivityError{String, Nothing, Nothing}(
-                            "Error cannot store inactive but differentiable variable "*string(primarg)*" into active tuple",
-                            nothing,
-                            nothing
+                                "Error cannot store inactive but differentiable variable " * string(primarg) * " into active tuple",
+                                nothing,
+                                nothing
                             )
                         )
                     end
@@ -123,29 +121,30 @@
 end
 
 function body_construct_augfwd(
-    N,
-    RuntimeActivity,
-    Width,
-    primtypes,
-    active_refs,
-    primargs,
-    batchshadowargs,
-    tuple,
-    @nospecialize(NewType::Union{Nothing, Type})
-)
+        N,
+        RuntimeActivity,
+        Width,
+        primtypes,
+        active_refs,
+        primargs,
+        batchshadowargs,
+        tuple,
+        @nospecialize(NewType::Union{Nothing, Type})
+    )
     shadow_rets = Vector{Expr}[]
-    results = Expr[quote
-        $(active_refs...)
-    end
+    results = Expr[
+        quote
+            $(active_refs...)
+        end,
     ]
     @assert length(primtypes) == N
     @assert length(primargs) == N
     @assert length(batchshadowargs) == N
-    for i = 1:N
+    for i in 1:N
         @assert length(batchshadowargs[i]) == Width
         shadow_rets_i = Expr[]
         aref = Symbol("active_ref_$i")
-        for w = 1:Width
+        for w in 1:Width
             sref = Symbol("sub_shadow_" * string(i) * "_" * string(w))
             expr = Expr(:call, create_shadow_ret, :(Val(ActivityTup[$i])), :(Val($aref)), primargs[i], batchshadowargs[i][w], Val(RuntimeActivity))
             push!(shadow_rets_i, expr)
@@ -155,10 +154,10 @@ function body_construct_augfwd(
 
     ref_syms = Expr[]
     res_syms = Symbol[]
-    for w = 1:Width
+    for w in 1:Width
         sres = Symbol("result_$w")
         combined = Expr[]
-        for i = 1:N
+        for i in 1:N
             push!(combined, shadow_rets[i][w])
         end
         if tuple
@@ -179,22 +178,26 @@ function body_construct_augfwd(
     end
 
     if Width == 1
-        push!(results,
+        push!(
+            results,
             quote
                 if $wrapcond
                     $(ref_syms[1])
                 else
                     $(res_syms[1])
                 end
-            end)
+            end
+        )
     else
-        push!(results, quote
+        push!(
+            results, quote
                 if $wrapcond
                     ReturnType(($(ref_syms...),))
                 else
                     ReturnType(($(res_syms...),))
                 end
-            end)
+            end
+        )
     end
 
     return Expr(:block, results...)
@@ -202,19 +205,19 @@ end
 
 
 function body_construct_rev(
-    N,
-    Width,
-    primtypes,
-    active_refs,
-    primargs,
-    batchshadowargs,
-    dfns,
-    tuple,
-    @nospecialize(NewType::Union{Nothing,Type})
-)
-    outs = Vector{Expr}(undef, N*Width)
-    for i = 1:N
-        for w = 1:Width
+        N,
+        Width,
+        primtypes,
+        active_refs,
+        primargs,
+        batchshadowargs,
+        dfns,
+        tuple,
+        @nospecialize(NewType::Union{Nothing, Type})
+    )
+    outs = Vector{Expr}(undef, N * Width)
+    for i in 1:N
+        for w in 1:Width
             tsym = Symbol("tval_$w")
             expr = if tuple
                 :($tsym[$i])
@@ -228,7 +231,7 @@ function body_construct_rev(
                 # Inactive argument, don't need to update anything
                 if !($shad === nothing && $prim !== nothing)
                     if $(Symbol("active_ref_$i")) == MixedState ||
-                       $(Symbol("active_ref_$i")) == ActiveState
+                            $(Symbol("active_ref_$i")) == ActiveState
                         if $shad isa Base.RefValue
                             $shad[] = recursive_add($shad[], $expr, identity, guaranteed_nonactive)
                         else
@@ -237,7 +240,7 @@ function body_construct_rev(
                     end
                 end
             )
-            @inbounds outs[(i-1)*Width+w] = out
+            @inbounds outs[(i - 1) * Width + w] = out
         end
     end
 
@@ -247,7 +250,7 @@ function body_construct_rev(
     else
         :(tval_1 = tape[])
     end
-    for w = 2:Width
+    for w in 2:Width
         sym = Symbol("tval_$w")
         df = dfns[w]
         @inbounds tapes[w] = if !tuple && ismutabletype(NewType)
@@ -257,7 +260,7 @@ function body_construct_rev(
         end
     end
 
-    quote
+    return quote
         $(active_refs...)
 
         if any_mixed
@@ -270,43 +273,43 @@ end
 
 
 function body_runtime_tuple_rev(N, Width, primtypes, active_refs, primargs, batchshadowargs, dfns)
-    body_construct_rev(N, Width, primtypes, active_refs, primargs, batchshadowargs, dfns, true, nothing)
+    return body_construct_rev(N, Width, primtypes, active_refs, primargs, batchshadowargs, dfns, true, nothing)
 end
 
 function body_runtime_newstruct_rev(
-    N,
-    Width,
-    primtypes,
-    active_refs,
-    primargs,
-    batchshadowargs,
-    dfns,
-    @nospecialize(NewType::Union{Nothing,Type})
-)
-    body_construct_rev(N, Width, primtypes, active_refs, primargs, batchshadowargs, dfns, false, NewType)
+        N,
+        Width,
+        primtypes,
+        active_refs,
+        primargs,
+        batchshadowargs,
+        dfns,
+        @nospecialize(NewType::Union{Nothing, Type})
+    )
+    return body_construct_rev(N, Width, primtypes, active_refs, primargs, batchshadowargs, dfns, false, NewType)
 end
 
 
 function body_runtime_tuple_augfwd(
-    N,
-    RuntimeActivity::Bool,
-    Width,
-    primtypes,
-    active_refs,
-    primargs,
-    batchshadowargs,
-)
-    body_construct_augfwd(N, RuntimeActivity, Width, primtypes, active_refs, primargs, batchshadowargs, true, nothing)
+        N,
+        RuntimeActivity::Bool,
+        Width,
+        primtypes,
+        active_refs,
+        primargs,
+        batchshadowargs,
+    )
+    return body_construct_augfwd(N, RuntimeActivity, Width, primtypes, active_refs, primargs, batchshadowargs, true, nothing)
 end
 
 @generated function runtime_tuple_augfwd(
-    activity::Type{Val{ActivityTup}},
-    rta::Val{RuntimeActivity},
-    width::Val{Width},
-    ModifiedBetween::Val{MB},
-    RT::Val{ReturnType},
-    allargs...,
-)::ReturnType where {ActivityTup,MB,RuntimeActivity,Width,ReturnType}
+        activity::Type{Val{ActivityTup}},
+        rta::Val{RuntimeActivity},
+        width::Val{Width},
+        ModifiedBetween::Val{MB},
+        RT::Val{ReturnType},
+        allargs...,
+    )::ReturnType where {ActivityTup, MB, RuntimeActivity, Width, ReturnType}
     N = div(length(allargs), Width + 1)
     primargs, _, primtypes, _, _, wrapped, batchshadowargs, _, active_refs, dfns =
         setup_macro_wraps(false, N, Width, :allargs; func = false, mixed_or_active = true)
@@ -328,26 +331,26 @@ function func_runtime_tuple_rev(N, Width)
     body =
         body_runtime_tuple_rev(N, Width, primtypes, active_refs, primargs, batchshadowargs, dfns)
 
-    quote
+    return quote
         function runtime_tuple_rev(
-            activity::Type{Val{ActivityTup}},
-            width::Val{$Width},
-            ModifiedBetween::Val{MB},
-            tape::TapeType,
-            $(allargs...),
-        ) where {ActivityTup,MB,TapeType,$(typeargs...)}
+                activity::Type{Val{ActivityTup}},
+                width::Val{$Width},
+                ModifiedBetween::Val{MB},
+                tape::TapeType,
+                $(allargs...),
+            ) where {ActivityTup, MB, TapeType, $(typeargs...)}
             $body
         end
     end
 end
 
 @generated function runtime_tuple_rev(
-    activity::Type{Val{ActivityTup}},
-    width::Val{Width},
-    ModifiedBetween::Val{MB},
-    tape::TapeType,
-    allargs...,
-) where {ActivityTup,MB,Width,TapeType}
+        activity::Type{Val{ActivityTup}},
+        width::Val{Width},
+        ModifiedBetween::Val{MB},
+        tape::TapeType,
+        allargs...,
+    ) where {ActivityTup, MB, Width, TapeType}
     N = div(length(allargs), Width + 1)
     primargs, _, primtypes, _, _, wrapped, batchshadowargs, _, active_refs, dfns =
         setup_macro_wraps(false, N, Width, :allargs; mixed_or_active = true)
@@ -364,16 +367,16 @@ end
 
 
 function body_runtime_newstruct_augfwd(
-    N,
-    RuntimeActivity,
-    Width,
-    primtypes,
-    active_refs,
-    primargs,
-    batchshadowargs,
-    @nospecialize(NewType::Type)
-)
-    body_construct_augfwd(
+        N,
+        RuntimeActivity,
+        Width,
+        primtypes,
+        active_refs,
+        primargs,
+        batchshadowargs,
+        @nospecialize(NewType::Type)
+    )
+    return body_construct_augfwd(
         N,
         RuntimeActivity,
         Width,
@@ -387,14 +390,14 @@ function body_runtime_newstruct_augfwd(
 end
 
 @generated function runtime_newstruct_augfwd(
-    activity::Type{Val{ActivityTup}},
-    rta::Val{RuntimeActivity},
-    width::Val{Width},
-    ModifiedBetween::Val{MB},
-    ::Type{NewType},
-    RT::Val{ReturnType},
-    allargs...,
-)::ReturnType where {ActivityTup,MB,RuntimeActivity,Width,ReturnType,NewType}
+        activity::Type{Val{ActivityTup}},
+        rta::Val{RuntimeActivity},
+        width::Val{Width},
+        ModifiedBetween::Val{MB},
+        ::Type{NewType},
+        RT::Val{ReturnType},
+        allargs...,
+    )::ReturnType where {ActivityTup, MB, RuntimeActivity, Width, ReturnType, NewType}
     N = div(length(allargs), Width + 1)
     primargs, _, primtypes, _, _, wrapped, batchshadowargs, _, active_refs, dfns =
         setup_macro_wraps(false, N, Width, :allargs; mixed_or_active = true)
@@ -411,13 +414,13 @@ end
 end
 
 @generated function runtime_newstruct_rev(
-    activity::Type{Val{ActivityTup}},
-    width::Val{Width},
-    ModifiedBetween::Val{MB},
-    ::Type{NewStruct},
-    tape::TapeType,
-    allargs...,
-) where {ActivityTup,MB,Width,NewStruct,TapeType}
+        activity::Type{Val{ActivityTup}},
+        width::Val{Width},
+        ModifiedBetween::Val{MB},
+        ::Type{NewStruct},
+        tape::TapeType,
+        allargs...,
+    ) where {ActivityTup, MB, Width, NewStruct, TapeType}
     N = div(length(allargs), Width + 1)
     primargs, _, primtypes, _, _, wrapped, batchshadowargs, _, active_refs, dfns =
         setup_macro_wraps(false, N, Width, :allargs; mixed_or_active = true)
@@ -445,8 +448,8 @@ function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR, e
 
     world = enzyme_world()
 
-    @assert is_constant_value(gutils, operands(orig)[offset])
-    ops = @view arg_operands_view(orig)[offset+1:end]
+    @assert is_constant_value(gutils, orig.operands[offset])
+    ops = @view orig.arguments[(offset + 1):end]
     icvs = [is_constant_value(gutils, v) for v in ops]
     abs_partial = [abs_typeof(v, enzyme_ctx, true) for v in ops]
     abs = [abs_typeof(v, enzyme_ctx) for v in ops]
@@ -461,7 +464,7 @@ function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR, e
                 if !found_partial
                     return false
                 end
-                if !get_runtime_activity(gutils)                
+                if !get_runtime_activity(gutils)
                     if !guaranteed_const_nongen(typ_partial, world)
                         return false
                     end
@@ -472,7 +475,7 @@ function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR, e
                     # active data [aka is pure duplicated, or const], since we will then
                     # still preserve the primal === shadow pointer relationships for anything
                     # stored.
-                    if !guaranteed_nonactive(typ_partial, world; AbstractIsMixed=true)
+                    if !guaranteed_nonactive(typ_partial, world; AbstractIsMixed = true)
                         bypass = false
                         if legalRT
                             desc = Base.DataTypeFieldDesc(structRT)
@@ -491,7 +494,7 @@ function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR, e
                 if !found_partial
                     return false
                 end
-                if !guaranteed_nonactive(typ_partial, world; AbstractIsMixed=true)
+                if !guaranteed_nonactive(typ_partial, world; AbstractIsMixed = true)
                     return false
                 end
             end
@@ -502,14 +505,14 @@ function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR, e
         return true
     end
 
-    shadowsin = LLVM.Value[invert_pointer(gutils, operands(orig)[offset], B)]
+    shadowsin = LLVM.Value[invert_pointer(gutils, orig.operands[offset], B)]
     T_prjlvalue = LLVM.PointerType(LLVM.StructType(LLVMType[]), Tracked)
     for (o, icv, (found_partial, typ_partial, _)) in zip(ops, icvs, abs_partial)
         # In forward mode without runtime activity, the shadow of a constant element is
         # its primal (invert_pointer), and code that reads the element back from this
         # active struct takes the primal as its tangent. The tangent of a constant is
         # zero, so use a zero-filled copy unless the type holds no differentiable data.
-        if fwd && icv && !get_runtime_activity(gutils) && value_type(o) == T_prjlvalue &&
+        if fwd && icv && !get_runtime_activity(gutils) && o.value_type == T_prjlvalue &&
                 !(found_partial && guaranteed_const_nongen(typ_partial, world))
             no = new_from_original(gutils, o)
             zargs = LLVM.Value[unsafe_to_llvm(B, Enzyme.make_zero), no]
@@ -529,21 +532,21 @@ function newstruct_common(fwd, run, offset, B, orig, gutils, normalR, shadowR, e
     end
     if width == 1
         if offset != 1
-            pushfirst!(shadowsin, LLVM.operands(orig)[1])
+            pushfirst!(shadowsin, orig.operands[1])
         end
 
-        shadowres = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), shadowsin)
-        callconv!(shadowres, callconv(orig))
+        shadowres = LLVM.call!(B, orig.called_type, orig.called_operand, shadowsin)
+        shadowres.callconv = orig.callconv
     else
         shadowres =
-            UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig))))
-        for idx = 1:width
+            UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type)))
+        for idx in 1:width
             args = LLVM.Value[extract_value!(B, s, idx - 1) for s in shadowsin]
             if offset != 1
-                pushfirst!(args, operands(orig)[1])
+                pushfirst!(args, orig.operands[1])
             end
-            tmp = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), args)
-            callconv!(tmp, callconv(orig))
+            tmp = LLVM.call!(B, orig.called_type, orig.called_operand, args)
+            tmp.callconv = orig.callconv
             shadowres = insert_value!(B, shadowres, tmp, idx - 1)
         end
     end
@@ -565,26 +568,26 @@ function common_newstructv_fwd(offset, B, orig, gutils, normalR, shadowR)
     )
 
     if (is_constant_value(gutils, orig) || needsShadowP[] == 0) &&
-       is_constant_inst(gutils, orig)
+            is_constant_inst(gutils, orig)
         return true
     end
 
     if !newstruct_common(true, true, offset, B, orig, gutils, normalR, shadowR, enzyme_ctx) #=run=#
-        origops = arg_operands_view(orig)
-        ops = origops[offset+1:end]
+        origops = orig.arguments
+        ops = origops[(offset + 1):end]
         abs_partial = [abs_typeof(v, enzyme_ctx, true) for v in ops]
         icvs = [is_constant_value(gutils, v) for v in ops]
         emit_error(
             B,
             orig,
             "Enzyme: Not yet implemented, mixed activity for jl_new_struct constants=" *
-            string(icvs) *
-            " " *
-            string(orig) *
-            " " *
-            string(abs_partial) *
-            " " *
-            string([v for v in origops[offset+1:end]]),
+                string(icvs) *
+                " " *
+                string(orig) *
+                " " *
+                string(abs_partial) *
+                " " *
+                string([v for v in origops[(offset + 1):end]]),
         )
     end
 
@@ -604,7 +607,7 @@ function common_newstructv_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
     )
 
     if (is_constant_value(gutils, orig) || needsShadowP[] == 0) &&
-       is_constant_inst(gutils, orig)
+            is_constant_inst(gutils, orig)
         return true
     end
 
@@ -645,9 +648,9 @@ function common_newstructv_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
             cal = sret
             cal = LLVM.addrspacecast!(B, cal, LLVM.PointerType(T_jlvalue, Derived))
             cal = LLVM.pointercast!(B, cal, LLVM.PointerType(llty, Derived))
-            ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig)))
+            ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type))
             shadow = LLVM.UndefValue(ST)
-            for i = 1:width
+            for i in 1:width
                 gep = LLVM.inbounds_gep!(
                     B,
                     AT,
@@ -711,7 +714,7 @@ function common_newstructv_rev(offset, B, orig, gutils, tape)
 end
 
 function common_f_tuple_fwd(offset, B, orig, gutils, normalR, shadowR)
-    common_newstructv_fwd(offset, B, orig, gutils, normalR, shadowR)
+    return common_newstructv_fwd(offset, B, orig, gutils, normalR, shadowR)
 end
 
 function common_f_tuple_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)::Bool
@@ -765,9 +768,9 @@ function common_f_tuple_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)
             cal = sret
             cal = LLVM.addrspacecast!(B, cal, LLVM.PointerType(T_jlvalue, Derived))
             cal = LLVM.pointercast!(B, cal, LLVM.PointerType(llty, Derived))
-            ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig)))
+            ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type))
             shadow = LLVM.UndefValue(ST)
-            for i = 1:width
+            for i in 1:width
                 gep = LLVM.inbounds_gep!(
                     B,
                     AT,
@@ -822,9 +825,9 @@ function common_f_tuple_rev(offset, B, orig, gutils, tape)
             cal = tape
             cal = LLVM.addrspacecast!(B, cal, LLVM.PointerType(T_jlvalue, Derived))
             cal = LLVM.pointercast!(B, cal, LLVM.PointerType(llty, Derived))
-            ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig)))
+            ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type))
 
-            for i = 1:width
+            for i in 1:width
                 gep = LLVM.inbounds_gep!(
                     B,
                     AT,
@@ -893,37 +896,37 @@ end
     )
 
     if (is_constant_value(gutils, orig) || needsShadowP[] == 0) &&
-       is_constant_inst(gutils, orig)
+            is_constant_inst(gutils, orig)
         return true
     end
 
     width = get_width(gutils)
 
-    @assert is_constant_value(gutils, operands(orig)[1])
-    if is_constant_value(gutils, operands(orig)[2])
+    @assert is_constant_value(gutils, orig.operands[1])
+    if is_constant_value(gutils, orig.operands[2])
         emit_error(
             B,
             orig,
             "Enzyme: Not yet implemented, mixed activity for jl_new_struct_t" *
-            string(orig),
+                string(orig),
         )
     end
 
-    shadowsin = invert_pointer(gutils, operands(orig)[2], B)
+    shadowsin = invert_pointer(gutils, orig.operands[2], B)
     if width == 1
-        vals = [new_from_original(gutils, operands(orig)[1]), shadowsin]
-        shadowres = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), vals)
-        callconv!(shadowres, callconv(orig))
+        vals = [new_from_original(gutils, orig.operands[1]), shadowsin]
+        shadowres = LLVM.call!(B, orig.called_type, orig.called_operand, vals)
+        shadowres.callconv = orig.callconv
     else
         shadowres =
-            UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig))))
-        for idx = 1:width
+            UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type)))
+        for idx in 1:width
             vals = [
-                new_from_original(gutils, operands(orig)[1]),
+                new_from_original(gutils, orig.operands[1]),
                 extract_value!(B, shadowsin, idx - 1),
             ]
-            tmp = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), vals)
-            callconv!(tmp, callconv(orig))
+            tmp = LLVM.call!(B, orig.called_type, orig.called_operand, vals)
+            tmp.callconv = orig.callconv
             shadowres = insert_value!(B, shadowres, tmp, idx - 1)
         end
     end
@@ -944,38 +947,38 @@ end
     )
 
     if (is_constant_value(gutils, orig) || needsShadowP[] == 0) &&
-       is_constant_inst(gutils, orig)
+            is_constant_inst(gutils, orig)
         return true
     end
 
     width = get_width(gutils)
 
-    @assert is_constant_value(gutils, operands(orig)[1])
-    if is_constant_value(gutils, operands(orig)[2])
+    @assert is_constant_value(gutils, orig.operands[1])
+    if is_constant_value(gutils, orig.operands[2])
         emit_error(
             B,
             orig,
             "Enzyme: Not yet implemented, mixed activity for jl_new_struct_t" *
-            string(orig),
+                string(orig),
         )
     end
 
-    shadowsin = invert_pointer(gutils, operands(orig)[2], B)
+    shadowsin = invert_pointer(gutils, orig.operands[2], B)
     if width == 1
-        vals = [new_from_original(gutils, operands(orig)[1]), val_from_byref_if_mixed(B, gutils, operands(orig)[2], shadowsin, enzyme_ctx)]
-        shadowres = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), vals)
-        callconv!(shadowres, callconv(orig))
+        vals = [new_from_original(gutils, orig.operands[1]), val_from_byref_if_mixed(B, gutils, orig.operands[2], shadowsin, enzyme_ctx)]
+        shadowres = LLVM.call!(B, orig.called_type, orig.called_operand, vals)
+        shadowres.callconv = orig.callconv
         shadowres = byref_from_val_if_mixed(B, shadowres, enzyme_ctx)
     else
         shadowres =
-            UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig))))
-        for idx = 1:width
+            UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type)))
+        for idx in 1:width
             vals = [
-                new_from_original(gutils, operands(orig)[1]),
-                val_from_byref_if_mixed(B, gutils, operands(orig)[2], extract_value!(B, shadowsin, idx - 1), enzyme_ctx),
+                new_from_original(gutils, orig.operands[1]),
+                val_from_byref_if_mixed(B, gutils, orig.operands[2], extract_value!(B, shadowsin, idx - 1), enzyme_ctx),
             ]
-            tmp = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), vals)
-            callconv!(tmp, callconv(orig))
+            tmp = LLVM.call!(B, orig.called_type, orig.called_operand, vals)
+            tmp.callconv = orig.callconv
             tmp = byref_from_val_if_mixed(B, tmp, enzyme_ctx)
             shadowres = insert_value!(B, shadowres, tmp, idx - 1)
         end
@@ -996,12 +999,14 @@ end
     return false
 end
 
-@generated function recursive_tuple(::Val{num}, lhs, rhs) where num
+@generated function recursive_tuple(::Val{num}, lhs, rhs) where {num}
     exprs = Expr[]
     for i in 1:num
-        push!(exprs, quote
-            recursive_add(lhs[$i], getfield(rhs, $i), identity, guaranteed_nonactive)
-        end)
+        push!(
+            exprs, quote
+                recursive_add(lhs[$i], getfield(rhs, $i), identity, guaranteed_nonactive)
+            end
+        )
     end
     return quote
         Base.@_inline_meta
@@ -1015,31 +1020,17 @@ end
         dres = if i == 1
             :revres0
         else
-            :(args[$(2*(i-2)+1)])
+            :(args[$(2 * (i - 2) + 1)])
         end
         darg = if i == 1
             :revarg0
         else
-            :(args[$(2*(i-2)+1+1)])
+            :(args[$(2 * (i - 2) + 1 + 1)])
         end
         if OR == Nothing
-            push!(exprs, quote
-                @assert $dres isa Base.RefValue
-                if $darg isa Base.RefValue
-                    tmparg = $darg[]
-                    tmpres = $dres[]
-                    $darg[] = recursive_tuple(Val(length(tmparg)), tmparg, tmpres)
-                else
-                    error(
-                        "Enzyme Mutability Error: Cannot accumulate in place to immutable value " *
-                        string($darg),
-                    )
-                end
-            end)
-        elseif OR <: Base.RefValue
-        else
-            push!(exprs, quote
-                if $dres isa Base.RefValue
+            push!(
+                exprs, quote
+                    @assert $dres isa Base.RefValue
                     if $darg isa Base.RefValue
                         tmparg = $darg[]
                         tmpres = $dres[]
@@ -1047,11 +1038,29 @@ end
                     else
                         error(
                             "Enzyme Mutability Error: Cannot accumulate in place to immutable value " *
-                            string($darg),
+                                string($darg),
                         )
                     end
                 end
-            end)
+            )
+        elseif OR <: Base.RefValue
+        else
+            push!(
+                exprs, quote
+                    if $dres isa Base.RefValue
+                        if $darg isa Base.RefValue
+                            tmparg = $darg[]
+                            tmpres = $dres[]
+                            $darg[] = recursive_tuple(Val(length(tmparg)), tmparg, tmpres)
+                        else
+                            error(
+                                "Enzyme Mutability Error: Cannot accumulate in place to immutable value " *
+                                    string($darg),
+                            )
+                        end
+                    end
+                end
+            )
         end
     end
     expr = quote
@@ -1104,10 +1113,10 @@ end
         if legal
             push!(vals, unsafe_to_llvm(B, Nothing))
         else
-            push!(vals, lookup_value(gutils, new_from_original(gutils, operands(orig)[1]), B))
+            push!(vals, lookup_value(gutils, new_from_original(gutils, orig.operands[1]), B))
         end
 
-        shadowsin = lookup_value(gutils, invert_pointer(gutils, operands(orig)[2], B), B)
+        shadowsin = lookup_value(gutils, invert_pointer(gutils, orig.operands[2], B), B)
         if width == 1
             push!(vals, tape)
             push!(vals, shadowsin)
@@ -1127,14 +1136,14 @@ function module_lookup_shadow!(B, orig, gutils, reverse)
     # Use the value the primal actually read, including its load ordering and
     # exceptions. Each batch lane needs its own mutable zero shadow.
     normal = new_from_original(gutils, orig)
-    position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(normal)))
+    position!(B, LLVM.before(LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(normal))))
     fn = reverse ? module_lookup_aug_shadow : Enzyme.make_zero
     args = LLVM.Value[unsafe_to_llvm(B, fn), normal]
     width = get_width(gutils)
     if width == 1
         return emit_apply_generic!(B, args)
     end
-    shadow = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig))))
+    shadow = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type)))
     for idx in 1:width
         shadow = insert_value!(B, shadow, emit_apply_generic!(B, args), idx - 1)
     end
@@ -1147,46 +1156,46 @@ function common_jl_getfield_fwd(offset, B, orig, gutils, normalR, shadowR)
         return true
     end
 
-    ops = @view operands(orig)[offset:end]
+    ops = @view orig.operands[offset:end]
     width = get_width(gutils)
     if !is_constant_value(gutils, ops[2])
         shadowin = invert_pointer(gutils, ops[2], B)
         if width == 1
             args = LLVM.Value[new_from_original(gutils, ops[1]), shadowin]
-            for a in @view arg_operands_view(orig)[offset+2:end]
+            for a in @view orig.arguments[(offset + 2):end]
                 push!(args, new_from_original(gutils, a))
             end
             if offset != 1
-                pushfirst!(args, first(operands(orig)))
+                pushfirst!(args, first(orig.operands))
             end
-            shadowres = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), args)
-            callconv!(shadowres, callconv(orig))
+            shadowres = LLVM.call!(B, orig.called_type, orig.called_operand, args)
+            shadowres.callconv = orig.callconv
             if get_runtime_activity(gutils)
-                is_inactive = icmp!(B, LLVM.API.LLVMIntEQ, shadowin, new_from_original(gutils, ops[2]))
+                is_inactive = icmp!(B, LLVM.IntPredicate.EQ, shadowin, new_from_original(gutils, ops[2]))
                 newval = new_from_original(gutils, orig)
                 shadowres = select!(B, is_inactive, newval, shadowres)
                 API.moveBefore(newval, shadowres, B)
             end
         else
             shadowres =
-                UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig))))
-            for idx = 1:width
+                UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type)))
+            for idx in 1:width
                 shadowin_idx = extract_value!(B, shadowin, idx - 1)
                 args = LLVM.Value[
                     new_from_original(gutils, ops[1]),
                     shadowin_idx,
                 ]
-                for a in @view arg_operands_view(orig)[offset+2:end]
+                for a in @view orig.arguments[(offset + 2):end]
                     push!(args, new_from_original(gutils, a))
                 end
                 if offset != 1
-                    pushfirst!(args, first(operands(orig)))
+                    pushfirst!(args, first(orig.operands))
                 end
-                tmp = LLVM.call!(B, called_type(orig), LLVM.called_operand(orig), args)
-                callconv!(tmp, callconv(orig))
+                tmp = LLVM.call!(B, orig.called_type, orig.called_operand, args)
+                tmp.callconv = orig.callconv
 
                 if get_runtime_activity(gutils)
-                    is_inactive = icmp!(B, LLVM.API.LLVMIntEQ, shadowin_idx, new_from_original(gutils, ops[2]))
+                    is_inactive = icmp!(B, LLVM.IntPredicate.EQ, shadowin_idx, new_from_original(gutils, ops[2]))
                     newval = new_from_original(gutils, orig)
                     tmp = select!(B, is_inactive, newval, tmp)
                     if idx == 1
@@ -1207,25 +1216,25 @@ function common_jl_getfield_fwd(offset, B, orig, gutils, normalR, shadowR)
             return false
         end
 
-		if !get_runtime_activity(gutils)
-			estr = "Mismatched activity for: " * string(orig) * " const input " *string(ops[2]) * ", differentiable return"
+        if !get_runtime_activity(gutils)
+            estr = "Mismatched activity for: " * string(orig) * " const input " * string(ops[2]) * ", differentiable return"
             shadowres = julia_error(estr, orig.ref, API.ET_MixedActivityError, gutils.ref, orig.ref, B.ref, enzyme_ctx)
-			if shadowres != C_NULL
-				unsafe_store!(shadowR, shadowres)
-				return true
-			end
-		end
+            if shadowres != C_NULL
+                unsafe_store!(shadowR, shadowres)
+                return true
+            end
+        end
 
-	    normal = new_from_original(gutils, orig)
+        normal = new_from_original(gutils, orig)
 
         if width == 1
             shadowres = normal
         else
             shadowres = UndefValue(
-                LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(normal))),
+                LLVM.LLVMType(API.EnzymeGetShadowType(width, normal.value_type)),
             )
-            position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(normal)))
-            for idx = 1:width
+            position!(B, LLVM.after(normal))
+            for idx in 1:width
                 shadowres = insert_value!(B, shadowres, normal, idx - 1)
             end
         end
@@ -1234,7 +1243,7 @@ function common_jl_getfield_fwd(offset, B, orig, gutils, normalR, shadowR)
     return false
 end
 
-@generated function ntuple_ref_zero(::Val{N}, ::Type{RT}, res) where {N,RT}
+@generated function ntuple_ref_zero(::Val{N}, ::Type{RT}, res) where {N, RT}
     expr = Vector{Expr}(undef, N)
     fill!(expr, :(Ref{$RT}(make_zero(res))))
     return quote
@@ -1243,9 +1252,9 @@ end
     end
 end
 
-@generated function ntuple_ref_lookup(::Val{N}, ::Type{RT}, dptrs, symname) where {N,RT}
+@generated function ntuple_ref_lookup(::Val{N}, ::Type{RT}, dptrs, symname) where {N, RT}
     expr = Vector{Expr}(undef, N)
-    for i = 1:N
+    for i in 1:N
         @inbounds expr[i] = quote
             begin
                 dv = dptrs[$i]
@@ -1261,7 +1270,7 @@ end
 
 @generated function ntuple_lookup(::Val{N}, ptrs, symname) where {N}
     expr = Vector{Expr}(undef, N)
-    for i = 1:N
+    for i in 1:N
         @inbounds expr[i] = quote
             begin
                 dv = ptrs[$i]
@@ -1276,12 +1285,12 @@ end
 end
 
 function rt_jl_getfield_aug(
-    ::Val{NT},
-    dptr::T,
-    ::Type{Val{symname}},
-    ::Val{isconst},
-    dptrs::Vararg{T,Nargs},
-) where {NT,T,Nargs,symname,isconst}
+        ::Val{NT},
+        dptr::T,
+        ::Type{Val{symname}},
+        ::Val{isconst},
+        dptrs::Vararg{T, Nargs},
+    ) where {NT, T, Nargs, symname, isconst}
     res = if dptr isa Base.RefValue
         Base.getfield(dptr[], symname)
     else
@@ -1290,7 +1299,7 @@ function rt_jl_getfield_aug(
     RT = Core.Typeof(res)
 
     actreg = active_reg_nothrow(RT)
-    if actreg == ActiveState || (isconst && actreg == MixedState)
+    return if actreg == ActiveState || (isconst && actreg == MixedState)
         if length(dptrs) == 0
             return Ref{RT}(make_zero(res))
         else
@@ -1300,10 +1309,12 @@ function rt_jl_getfield_aug(
         if length(dptrs) == 0
             return Ref{RT}(res)
         else
-            fval = NT((
-                Ref{RT}(res),
-                ntuple_ref_lookup(Val(length(dptrs)), RT, dptrs, symname)...,
-            ))
+            fval = NT(
+                (
+                    Ref{RT}(res),
+                    ntuple_ref_lookup(Val(length(dptrs)), RT, dptrs, symname)...,
+                )
+            )
             return fval
         end
     elseif isconst
@@ -1324,12 +1335,12 @@ function rt_jl_getfield_aug(
 end
 
 function idx_jl_getfield_aug(
-    ::Val{NT},
-    dptr::T,
-    ::Type{Val{symname}},
-    ::Val{isconst},
-    dptrs::Vararg{T,Nargs},
-) where {NT,T,Nargs,symname,isconst}
+        ::Val{NT},
+        dptr::T,
+        ::Type{Val{symname}},
+        ::Val{isconst},
+        dptrs::Vararg{T, Nargs},
+    ) where {NT, T, Nargs, symname, isconst}
     res = if dptr isa Base.RefValue
         Base.getfield(dptr[], symname + 1)
     else
@@ -1337,7 +1348,7 @@ function idx_jl_getfield_aug(
     end
     RT = Core.Typeof(res)
     actreg = active_reg_nothrow(RT)
-    if actreg == ActiveState || (isconst && actreg == MixedState)
+    return if actreg == ActiveState || (isconst && actreg == MixedState)
         if length(dptrs) == 0
             return Ref{RT}(make_zero(res))::Any
         else
@@ -1347,10 +1358,12 @@ function idx_jl_getfield_aug(
         if length(dptrs) == 0
             return Ref{RT}(res)
         else
-            fval = NT((
-                Ref{RT}(res),
-                ntuple_ref_lookup(Val(length(dptrs)), RT, dptrs, symname + 1)...,
-            ))
+            fval = NT(
+                (
+                    Ref{RT}(res),
+                    ntuple_ref_lookup(Val(length(dptrs)), RT, dptrs, symname + 1)...,
+                )
+            )
             return fval
         end
     elseif isconst
@@ -1371,14 +1384,14 @@ function idx_jl_getfield_aug(
 end
 
 @generated function recursive_field_add(
-    ::Type{dRT},
-    vload,
-    ::Val{symname},
-    dret,
-) where {dRT,symname}
+        ::Type{dRT},
+        vload,
+        ::Val{symname},
+        dret,
+    ) where {dRT, symname}
     N = fieldcount(dRT)
     exprs = Vector{Expr}(undef, N)
-    for i = 1:N
+    for i in 1:N
         @inbounds exprs[i] = if fieldname(dRT, i) == symname
             :(recursive_add(getfield(vload, $i), dret, identity, guaranteed_nonactive))
         else
@@ -1393,12 +1406,12 @@ end
 end
 
 function rt_jl_getfield_rev(
-    dptr::T,
-    dret,
-    ::Type{Val{symname}},
-    ::Val{isconst},
-    dptrs::Vararg{T,Nargs},
-) where {T,Nargs,symname,isconst}
+        dptr::T,
+        dret,
+        ::Type{Val{symname}},
+        ::Val{isconst},
+        dptrs::Vararg{T, Nargs},
+    ) where {T, Nargs, symname, isconst}
     cur = if dptr isa Base.RefValue
         getfield(dptr[], symname)
     else
@@ -1429,11 +1442,11 @@ function rt_jl_getfield_rev(
             else
                 setfield!(dptr, symname, recursive_add(cur, dret[1][]))
             end
-            for i = 1:length(dptrs)
+            for i in 1:length(dptrs)
                 if dptrs[i] isa Base.RefValue
                     vload = dptrs[i][]
                     dRT = Core.Typeof(vload)
-                    dptrs[i][] = recursive_field_add(dRT, vload, Val(symname), dret[1+i][])
+                    dptrs[i][] = recursive_field_add(dRT, vload, Val(symname), dret[1 + i][])
                 else
                     curi = if dptr isa Base.RefValue
                         Base.getfield(dptrs[i][], symname)
@@ -1443,7 +1456,7 @@ function rt_jl_getfield_rev(
                     setfield!(
                         dptrs[i],
                         symname,
-                        recursive_add(curi, dret[1+i][], identity, guaranteed_nonactive),
+                        recursive_add(curi, dret[1 + i][], identity, guaranteed_nonactive),
                     )
                 end
             end
@@ -1453,14 +1466,14 @@ function rt_jl_getfield_rev(
 end
 
 @generated function recursive_index_add(
-    ::Type{dRT},
-    vload,
-    ::Val{symname},
-    dret,
-) where {dRT,symname}
+        ::Type{dRT},
+        vload,
+        ::Val{symname},
+        dret,
+    ) where {dRT, symname}
     N = fieldcount(dRT)
     exprs = Vector{Expr}(undef, N)
-    for i = 1:N
+    for i in 1:N
         @inbounds exprs[i] = if i == symname
             :(recursive_add(getfield(vload, $i), dret, identity, guaranteed_nonactive))
         else
@@ -1475,12 +1488,12 @@ end
 end
 
 function idx_jl_getfield_rev(
-    dptr::T,
-    dret,
-    ::Type{Val{symname}},
-    ::Val{isconst},
-    dptrs::Vararg{T,Nargs},
-) where {T,Nargs,symname,isconst}
+        dptr::T,
+        dret,
+        ::Type{Val{symname}},
+        ::Val{isconst},
+        dptrs::Vararg{T, Nargs},
+    ) where {T, Nargs, symname, isconst}
     cur = if dptr isa Base.RefValue
         Base.getfield(dptr[], symname + 1)
     else
@@ -1515,12 +1528,12 @@ function idx_jl_getfield_rev(
                     recursive_add(cur, dret[1][], identity, guaranteed_nonactive),
                 )
             end
-            for i = 1:length(dptrs)
+            for i in 1:length(dptrs)
                 if dptrs[i] isa Base.RefValue
                     vload = dptrs[i][]
                     dRT = Core.Typeof(vload)
                     dptrs[i][] =
-                        recursive_index_add(dRT, vload, Val(symname + 1), dret[1+i][])
+                        recursive_index_add(dRT, vload, Val(symname + 1), dret[1 + i][])
                 else
                     curi = if dptr isa Base.RefValue
                         Base.getfield(dptrs[i][], symname + 1)
@@ -1530,7 +1543,7 @@ function idx_jl_getfield_rev(
                     setfield!(
                         dptrs[i],
                         symname + 1,
-                        recursive_add(curi, dret[1+i][], identity, guaranteed_nonactive),
+                        recursive_add(curi, dret[1 + i][], identity, guaranteed_nonactive),
                     )
                 end
             end
@@ -1545,7 +1558,7 @@ function common_jl_getfield_augfwd(offset, B, orig, gutils, normalR, shadowR, ta
         return true
     end
 
-    ops = @view operands(orig)[offset:end]
+    ops = @view orig.operands[offset:end]
     width = get_width(gutils)
 
     legal, TT, _ = abs_typeof(ops[2], enzyme_ctx)
@@ -1555,7 +1568,7 @@ function common_jl_getfield_augfwd(offset, B, orig, gutils, normalR, shadowR, ta
         return false
     end
 
-    mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+    mod = orig.parent.parent.parent
 
     T_int8 = LLVM.Int8Type()
     T_jlvalue = LLVM.StructType(LLVMType[])
@@ -1567,7 +1580,7 @@ function common_jl_getfield_augfwd(offset, B, orig, gutils, normalR, shadowR, ta
             inps = [inp]
         else
             inps = LLVM.Value[]
-            for w = 1:width
+            for w in 1:width
                 push!(inps, extract_value!(B, inp, w - 1))
             end
         end
@@ -1606,9 +1619,9 @@ function common_jl_getfield_augfwd(offset, B, orig, gutils, normalR, shadowR, ta
             forgep = LLVM.pointercast!(B, forgep, LLVM.PointerType(AT, Derived))
         end
 
-        ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig)))
+        ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type))
         shadow = LLVM.UndefValue(ST)
-        for i = 1:width
+        for i in 1:width
             if !is_constant_value(gutils, ops[2])
                 gep = LLVM.inbounds_gep!(
                     B,
@@ -1649,7 +1662,7 @@ function common_jl_getfield_rev(offset, B, orig, gutils, tape)
         return
     end
 
-    ops = @view operands(orig)[offset:end]
+    ops = @view orig.operands[offset:end]
     width = get_width(gutils)
 
     legal, TT, _ = abs_typeof(ops[2], enzyme_ctx)
@@ -1658,7 +1671,7 @@ function common_jl_getfield_rev(offset, B, orig, gutils, tape)
         return nothing
     end
 
-    mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+    mod = orig.parent.parent.parent
 
     if !is_constant_value(gutils, ops[2])
         inp = invert_pointer(gutils, ops[2], B)
@@ -1667,7 +1680,7 @@ function common_jl_getfield_rev(offset, B, orig, gutils, tape)
             inps = [inp]
         else
             inps = LLVM.Value[]
-            for w = 1:width
+            for w in 1:width
                 push!(inps, extract_value!(B, inp, w - 1))
             end
         end
@@ -1707,22 +1720,22 @@ end
         return true
     end
     width = get_width(gutils)
-    if !is_constant_value(gutils, operands(orig)[1]) || !get_runtime_activity(gutils)
-        shadowin = if !is_constant_value(gutils, operands(orig)[1])
-            invert_pointer(gutils, operands(orig)[1], B)
+    if !is_constant_value(gutils, orig.operands[1]) || !get_runtime_activity(gutils)
+        shadowin = if !is_constant_value(gutils, orig.operands[1])
+            invert_pointer(gutils, orig.operands[1], B)
         else
-            estr = "Mismatched activity for: " * string(orig) * " const input " *string(operands(orig)[1]) * ", differentiable return"
-            eres = julia_error(estr, orig.ref, API.ET_MixedActivityError, gutils.ref, operands(orig)[1].ref, B.ref, enzyme_ctx)
+            estr = "Mismatched activity for: " * string(orig) * " const input " * string(orig.operands[1]) * ", differentiable return"
+            eres = julia_error(estr, orig.ref, API.ET_MixedActivityError, gutils.ref, orig.operands[1].ref, B.ref, enzyme_ctx)
             if eres != C_NULL
                 LLVM.Value(eres)
             else
-                invert_pointer(gutils, operands(orig)[1], B)
+                invert_pointer(gutils, orig.operands[1], B)
             end
         end
 
         args = LLVM.Value[
             shadowin
-            new_from_original(gutils, operands(orig)[2])
+            new_from_original(gutils, orig.operands[2])
         ]
 
         valTys = API.CValueType[
@@ -1730,7 +1743,7 @@ end
             API.VT_Primal,
         ]
 
-        shadowres = batch_call_same_with_inverted_arg_if_active!(B, gutils, orig, args, valTys, false, "nthfield"; force_run=is_constant_value(gutils, operands(orig)[1]))::LLVM.Value
+        shadowres = batch_call_same_with_inverted_arg_if_active!(B, gutils, orig, args, valTys, false, "nthfield"; force_run = is_constant_value(gutils, orig.operands[1]))::LLVM.Value
 
         unsafe_store!(shadowR, shadowres.ref)
     else
@@ -1739,10 +1752,10 @@ end
             shadowres = normal
         else
             shadowres = UndefValue(
-                LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(normal))),
+                LLVM.LLVMType(API.EnzymeGetShadowType(width, normal.value_type)),
             )
-            position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(normal)))
-            for idx = 1:width
+            position!(B, LLVM.after(normal))
+            for idx in 1:width
                 shadowres = insert_value!(B, shadowres, normal, idx - 1)
             end
         end
@@ -1758,37 +1771,37 @@ end
 
     width = get_width(gutils)
 
-    mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+    mod = orig.parent.parent.parent
 
     T_int8 = LLVM.Int8Type()
     T_jlvalue = LLVM.StructType(LLVMType[])
     T_prjlvalue = LLVM.PointerType(T_jlvalue, Tracked)
 
-    if !is_constant_value(gutils, operands(orig)[1])
-        inp = invert_pointer(gutils, operands(orig)[1], B)
+    if !is_constant_value(gutils, orig.operands[1])
+        inp = invert_pointer(gutils, orig.operands[1], B)
         if width == 1
             inps = [inp]
         else
             inps = LLVM.Value[]
-            for w = 1:width
+            for w in 1:width
                 push!(inps, extract_value!(B, inp, w - 1))
             end
         end
     else
-        inps = [new_from_original(gutils, operands(orig)[1])]
+        inps = [new_from_original(gutils, orig.operands[1])]
     end
 
     AA = Val(AnyArray(Int(width)))
     vals = LLVM.Value[unsafe_to_llvm(B, AA)]
     push!(vals, inps[1])
 
-    sym = new_from_original(gutils, operands(orig)[2])
+    sym = new_from_original(gutils, orig.operands[2])
     sym = (sizeof(Int) == sizeof(Int64) ? emit_box_int64! : emit_box_int32!)(B, sym)
     sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym], enzyme_ctx)
     push!(vals, sym)
 
     # TODO properly handle runtime activity here
-    push!(vals, unsafe_to_llvm(B, Val(is_constant_value(gutils, operands(orig)[1]))))
+    push!(vals, unsafe_to_llvm(B, Val(is_constant_value(gutils, orig.operands[1]))))
 
     for v in inps[2:end]
         push!(vals, v)
@@ -1805,15 +1818,15 @@ end
     else
         AT = LLVM.ArrayType(T_prjlvalue, Int(width))
         forgep = cal
-        if !is_constant_value(gutils, operands(orig)[1])
+        if !is_constant_value(gutils, orig.operands[1])
             forgep = LLVM.addrspacecast!(B, forgep, LLVM.PointerType(T_jlvalue, Derived))
             forgep = LLVM.pointercast!(B, forgep, LLVM.PointerType(AT, Derived))
         end
 
-        ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig)))
+        ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type))
         shadow = LLVM.UndefValue(ST)
-        for i = 1:width
-            if !is_constant_value(gutils, operands(orig)[1])
+        for i in 1:width
+            if !is_constant_value(gutils, orig.operands[1])
                 gep = LLVM.inbounds_gep!(
                     B,
                     AT,
@@ -1857,21 +1870,21 @@ end
 
     width = get_width(gutils)
 
-    mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+    mod = orig.parent.parent.parent
 
-    if !is_constant_value(gutils, operands(orig)[1])
-        inp = invert_pointer(gutils, operands(orig)[1], B)
+    if !is_constant_value(gutils, orig.operands[1])
+        inp = invert_pointer(gutils, orig.operands[1], B)
         inp = lookup_value(gutils, inp, B)
         if width == 1
             inps = [inp]
         else
             inps = LLVM.Value[]
-            for w = 1:width
+            for w in 1:width
                 push!(inps, extract_value!(B, inp, w - 1))
             end
         end
     else
-        inp = new_from_original(gutils, operands(orig)[1])
+        inp = new_from_original(gutils, orig.operands[1])
         inp = lookup_value(gutils, inp, B)
         inps = [inp]
     end
@@ -1881,13 +1894,13 @@ end
 
     push!(vals, tape)
 
-    sym = new_from_original(gutils, operands(orig)[2])
+    sym = new_from_original(gutils, orig.operands[2])
     sym = lookup_value(gutils, sym, B)
     sym = (sizeof(Int) == sizeof(Int64) ? emit_box_int64! : emit_box_int32!)(B, sym)
     sym = emit_apply_type!(B, Base.Val, LLVM.Value[sym], enzyme_ctx)
     push!(vals, sym)
 
-    push!(vals, unsafe_to_llvm(B, Val(is_constant_value(gutils, operands(orig)[1]))))
+    push!(vals, unsafe_to_llvm(B, Val(is_constant_value(gutils, orig.operands[1]))))
 
     for v in inps[2:end]
         push!(vals, v)
@@ -1912,7 +1925,7 @@ end
 end
 
 function common_setfield_fwd(offset, B, orig, gutils, normalR, shadowR)
-    origops = @view operands(orig)[offset:end]
+    origops = @view orig.operands[offset:end]
     width = get_width(gutils)
 
     if !is_constant_value(gutils, origops[4])
@@ -1937,7 +1950,7 @@ function common_setfield_fwd(offset, B, orig, gutils, normalR, shadowR)
             API.VT_Shadow,
         ]
         if offset != 1
-            pushfirst!(args, first(operands(orig)))
+            pushfirst!(args, first(orig.operands))
             pushfirst!(valTys, API.VT_Primal)
         end
 
@@ -1985,9 +1998,9 @@ function common_setfield_fwd(offset, B, orig, gutils, normalR, shadowR)
                 normal
             else
                 res = UndefValue(
-                    LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(normal))),
+                    LLVM.LLVMType(API.EnzymeGetShadowType(width, normal.value_type)),
                 )
-                position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(normal)))
+                position!(B, LLVM.before(LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(normal))))
                 for idx in 1:width
                     res = insert_value!(B, res, normal, idx - 1)
                 end
@@ -2000,12 +2013,12 @@ function common_setfield_fwd(offset, B, orig, gutils, normalR, shadowR)
 end
 
 
-function rt_jl_setfield_aug(dptr::T, idx, ::Val{isconst}, val, dval) where {T,isconst}
+function rt_jl_setfield_aug(dptr::T, idx, ::Val{isconst}, val, dval) where {T, isconst}
     RT = Core.Typeof(val)
 
     state = active_reg_nothrow(RT)
 
-    if state == ActiveState
+    return if state == ActiveState
         # The shadow field is the adjoint slot for the stored value and is
         # only consumed (and re-zeroed) in the reverse pass. It may already
         # hold a seed the caller placed there, so it must not be cleared here.
@@ -2023,10 +2036,10 @@ function rt_jl_setfield_aug(dptr::T, idx, ::Val{isconst}, val, dval) where {T,is
     end
 end
 
-function rt_jl_setfield_rev(dptr::T, idx, ::Val{isconst}, val, dval) where {T,isconst}
+function rt_jl_setfield_rev(dptr::T, idx, ::Val{isconst}, val, dval) where {T, isconst}
     RT = Core.Typeof(val)
     state = active_reg_nothrow(RT)
-    if state == ActiveState
+    return if state == ActiveState
         if !isconst
             dval[] = recursive_add(dval[], getfield(dptr, idx), identity, guaranteed_nonactive)
         end
@@ -2037,7 +2050,7 @@ function rt_jl_setfield_rev(dptr::T, idx, ::Val{isconst}, val, dval) where {T,is
 end
 
 function common_setfield_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR)
-    origops = @view operands(orig)[offset:end]
+    origops = @view orig.operands[offset:end]
     width = get_width(gutils)
 
     if !is_constant_value(gutils, origops[2])
@@ -2049,16 +2062,16 @@ function common_setfield_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR
             nothing
         end
 
-        mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+        mod = orig.parent.parent.parent
 
-        for idx = 1:width
+        for idx in 1:width
             vals = LLVM.Value[
                 (width == 1) ? shadowstruct : extract_value!(B, shadowstruct, idx - 1),
                 new_from_original(gutils, origops[3]),
                 unsafe_to_llvm(B, Val(is_constant_value(gutils, origops[4]))),
                 new_from_original(gutils, origops[4]),
                 is_constant_value(gutils, origops[4]) ? unsafe_to_llvm(B, nothing) :
-                ((width == 1) ? shadowval : extract_value!(B, shadowval, idx - 1)),
+                    ((width == 1) ? shadowval : extract_value!(B, shadowval, idx - 1)),
             ]
 
             # TODO handle runtime activity
@@ -2079,9 +2092,9 @@ function common_setfield_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR
                 normal
             else
                 res = UndefValue(
-                    LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(normal))),
+                    LLVM.LLVMType(API.EnzymeGetShadowType(width, normal.value_type)),
                 )
-                position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(normal)))
+                position!(B, LLVM.before(LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(normal))))
                 for idx in 1:width
                     res = insert_value!(B, res, normal, idx - 1)
                 end
@@ -2095,7 +2108,7 @@ function common_setfield_augfwd(offset, B, orig, gutils, normalR, shadowR, tapeR
 end
 
 function common_setfield_rev(offset, B, orig, gutils, tape)
-    origops = @view operands(orig)[offset:end]
+    origops = @view orig.operands[offset:end]
     if !is_constant_value(gutils, origops[2])
         width = get_width(gutils)
 
@@ -2113,17 +2126,17 @@ function common_setfield_rev(offset, B, orig, gutils, tape)
         symval = lookup_value(gutils, new_from_original(gutils, origops[3]), B)
         primalval = lookup_value(gutils, new_from_original(gutils, origops[4]), B)
 
-        mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+        mod = orig.parent.parent.parent
 
         # TODO handle runtime activity
-        for idx = 1:width
+        for idx in 1:width
             vals = LLVM.Value[
                 (width == 1) ? shadowstruct : extract_value!(B, shadowstruct, idx - 1),
                 symval,
                 unsafe_to_llvm(B, Val(is_constant_value(gutils, origops[4]))),
                 primalval,
                 is_constant_value(gutils, origops[4]) ? unsafe_to_llvm(B, nothing) :
-                ((width == 1) ? shadowval : extract_value!(B, shadowval, idx - 1)),
+                    ((width == 1) ? shadowval : extract_value!(B, shadowval, idx - 1)),
             ]
 
             pushfirst!(vals, unsafe_to_llvm(B, rt_jl_setfield_rev))
@@ -2154,7 +2167,7 @@ function error_if_differentiable(::Type{T}) where {T}
     if areg != AnyState
         throw(AssertionError("Found unhandled differentiable variable in jl_f_svec_ref $T"))
     end
-    nothing
+    return nothing
 end
 
 function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
@@ -2165,7 +2178,7 @@ function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
 
     width = get_width(gutils)
 
-    origmi, origh, origkey = @view arg_operands_view(orig)[offset:end]
+    origmi, origh, origkey = @view orig.arguments[offset:end]
 
     shadowh = invert_pointer(gutils, origh, B)
 
@@ -2177,15 +2190,15 @@ function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
 
     mi = new_from_original(gutils, origmi)
 
-    mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+    mod = orig.parent.parent.parent
 
     shadowres = if width == 1
         newops = LLVM.Value[mi, shadowh, new_from_original(gutils, origkey)]
         if offset != 1
-            pushfirst!(newops, operands(orig)[1])
+            pushfirst!(newops, orig.operands[1])
         end
         cal = call_samefunc_with_inverted_bundles!(B, gutils, orig, newops, newvals, false) #=lookup=#
-        callconv!(cal, callconv(orig))
+        cal.callconv = orig.callconv
 
         if is_constant_value(gutils, origh)
             emit_apply_generic!(
@@ -2198,16 +2211,16 @@ function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
         end
         cal
     else
-        ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig)))
+        ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type))
         shadow = LLVM.UndefValue(ST)
-        for j = 1:width
+        for j in 1:width
             newops = LLVM.Value[
                 mi,
                 extract_value!(B, shadowh, j - 1),
                 new_from_original(gutils, origkey),
             ]
             if offset != 1
-                pushfirst!(newops, operands(orig)[1])
+                pushfirst!(newops, orig.operands[1])
             end
             cal = call_samefunc_with_inverted_bundles!(
                 B,
@@ -2217,7 +2230,7 @@ function common_f_svec_ref_fwd(offset, B, orig, gutils, normalR, shadowR)
                 newvals,
                 false,
             ) #=lookup=#
-            callconv!(cal, callconv(orig))
+            cal.callconv = orig.callconv
             if is_constant_value(gutils, origh)
                 emit_apply_generic!(
                     B,
@@ -2245,7 +2258,7 @@ function common_f_svec_ref_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
 
     width = get_width(gutils)
 
-    origmi, origh, origkey = @view arg_operands_view(orig)[offset:end]
+    origmi, origh, origkey = @view orig.arguments[offset:end]
 
     shadowh = invert_pointer(gutils, origh, B)
 
@@ -2263,30 +2276,30 @@ function common_f_svec_ref_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
 
     mi = new_from_original(gutils, origmi)
 
-    mod = LLVM.parent(LLVM.parent(LLVM.parent(orig)))
+    mod = orig.parent.parent.parent
 
     shadowres = if width == 1
         newops = LLVM.Value[mi, shadowh, new_from_original(gutils, origkey)]
         if offset != 1
-            pushfirst!(newops, operands(orig)[1])
+            pushfirst!(newops, orig.operands[1])
         end
         cal = call_samefunc_with_inverted_bundles!(B, gutils, orig, newops, newvals, false) #=lookup=#
-        callconv!(cal, callconv(orig))
+        cal.callconv = orig.callconv
 
 
         emit_apply_generic!(B, LLVM.Value[unsafe_to_llvm(B, errfn), emit_jltypeof!(B, cal, enzyme_ctx)])
         cal
     else
-        ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig)))
+        ST = LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type))
         shadow = LLVM.UndefValue(ST)
-        for j = 1:width
+        for j in 1:width
             newops = LLVM.Value[
                 mi,
                 extract_value!(B, shadowh, j - 1),
                 new_from_original(gutils, origkey),
             ]
             if offset != 1
-                pushfirst!(newops, operands(orig)[1])
+                pushfirst!(newops, orig.operands[1])
             end
             cal = call_samefunc_with_inverted_bundles!(
                 B,
@@ -2296,7 +2309,7 @@ function common_f_svec_ref_augfwd(offset, B, orig, gutils, normalR, shadowR, tap
                 newvals,
                 false,
             ) #=lookup=#
-            callconv!(cal, callconv(orig))
+            cal.callconv = orig.callconv
             emit_apply_generic!(
                 B,
                 LLVM.Value[unsafe_to_llvm(B, errfn), emit_jltypeof!(B, cal, enzyme_ctx)],
@@ -2326,8 +2339,8 @@ function common_finalizer_fwd(offset, B, orig, gutils, normalR, shadowR)
         (unsafe_load(normalR) != C_NULL) ? LLVM.Instruction(unsafe_load(normalR)) : nothing
     if shadowR != C_NULL && normal !== nothing
         width = get_width(gutils)
-        shadowres = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig))))
-        for idx = 1:width
+        shadowres = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type)))
+        for idx in 1:width
             if width == 1
                 shadowres = normal
             else
@@ -2350,8 +2363,8 @@ function common_finalizer_augfwd(offset, B, orig, gutils, normalR, shadowR, tape
         (unsafe_load(normalR) != C_NULL) ? LLVM.Instruction(unsafe_load(normalR)) : nothing
     if shadowR != C_NULL && normal !== nothing
         width = get_width(gutils)
-        shadowres = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, value_type(orig))))
-        for idx = 1:width
+        shadowres = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type)))
+        for idx in 1:width
             if width == 1
                 shadowres = normal
             else

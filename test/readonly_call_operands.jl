@@ -57,12 +57,12 @@ function readonly_operand_case(;
         )
         try
             LLVM.verify(mod)
-            caller = LLVM.functions(mod)["caller"]
-            call = only(inst for bb in LLVM.blocks(caller) for inst in LLVM.instructions(bb) if inst isa LLVM.CallInst)
-            val = form == :direct ? first(LLVM.parameters(caller)) : LLVM.operands(call)[1]
+            caller = mod.functions["caller"]
+            call = only(inst for bb in caller.blocks for inst in bb.instructions if inst isa LLVM.CallInst)
+            val = form == :direct ? first(caller.parameters) : call.operands[1]
             world = Base.get_world_counter()
             return Enzyme.Compiler.is_readonly_call_operand(
-                call, LLVM.functions(mod)["sink"], val,
+                call, mod.functions["sink"], val,
                 world, Enzyme.Compiler.EnzymeContext(world),
             )
         finally

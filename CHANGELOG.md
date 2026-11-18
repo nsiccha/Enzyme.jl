@@ -268,6 +268,11 @@
   `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
   `test/conditional_rule_return.jl` covers early returns, empty arrays,
   combined and split Reverse, batched Reverse, and Forward over Reverse.
+- Sync upstream through `9cc1c3a`, including the LLVM.jl 10 migration and
+  repository formatting. Adapt the dogfood compiler passes, retained
+  derivatives, safepoint attributes, metadata, and regression tests to the
+  new APIs. LLVM.jl now requires 10.4.3 and GPUCompiler 1.23.1 or 2.11;
+  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
 - Sync upstream through `580628c`: Julia-zeroed allocations no longer get
   redundant null stores into their GC fields (#3766), and the
   `LLVM.OperandBundleDef` compatibility branches are gone (#4064).

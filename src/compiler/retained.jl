@@ -205,17 +205,17 @@ function collect_inttoptrs!(found::Dict{LLVM.API.LLVMValueRef, LLVM.Value}, seen
     if c isa LLVM.ConstantExpr
         c.ref in seen && return
         push!(seen, c.ref)
-        if opcode(c) == LLVM.API.LLVMIntToPtr
-            operands(c)[1] isa LLVM.ConstantInt && (found[c.ref] = c)
+        if c.opcode == LLVM.Opcode.IntToPtr
+            c.operands[1] isa LLVM.ConstantInt && (found[c.ref] = c)
             return
         end
-        for op in operands(c)
+        for op in c.operands
             collect_inttoptrs!(found, seen, op)
         end
     elseif c isa LLVM.ConstantStruct || c isa LLVM.ConstantArray || c isa LLVM.ConstantVector
         c.ref in seen && return
         push!(seen, c.ref)
-        for op in operands(c)
+        for op in c.operands
             collect_inttoptrs!(found, seen, op)
         end
     end
@@ -225,11 +225,11 @@ end
 function module_inttoptrs(mod::LLVM.Module)::Vector{LLVM.Value}
     found = Dict{LLVM.API.LLVMValueRef, LLVM.Value}()
     seen = Set{LLVM.API.LLVMValueRef}()
-    for gv in globals(mod)
-        init = LLVM.initializer(gv)
+    for gv in mod.globals
+        init = gv.initializer
         init === nothing || collect_inttoptrs!(found, seen, init)
     end
-    for fn in functions(mod), bb in blocks(fn), inst in instructions(bb), op in operands(inst)
+    for fn in mod.functions, bb in fn.blocks, inst in bb.instructions, op in inst.operands
         op isa LLVM.Constant && collect_inttoptrs!(found, seen, op)
     end
     return collect(values(found))
@@ -258,8 +258,8 @@ function new_address_global!(mod::LLVM.Module, symbols::RetainedSymbols)::String
     symbols.count += 1
     name = symbols.prefix * "addr" * string(symbols.count)
     gv = LLVM.GlobalVariable(mod, LLVM.StructType(LLVM.LLVMType[]), name)
-    API.SetMD(gv, "enzyme_ta_norecur", LLVM.MDNode(LLVM.Metadata[]))
-    API.SetMD(gv, "enzyme_inactive", LLVM.MDNode(LLVM.Metadata[]))
+    gv.metadata["enzyme_ta_norecur"] = LLVM.MDNode(LLVM.Metadata[])
+    gv.metadata["enzyme_inactive"] = LLVM.MDNode(LLVM.Metadata[])
     return name
 end
 
@@ -272,7 +272,7 @@ gave out, or a symbol of a shared library. Throw an error for any other address.
 """
 function symbolic_addresses!(mod::LLVM.Module, symbols::RetainedSymbols)
     for expr in module_inttoptrs(mod)
-        addr = convert(UInt, operands(expr)[1])
+        addr = convert(UInt, expr.operands[1])
         addr < RETAINED_FIRST_ADDRESS && continue
         name = get(symbols.by_address, addr, nothing)
         if name === nothing
@@ -293,7 +293,7 @@ function symbolic_addresses!(mod::LLVM.Module, symbols::RetainedSymbols)
             end
             symbols.by_address[addr] = name
         end
-        replace_uses!(expr, LLVM.const_pointercast(globals(mod)[name], value_type(expr)))
+        replace_uses!(expr, LLVM.const_pointercast(mod.globals[name], expr.value_type))
     end
     return nothing
 end
@@ -307,7 +307,7 @@ Record what each global `ejl_<key>` that the compilation inserted into `mod` sta
 function symbolic_inserted_values!(mod::LLVM.Module, inserted::Dict{String, Any}, symbols::RetainedSymbols)
     for (key, val) in inserted
         name = "ejl_" * key
-        haskey(globals(mod), name) || continue
+        haskey(mod.globals, name) || continue
         value = unbind(val)
         symbols.by_value[value] = name
         push!(symbols.values, name => value)
@@ -328,21 +328,21 @@ function finish_retained_module!(mod::LLVM.Module, symbols::RetainedSymbols, rel
 
     # What optimization left unused needs no word.
     for rec in copy(relocs.records)
-        haskey(globals(mod), rec.name) || continue
-        gv = globals(mod)[rec.name]
-        if isempty(LLVM.uses(gv))
+        haskey(mod.globals, rec.name) || continue
+        gv = mod.globals[rec.name]
+        if isempty(gv.uses)
             LLVM.erase!(gv)
         end
     end
     GPUCompiler.prune_dead_relocations!(mod, relocs)
 
-    for fn in functions(mod)
-        name = LLVM.name(fn)
+    for fn in mod.functions
+        name = fn.name
         if startswith(name, "ejlstr\$") || startswith(name, "ejlptr\$")
             _, fname, lib = split(name, "\$")
             library = startswith(name, "ejlstr\$") ? String(lib) : unsafe_string(reinterpret(Ptr{UInt8}, parse(Int, lib)))
             new = prefix * name
-            LLVM.name!(fn, new)
+            fn.name = new
             push!(symbols.foreign, new => ForeignAddress(String(fname), library))
         end
     end
@@ -350,14 +350,14 @@ function finish_retained_module!(mod::LLVM.Module, symbols::RetainedSymbols, rel
     # The names of inserted values are the same in every object that refers to the object.
     renamed = Pair{String, Any}[]
     for (name, value) in symbols.values
-        if haskey(globals(mod), name)
-            gv = globals(mod)[name]
-            if isempty(LLVM.uses(gv))
+        if haskey(mod.globals, name)
+            gv = mod.globals[name]
+            if isempty(gv.uses)
                 LLVM.erase!(gv)
                 continue
             end
             new = startswith(name, prefix) ? name : prefix * name
-            LLVM.name!(gv, new)
+            gv.name = new
             push!(renamed, new => value)
         end
     end
@@ -366,13 +366,13 @@ function finish_retained_module!(mod::LLVM.Module, symbols::RetainedSymbols, rel
     used = Pair{String, ForeignAddress}[]
     for entry in symbols.foreign
         name = first(entry)
-        if haskey(globals(mod), name)
-            gv = globals(mod)[name]
-            if isempty(LLVM.uses(gv))
+        if haskey(mod.globals, name)
+            gv = mod.globals[name]
+            if isempty(gv.uses)
                 LLVM.erase!(gv)
                 continue
             end
-        elseif !haskey(functions(mod), name)
+        elseif !haskey(mod.functions, name)
             continue
         end
         push!(used, entry)
@@ -382,23 +382,23 @@ function finish_retained_module!(mod::LLVM.Module, symbols::RetainedSymbols, rel
 
     # Everything else this object defines stays inside it.
     record_names = Set{String}(rec.name for rec in relocs.records)
-    for gv in globals(mod)
+    for gv in mod.globals
         LLVM.isdeclaration(gv) && continue
-        LLVM.name(gv) in record_names && continue
-        startswith(LLVM.name(gv), "llvm.") && continue
-        LLVM.linkage(gv) in (LLVM.API.LLVMPrivateLinkage, LLVM.API.LLVMInternalLinkage) && continue
-        LLVM.linkage!(gv, LLVM.API.LLVMInternalLinkage)
+        gv.name in record_names && continue
+        startswith(gv.name, "llvm.") && continue
+        gv.linkage in (LLVM.API.LLVMPrivateLinkage, LLVM.API.LLVMInternalLinkage) && continue
+        gv.linkage = LLVM.Linkage.Internal
     end
     new_entries = String[]
-    for fn in functions(mod)
+    for fn in mod.functions
         LLVM.isdeclaration(fn) && continue
-        LLVM.name(fn) in entries && continue
-        LLVM.linkage(fn) in (LLVM.API.LLVMPrivateLinkage, LLVM.API.LLVMInternalLinkage, LLVM.API.LLVMLinkerPrivateLinkage) && continue
-        LLVM.linkage!(fn, LLVM.API.LLVMInternalLinkage)
+        fn.name in entries && continue
+        fn.linkage in (LLVM.API.LLVMPrivateLinkage, LLVM.API.LLVMInternalLinkage, LLVM.API.LLVMLinkerPrivateLinkage) && continue
+        fn.linkage = LLVM.Linkage.Internal
     end
     for entry in entries
         new = prefix * entry
-        LLVM.name!(functions(mod)[entry], new)
+        (mod.functions[entry]).name = new
         push!(new_entries, new)
     end
 
@@ -474,8 +474,9 @@ function emit_retained_object(mod::LLVM.Module)::Vector{UInt8}
         opt_level == 2 ? LLVM.API.LLVMCodeGenLevelDefault : LLVM.API.LLVMCodeGenLevelAggressive
     triple = LLVM.triple(JIT.get_jit())
     tm = LLVM.TargetMachine(
-        LLVM.Target(; triple), triple, cpu_name(), cpu_features();
-        optlevel, reloc = LLVM.API.LLVMRelocStatic, code = LLVM.API.LLVMCodeModelLarge,
+        LLVM.Target(; triple), triple;
+        cpu = cpu_name(), features = cpu_features(), opt_level = optlevel,
+        reloc = LLVM.RelocMode.Static, code = LLVM.CodeModel.Large,
     )
     try
         return LLVM.emit(tm, mod, LLVM.API.LLVMObjectFile)
@@ -521,13 +522,10 @@ function compile_retained(@nospecialize(job::CompilerJob))::RetainedDerivative
     config = CompilerConfig(job.config; optimize = false)
     job = CompilerJob(job.source, config, job.world)
     mod, meta = compile(:llvm, job)
-    adjoint_name = name(meta.adjointf)
-    primal_name = meta.augmented_primalf === nothing ? nothing : name(meta.augmented_primalf)
+    adjoint_name = meta.adjointf.name
+    primal_name = meta.augmented_primalf === nothing ? nothing : meta.augmented_primalf.name
 
-    LLVM.@dispose pm = LLVM.ModulePassManager() begin
-        add!(pm, FunctionPass("ReinsertGCMarker", reinsert_gcmarker_pass!))
-        LLVM.run!(pm, mod)
-    end
+    run!(ReinsertGCMarkerPass(), mod)
     fixup_callconv!(mod, JIT.get_tm())
 
     symbols = RetainedSymbols(retained_prefix(job))
@@ -547,7 +545,7 @@ function compile_retained(@nospecialize(job::CompilerJob))::RetainedDerivative
     entries = primal_name === nothing ? [adjoint_name] : [adjoint_name, primal_name]
     records, new_entries = finish_retained_module!(mod, symbols, meta.relocations, entries)
     for expr in module_inttoptrs(mod)
-        addr = convert(UInt, operands(expr)[1])
+        addr = convert(UInt, expr.operands[1])
         addr < RETAINED_FIRST_ADDRESS || error("optimizing left the address $(repr(addr)) in `$(string(expr))`")
     end
 
@@ -684,15 +682,15 @@ function materialize_retained(retained::RetainedDerivative)::CompileResult
     started = time()
     lljit = JIT.get_jit()
     jd = JIT.jit[].jd
-    pairs = JIT.symbol_pair_type()[]
+    pairs = Pair{LLVM.LLVMSymbol, Ptr{Cvoid}}[]
     for (symbol, value) in retained.values
-        push!(pairs, JIT.absolute_symbol_pair(LLVM.mangle(lljit, symbol), unsafe_to_ptr(value)))
+        push!(pairs, LLVM.mangle(lljit, symbol) => unsafe_to_ptr(value))
     end
     for (symbol, foreign) in retained.foreign
         ptr = JIT.fix_ptr_lookup("ejlstr\$" * foreign.symbol * "\$" * foreign.library)
-        push!(pairs, JIT.absolute_symbol_pair(LLVM.mangle(lljit, symbol), ptr))
+        push!(pairs, LLVM.mangle(lljit, symbol) => ptr)
     end
-    isempty(pairs) || LLVM.define(jd, LLVM.absolute_symbols(pairs))
+    isempty(pairs) || LLVM.define!(jd, LLVM.absolute_symbols(pairs))
 
     LLVM.add!(lljit, jd, LLVM.MemoryBuffer(retained.object, retained.adjoint, true))
     adjoint = pointer(JIT.lookup(jd, retained.adjoint))

@@ -24,10 +24,10 @@ end
     MemsetLLVM.Context() do ctx
         for (destination, writes) in (("slotbytes", false), ("held", true), ("alias", true))
             mod = parse(MemsetLLVM.Module, readonly_memset_ir(MemsetLLVM.supports_typed_pointers(ctx), destination))
-            fn = MemsetLLVM.functions(mod)["test"]
+            fn = mod.functions["test"]
             world = Base.get_world_counter()
             result = Enzyme.Compiler.readonly_walk!(
-                MemsetLLVM.Value[only(MemsetLLVM.parameters(fn))], fn, world,
+                MemsetLLVM.Value[only(fn.parameters)], fn, world,
                 Enzyme.EnzymeContext(world), Enzyme.Compiler.ReadonlyWalkState(mod), false,
             )
             @test result == (writes, false)

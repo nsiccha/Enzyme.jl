@@ -104,8 +104,8 @@ end
             }
             """
         )
-        f = functions(mod)["f"]
-        r1, r2, b, c, d, e = parameters(f)
+        f = mod.functions["f"]
+        r1, r2, b, c, d, e = f.parameters
         Field = Enzyme.Compiler.ConstantField
         places(cf, base) = Set(Enzyme.Compiler.constant_field_places(cf, base))
 
