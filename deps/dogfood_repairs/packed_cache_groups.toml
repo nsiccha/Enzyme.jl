@@ -1,0 +1,3 @@
+summary = "Store the packed ragged caches of one element type and loop nest of a combined Reverse derivative as records of one growing buffer with one offset table"
+libenzyme_build = "15345e27c376aec9b3791ad8511e06d5a5e116b3"
+tests = ["test/packed_cache_groups.jl"]
