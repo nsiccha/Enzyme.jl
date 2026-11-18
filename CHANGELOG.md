@@ -16,6 +16,11 @@
   `Enzyme.has_dogfood_repair(:union_return_types)` reports the repair;
   `test/union_return_types.jl` caches the equivalent pointer type first and
   checks Reverse gradients on both return branches.
+- `Enzyme.derivative_report` omits unreachable calls and marks calls inside
+  recursive error-message helpers as `throw_only` when every path into the
+  helper ends in an error. A helper also called on a returning path still
+  reports its dispatch and allocations there.
+  `Enzyme.has_dogfood_repair(:derivative_report_reachability)` reports this repair.
 - Allocate the reverse caches of a ragged loop nest together. In a combined
   Reverse derivative (`autodiff(Reverse, ...)`, `gradient`, and
   DifferentiationInterface's `gradient` with

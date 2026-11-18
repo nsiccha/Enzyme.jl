@@ -231,6 +231,82 @@ end
     @test recursive.in_loop && !recursive.throw_only
 end
 
+@testset "reachability from the derivative entry" begin
+    for normal_call in (false, true)
+        # The formatter and its helper call each other. Only an incoming call on
+        # a returning path can make their allocations a cost of a successful call.
+        extra = normal_call ? "call void @format(i1 false)" : ""
+        # LLVM 15 can keep a constant cast around a direct callee.
+        fail_call = TYPED_POINTERS ? "call void (...) bitcast (void (i1)* @format to void (...)*)(i1 true)" : "call void @format(i1 true)"
+        findings = scan(
+            """
+            declare i64 @malloc(i64)
+            declare void @jl_throw()
+            declare void @unused_call()
+            declare void @callback_cost()
+            declare void @exported_cost()
+            declare void @escaped_cost()
+            @callback_slot = global $(pointer_type("void ()")) @callback
+
+            define private void @format(i1 %again) {
+              %p = call i64 @malloc(i64 16)
+              br i1 %again, label %recurse, label %done
+            recurse:
+              call void @nested()
+              br label %done
+            done:
+              ret void
+            }
+            define internal void @nested() {
+              call void @format(i1 false)
+              ret void
+            }
+            define private void @unused() {
+              call void @unused_call()
+              call void @format(i1 true)
+              ret void
+            }
+            define private void @callback() {
+              call void @callback_cost()
+              ret void
+            }
+            define void @exported() {
+              call void @exported_cost()
+              ret void
+            }
+            define internal void @escaped(...) {
+              call void @escaped_cost()
+              ret void
+            }
+            define void @diffejulia_example(i1 %ok) {
+              br i1 %ok, label %normal, label %fail
+            normal:
+              $extra
+              ret void
+            dead:
+              call void @unused()
+              ret void
+            fail:
+              $fail_call
+              call void @exported()
+              call void (...) @escaped($(pointer_type("void (...)")) @escaped)
+              call void @jl_throw()
+              unreachable
+            }
+            """
+        )
+        alloc = only_finding(findings, "malloc")
+        @test alloc.throw_only == !normal_call
+        @test alloc.in_loop
+        @test only_finding(findings, "jl_throw").throw_only
+        @test !any(f -> f.callee == "unused_call", findings)
+        @test !only_finding(findings, "callback_cost").throw_only
+        @test !only_finding(findings, "exported_cost").throw_only
+        # The call also passes its callee's address as an argument.
+        @test !only_finding(findings, "escaped_cost").throw_only
+    end
+end
+
 @testset "sweeps" begin
     findings = scan(
         """
