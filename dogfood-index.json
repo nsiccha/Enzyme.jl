@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T17:54:43Z",
+  "prepared_at": "2026-11-18T18:02:18Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -2385,8 +2385,8 @@
     {
       "id": "erfcx-derivatives",
       "role": "fix",
-      "title": "Higher derivatives of erfcx lose accuracy through cancellation",
-      "summary": "For positive arguments the two terms of the usual erfcx derivative formula can be nearly equal. Repeated differentiation compounds the cancellation. Compare the resulting derivatives across orders and argument magnitudes with a sufficiently precise reference.",
+      "title": "Derivatives of erfcx lose precision at large positive arguments",
+      "summary": "At exp(20), forward differentiation of the scaled complementary error function gives a derivative more than 30 times the magnitude of a high-precision reference.",
       "repairs": [
         {
           "id": "erfcx_derivatives",
@@ -2399,15 +2399,60 @@
       "upstream_refs": [],
       "fix": {
         "commits": [],
-        "why_together": "The original commits were selected from the erfcx review group. The smallest independently passing subset on 1ee9a6f8 still needs testing."
+        "why_together": "The first original commit adds the real-valued erfcx derivative rules and tests. The second changes only how much precision the test reference uses at high derivative orders and large arguments. The combined patch touches only the SpecialFunctions extension and its regression suite. On upstream 1ee9a6f8 the two commits together correct the measured first derivative. Nested differentiation still stops in custom-rule argument setup and nested compiler paths. The necessary additional change is unresolved. The original commits are [708afc1b](https://github.com/nsiccha/Enzyme.jl/commit/708afc1b7b40c2fe59ac9553d31d6272511e50bc), [f85c0425](https://github.com/nsiccha/Enzyme.jl/commit/f85c0425c1a06504d380381878aa53a86571050a)."
       },
       "depends_on": [],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/ext/specialfunctions.jl"
+          ],
+          "result": "failed",
+          "detail": "The forward derivative at exp(20) matched the 512-bit reference on Julia build d93beab124c. The full file had 46,661 passing assertions and 69 errors, including 49 in custom-rule argument setup and 20 compiler inference assertions."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/ext/specialfunctions.jl"
+          ],
+          "result": "failed",
+          "detail": "The forward derivative at exp(20) matched the 512-bit reference on Julia build d93beab124c. The full file had 46,661 passing assertions and 69 errors, including 49 in custom-rule argument setup and 20 compiler inference assertions."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/ext/specialfunctions.jl"
+          ],
+          "result": "failed",
+          "detail": "The forward derivative at exp(20) matched the 512-bit reference on Julia build 6d172b025e4. The full file had 46,661 passing assertions and 69 errors, including 49 in custom-rule argument setup and 20 MethodError exceptions from iterating over nothing."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/ext/specialfunctions.jl"
+          ],
+          "result": "failed",
+          "detail": "The forward derivative at exp(20) matched the 512-bit reference on Julia build 6d172b025e4. The full file had 46,661 passing assertions and 69 errors, including 49 in custom-rule argument setup and 20 MethodError exceptions from iterating over nothing."
+        }
+      ],
       "draft": {
-        "title": "Higher derivatives of erfcx lose accuracy through cancellation",
-        "body": "For positive arguments the two terms of the usual erfcx derivative formula can be nearly equal. Repeated differentiation compounds the cancellation. Compare the resulting derivatives across orders and argument magnitudes with a sufficiently precise reference.\n\nOriginal fork commits in historical order: [708afc1b](https://github.com/nsiccha/Enzyme.jl/commit/708afc1b7b40c2fe59ac9553d31d6272511e50bc), [f85c0425](https://github.com/nsiccha/Enzyme.jl/commit/f85c0425c1a06504d380381878aa53a86571050a).\n\nRegression coverage on the fork: [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "title": "Derivatives of erfcx lose precision at large positive arguments",
+        "body": "On upstream `1ee9a6f8` with the released Enzyme_jll 0.0.311+0, forward differentiation of the scaled complementary error function returns about −7.53e−17 at x = exp(20) on Julia 1.10.12. The derivative is about −2.40e−18. Computing the two almost equal terms of the derivative in Float64 loses precision. Repeated differentiation can compound this error.\n\n```julia\nusing Enzyme, SpecialFunctions\nx = exp(20.0)\ndx = only(autodiff(Forward, erfcx, Duplicated(x, 1.0)))\nreference = setprecision(BigFloat, 512) do\n    z = BigFloat(x)\n    Float64(2z * erfcx(z) - 2 / sqrt(big(π)))\nend\n@assert isapprox(dx, reference; rtol = 1e-13)\n```\n\nA stable rule should recover the high-precision derivative in the positive tail and remain accurate when forward and reverse differentiation are nested.\n\nThe original fork commits, in application order, are [708afc1b](https://github.com/nsiccha/Enzyme.jl/commit/708afc1b7b40c2fe59ac9553d31d6272511e50bc), [f85c0425](https://github.com/nsiccha/Enzyme.jl/commit/f85c0425c1a06504d380381878aa53a86571050a).",
+        "prepared_at": "2026-11-18T18:02:18Z"
       }
     },
     {
