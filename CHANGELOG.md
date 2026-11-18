@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Allocate the reverse caches of a ragged loop nest together. In a combined
+  Reverse derivative (`autodiff(Reverse, ...)`, `gradient`, and
+  DifferentiationInterface's `gradient` with
+  `AutoEnzyme(; mode = Enzyme.Reverse)`), the packed caches of repair
+  `packed_ragged_cache` that share an element type and a loop nest now share
+  one offset table and one growing buffer of records, one slot per cached
+  value. Before, every cached value had a table and a buffer of its own, so a
+  gradient made a native `malloc` and `free` per cached value and per capacity
+  doubling of each. Now the nest makes one table and one growth per doubling,
+  however many values it caches. An event walk that caches 13 values made 39,
+  91 and 117 allocations per gradient at 2, 20 and 100 groups, and makes 6,
+  14 and 18 (Julia 1.10.12). Split mode (`autodiff_thunk`) keeps a table and
+  a buffer per cached value. Needs libEnzyme build `15345e27`;
+  `Enzyme.has_dogfood_repair(:packed_cache_groups)` reports the repair and
+  `test/packed_cache_groups.jl` checks it.
 - Differentiate a `ccall` whose library Julia does not resolve while compiling
   the method. Julia 1.12 leaves a module-qualified library
   (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
@@ -21,6 +36,31 @@
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
+- Add `Enzyme.derivative_report(f)`, which runs `f()` and reports the
+  derivatives Enzyme used for it: each one compiled, linked from a package
+  image or asked for again meanwhile, with the calls its compiled code makes
+  at run time. A finding names the kind of call (run-time dispatch, Enzyme's own
+  run-time differentiation of a call it could not resolve, a box, an
+  allocation on Julia's heap, a native allocation such as the tape, or any
+  other call into the runtime or a library), the callee, the compiled function
+  and sweep, the source lines, whether the call is in a loop or only on an
+  error path, and an allocation's size when it is a constant. Until now the
+  code a derivative runs could only be read from the text the `DumpPostOpt`
+  debug flag prints to standard error, or by compiling it a second time with
+  `enzyme_code_llvm`, which does not see a derivative compiled at run time and
+  needs the job's settings repeated by hand. Enzyme now reads the optimized
+  module of every derivative once, before its JIT takes it, and keeps what it
+  found with the compiled code and with the machine code a package image
+  keeps. A report therefore costs no second compile and covers code compiled
+  earlier in the session. `ir = true` also returns the LLVM bitcode of what
+  the block compiled. Where the host hands a compiled derivative to its
+  caller (`autodiff`, `autodiff_thunk`, Enzyme's run-time rules), it reads one
+  counter more while no report is running. The code of the call itself is
+  unchanged, because kernels on a device share it; so a later call through
+  `autodiff_deferred`, or of a split-mode thunk the caller kept, is not seen.
+  `Enzyme.has_dogfood_repair(:derivative_report)` reports the API;
+  `test/derivative_report.jl` covers the scan and the report, and
+  `test/precompile.jl` a derivative linked from an image.
 - Fix a crash while compiling a static Reverse derivative whose code has a
   load through a select of pointers in a block that flows into a phi of
   pointers, where both merge constant data or data the function made with
