@@ -1053,6 +1053,34 @@ include("concatenation.jl")
 include("foreach.jl")
 include("tuple_map.jl")
 
+@static if VERSION >= v"1.11-"
+    const MEMORY_INDEX_METHOD = which(getindex, Tuple{Memory{Any}, Int})
+    const ARRAY_INDEX_METHOD = which(getindex, Tuple{Vector{Any}, Int})
+
+    Base.@propagate_inbounds function boxed_memory_getindex(a::Memory{T}, i::Int) where {T}
+        @boundscheck checkbounds(a, i)
+        return ccall(:jl_genericmemoryref, Any, (Any, Csize_t), a, i - 1)::T
+    end
+
+    Base.@propagate_inbounds function boxed_memory_getindex(a::Array{T}, i::Int) where {T}
+        @boundscheck checkbounds(a, i)
+        ref = Core.memoryrefnew(getfield(a, :ref), i, false)
+        return ccall(:jl_genericmemoryref, Any, (Any, Csize_t), ref.mem, Core.memoryrefoffset(ref) - 1)::T
+    end
+
+    function boxed_index_rewrite(interp, argtypes, sv)
+        length(argtypes) == 3 && interp.reverse_rules || return nothing
+        A = Core.Compiler.widenconst(argtypes[2])
+        A isa DataType && isconcretetype(A) && A <: Union{Memory, Array} || return nothing
+        T = eltype(A)
+        !isconcretetype(T) && !Base.allocatedinline(T) || return nothing
+        Core.Compiler.widenconst(argtypes[3]) === Int || return nothing
+        sig = Core.Compiler.argtypes_to_type(argtypes)
+        method = A <: Memory ? MEMORY_INDEX_METHOD : ARRAY_INDEX_METHOD
+        return checked_method_rewrite(interp, getindex, sig, sv, (method, boxed_memory_getindex))
+    end
+end
+
 concat_rewrite(interp::EnzymeInterpreter, f, argtypes, sv::AbsIntState) = nothing
 
 function concat_rewrite(interp::EnzymeInterpreter, f::DenseConcatFunction, argtypes, sv::AbsIntState)
@@ -1616,6 +1644,11 @@ function abstract_call_known(
 
     if interp.broadcast_rewrite
         replacement = concat_rewrite(interp, f, argtypes, sv)
+        @static if VERSION >= v"1.11-"
+            if replacement === nothing && f === getindex
+                replacement = boxed_index_rewrite(interp, argtypes, sv)
+            end
+        end
         if replacement === nothing
             replacement = foreach_rewrite(interp, f, argtypes, sv)
         end

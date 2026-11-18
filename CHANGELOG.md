@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Preserve the activity of constant data copied into a fresh trace or passed
+  through dynamic dispatch. This fixes plain Reverse through Gen's dynamic
+  `update` and through static updates reached via a type-unstable caller.
+- Accumulate gradients from ordinary indexing of boxed arrays and memory
+  back into their elements on Julia 1.11 and later. Repeated reads of an
+  immutable record now add to its existing shadow, including in batched Reverse.
+- Preserve concrete inline field types when copying a persistent vector of
+  mixed integer and floating-point records. The dogfood libEnzyme build also
+  keeps the types of distinct boxed tree nodes separate across dispatch,
+  branches, and heterogeneous storage. Gen's static `Map` uses both layouts.
+
 - Keep nested result-type queries concrete when a higher-order helper is
   reused for a different callable. For example, a loop that seeds a sum with
   `zero(Base.promote_op(f, ...))` can now differentiate the addition
