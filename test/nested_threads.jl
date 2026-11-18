@@ -122,9 +122,9 @@ end
         end
 
         @testset "Reverse over Reverse" begin
-            # On Julia 1.12 and 1.13 the body's tape holds a stack slot that libEnzyme had
-            # moved to the heap, and an outer reverse pass that took its mark along moved
-            # it back to the stack ("Illegal address space propagation").
+            # The body's tape holds a stack slot that libEnzyme had moved to the heap. On
+            # Julia 1.12 and 1.13 an outer reverse pass that took its mark along tried to
+            # move it back to the stack ("Illegal address space propagation").
             g = zero(x)
             autodiff(Reverse, Const(nt_gradient_sqnorm), Active, Const(f), Duplicated(x, g))
             @test g ≈ 2 * 128^2 .* x

@@ -5696,10 +5696,10 @@ end
 # derivative does not need it on the heap, which is right because a stack slot cannot
 # outlive its function. In the derivative it emits, such an allocation may outlive the
 # function: an augmented forward pass returns it in its tape. An outer derivative that
-# imports that code (`import_cached_autodiff!`) then took it for a stack slot of its own,
-# and moved it back to the stack while a store kept its address beyond the function
-# (`EnzymeInternalError`, "Illegal address space propagation", from Reverse over Reverse
-# through a `Threads.@threads` loop on Julia 1.12, whose loop body has such a slot).
+# imports that code (`import_cached_autodiff!`) then took it for a stack slot of its own
+# and tried to move it back to the stack, which fails while a store keeps its address
+# beyond the function (`EnzymeInternalError`, "Illegal address space propagation", from
+# Reverse over Reverse through a `Threads.@threads` loop on Julia 1.12 and 1.13).
 const STACK_SLOT_MARKERS = ("enzyme_fromstack", "enzyme_caststack", "enzyme_zerostack", "enzyme_backstack")
 
 function strip_stack_slot_markers!(mod::LLVM.Module)
