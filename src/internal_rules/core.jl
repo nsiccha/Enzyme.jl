@@ -485,16 +485,10 @@ end
     unsafe_store!(tapes, thunk(f, Const(idx), fargs...)[1], idx)
 end
 
-function EnzymeRules.augmented_primal(
-    config::EnzymeRules.RevConfig,
-    func::Const{typeof(Enzyme.pmap)},
-    ::Type{Const{Nothing}},
-    body::BodyTy,
-    count,
-    args::Vararg{Annotation,N},
-) where {BodyTy,N}
-
-    config2 = ReverseModeSplit{
+# The mode in which the rules of `Enzyme.pmap` take the derivative of the loop body, with
+# `AtomicAdd` as its setting for the accumulation into shadow memory.
+@inline function pmap_body_mode(config::EnzymeRules.RevConfig, ::Val{AtomicAdd}) where {AtomicAdd}
+    return ReverseModeSplit{
         false,
         false,
         EnzymeRules.runtime_activity(config),
@@ -504,8 +498,27 @@ function EnzymeRules.augmented_primal(
         InlineABI,
         false,
         false,
-        false
+        false,
+        AtomicAdd,
     }()
+end
+
+# `Enzyme.pmap` runs its iterations on as many tasks as the process has threads, and each of
+# them accumulates into the shadows of the loop's arguments. Whether they must do that
+# atomically is decided where the loop runs, not where its derivative is compiled: the code
+# of the body's derivative goes wherever the rule's value goes, so when a package image keeps
+# it, it runs in another process than the one that compiled it, with another number of
+# threads. The rules hold both derivatives of the body and take the atomic one with several
+# threads. With one thread the body accumulates plainly, unless it runs work on other
+# threads itself (`InheritedPlainAdd`).
+@inline pmap_runs_in_parallel() = Threads.nthreads() > 1
+
+function pmap_augmented(
+        config2::ReverseModeSplit,
+        body::BodyTy,
+        count,
+        args::Vararg{Annotation, N},
+    ) where {BodyTy, N}
     fwd_thunk, rev_thunk =
         autodiff_thunk(config2, BodyTy, Const, typeof(count), map(typeof, args)...)
 
@@ -518,6 +531,22 @@ function EnzymeRules.augmented_primal(
     end
 
     Enzyme.pmap(pmap_fwd, count.val, tapes, fwd_thunk, body, args...)
+    return tapes
+end
+
+function EnzymeRules.augmented_primal(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(Enzyme.pmap)},
+        ::Type{Const{Nothing}},
+        body::BodyTy,
+        count,
+        args::Vararg{Annotation, N},
+    ) where {BodyTy, N}
+    tapes = if pmap_runs_in_parallel()
+        pmap_augmented(pmap_body_mode(config, Val(true)), body, count, args...)
+    else
+        pmap_augmented(pmap_body_mode(config, Val(Enzyme.InheritedPlainAdd)), body, count, args...)
+    end
     return EnzymeRules.AugmentedReturn(nothing, nothing, tapes)
 end
 
@@ -541,28 +570,13 @@ end
     thunk(f, Const(idx), fargs..., unsafe_load(tapes, idx))
 end
 
-function EnzymeRules.reverse(
-    config::EnzymeRules.RevConfig,
-    func::Const{typeof(Enzyme.pmap)},
-    ::Type{Const{Nothing}},
-    tapes,
-    body::BodyTy,
-    count,
-    args::Vararg{Annotation,N},
-) where {BodyTy,N}
-
-    config2 = ReverseModeSplit{
-        false,
-        false,
-        EnzymeRules.runtime_activity(config),
-        EnzymeRules.strong_zero(config),
-        EnzymeRules.width(config),
-        EnzymeRules.overwritten(config)[2:end],
-        InlineABI,
-        false,
-        false,
-        false
-    }()
+function pmap_reverse(
+        config2::ReverseModeSplit,
+        tapes,
+        body::BodyTy,
+        count,
+        args::Vararg{Annotation, N},
+    ) where {BodyTy, N}
     fwd_thunk, rev_thunk =
         autodiff_thunk(config2, BodyTy, Const, typeof(count), map(typeof, args)...)
 
@@ -573,7 +587,25 @@ function EnzymeRules.reverse(
     if !Enzyme.Compiler.any_jltypes(TapeType)
         Libc.free(tapes)
     end
+    return nothing
+end
 
+function EnzymeRules.reverse(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(Enzyme.pmap)},
+        ::Type{Const{Nothing}},
+        tapes,
+        body::BodyTy,
+        count,
+        args::Vararg{Annotation, N},
+    ) where {BodyTy, N}
+    # The same derivative of the body as the augmented primal ran: the number of threads of a
+    # process does not change.
+    if pmap_runs_in_parallel()
+        pmap_reverse(pmap_body_mode(config, Val(true)), tapes, body, count, args...)
+    else
+        pmap_reverse(pmap_body_mode(config, Val(Enzyme.InheritedPlainAdd)), tapes, body, count, args...)
+    end
     return ntuple(Returns(nothing), Val(2 + length(args)))
 end
 
