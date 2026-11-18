@@ -394,8 +394,9 @@ function scanned_function(fn::LLVM.Function, defined::Dict{String, Int})::Scanne
     sweep = if startswith(name, "augmented_") || startswith(name, "fwddiffe")
         :forward
     elseif startswith(name, "diffe")
-        # A function for the reverse sweep alone has a forward sweep beside it.
-        haskey(defined, "augmented_" * String(SubString(name, 6))) ? :reverse : :combined
+        # A function for the reverse sweep alone has a forward sweep beside it. In a batch its
+        # name carries the width (`diffe2julia_f` beside `augmented_julia_f`).
+        haskey(defined, "augmented_" * String(lstrip(isdigit, SubString(name, 6)))) ? :reverse : :combined
     else
         :primal
     end

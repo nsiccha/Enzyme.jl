@@ -264,6 +264,24 @@ end
           %a = call i64 @malloc(i64 6)
           ret i64 %a
         }
+
+        define i64 @augmented_julia_m() {
+        entry:
+          %a = call i64 @malloc(i64 7)
+          ret i64 %a
+        }
+
+        define i64 @diffe2julia_m() {
+        entry:
+          %a = call i64 @malloc(i64 8)
+          ret i64 %a
+        }
+
+        define i64 @diffe3julia_n() {
+        entry:
+          %a = call i64 @malloc(i64 9)
+          ret i64 %a
+        }
         """
     )
     sweep(bytes) = only(f for f in findings if f.bytes == bytes).sweep
@@ -275,6 +293,10 @@ end
     @test sweep(4) === :reverse
     @test sweep(5) === :reverse
     @test sweep(6) === :primal
+    # The reverse sweep of a batch carries the width in its name, the forward sweep does not.
+    @test sweep(7) === :forward
+    @test sweep(8) === :reverse
+    @test sweep(9) === :combined
 end
 
 @testset "names for the globals of a module compiled for a package image" begin
