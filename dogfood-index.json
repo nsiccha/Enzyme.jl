@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T16:49:43Z",
+  "prepared_at": "2026-11-18T17:02:30Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -1085,7 +1085,7 @@
             ]
           }
         ],
-        "why_together": "One commit widens the reverse gradient! method to structured mutable destinations, rejects active immutable fields and tests both the direct and DifferentiationInterface APIs. It applies directly to upstream 1ee9a6f8."
+        "why_together": "One commit widens the reverse gradient! method to structured mutable destinations, rejects active immutable fields and tests both the direct and DifferentiationInterface APIs. It applies directly to upstream 1ee9a6f8. The four historical runs used Enzyme_jll 0.0.301+0. Upstream 1ee9a6f8 requires 0.0.311. Verification with the declared package is pending."
       },
       "depends_on": [],
       "requires": [],
@@ -1100,7 +1100,7 @@
             "test/integration/DifferentiationInterface/structured_gradient.jl"
           ],
           "result": "passed",
-          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 2d331aa. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+          "detail": "Alternate native library outside upstream 1ee9a6f8 compatibility. 53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 2d331aa. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
         },
         {
           "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
@@ -1112,7 +1112,7 @@
             "test/integration/DifferentiationInterface/structured_gradient.jl"
           ],
           "result": "passed",
-          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 2d331aa. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+          "detail": "Alternate native library outside upstream 1ee9a6f8 compatibility. 53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 2d331aa. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
         },
         {
           "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
@@ -1124,7 +1124,7 @@
             "test/integration/DifferentiationInterface/structured_gradient.jl"
           ],
           "result": "passed",
-          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 6d172b025e4. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+          "detail": "Alternate native library outside upstream 1ee9a6f8 compatibility. 53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 6d172b025e4. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
         },
         {
           "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
@@ -1136,7 +1136,55 @@
             "test/integration/DifferentiationInterface/structured_gradient.jl"
           ],
           "result": "passed",
-          "detail": "53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 6d172b025e4. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+          "detail": "Alternate native library outside upstream 1ee9a6f8 compatibility. 53/53 direct gradient assertions and 28/28 DifferentiationInterface 0.7.18 assertions passed on Julia build 6d172b025e4. The unmodified upstream control has no applicable gradient! method for the same tuple destination."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/gradient_inplace.jl",
+            "test/integration/DifferentiationInterface/structured_gradient.jl"
+          ],
+          "result": "not-run",
+          "detail": "Awaiting execution in a freshly resolved upstream environment."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/gradient_inplace.jl",
+            "test/integration/DifferentiationInterface/structured_gradient.jl"
+          ],
+          "result": "not-run",
+          "detail": "Awaiting execution in a freshly resolved upstream environment."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/gradient_inplace.jl",
+            "test/integration/DifferentiationInterface/structured_gradient.jl"
+          ],
+          "result": "not-run",
+          "detail": "Awaiting execution in a freshly resolved upstream environment."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/gradient_inplace.jl",
+            "test/integration/DifferentiationInterface/structured_gradient.jl"
+          ],
+          "result": "not-run",
+          "detail": "Awaiting execution in a freshly resolved upstream environment."
         }
       ]
     },
@@ -1790,7 +1838,7 @@
             ]
           }
         ],
-        "why_together": "One commit handles payload-free AbstractFloat subtypes in get_offsets and typetree and tests layout, forward derivatives and reverse derivatives. It applies directly to upstream 1ee9a6f8. The separate MeasureTheory integration case in the original commit is outside this two-file patch."
+        "why_together": "One commit handles payload-free AbstractFloat subtypes in get_offsets and typetree and tests layout, forward derivatives and reverse derivatives. It applies directly to upstream 1ee9a6f8. The separate MeasureTheory integration case in the original commit is outside this two-file patch. The four historical runs used Enzyme_jll 0.0.301+0. Upstream 1ee9a6f8 requires 0.0.311. Verification with the declared package is pending."
       },
       "depends_on": [],
       "requires": [],
@@ -1804,7 +1852,7 @@
             "test/float_layouts.jl"
           ],
           "result": "passed",
-          "detail": "31/31 layout and AD assertions passed on Julia build 2d331aa. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+          "detail": "Alternate native library outside upstream 1ee9a6f8 compatibility. 31/31 layout and AD assertions passed on Julia build 2d331aa. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
         },
         {
           "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
@@ -1815,7 +1863,7 @@
             "test/float_layouts.jl"
           ],
           "result": "passed",
-          "detail": "31/31 layout and AD assertions passed on Julia build 2d331aa. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+          "detail": "Alternate native library outside upstream 1ee9a6f8 compatibility. 31/31 layout and AD assertions passed on Julia build 2d331aa. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
         },
         {
           "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
@@ -1826,7 +1874,7 @@
             "test/float_layouts.jl"
           ],
           "result": "passed",
-          "detail": "31/31 layout and AD assertions passed on Julia build 6d172b025e4. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+          "detail": "Alternate native library outside upstream 1ee9a6f8 compatibility. 31/31 layout and AD assertions passed on Julia build 6d172b025e4. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
         },
         {
           "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
@@ -1837,7 +1885,51 @@
             "test/float_layouts.jl"
           ],
           "result": "passed",
-          "detail": "31/31 layout and AD assertions passed on Julia build 6d172b025e4. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+          "detail": "Alternate native library outside upstream 1ee9a6f8 compatibility. 31/31 layout and AD assertions passed on Julia build 6d172b025e4. On unmodified upstream, both get_offsets and typetree assert on a payload-free AbstractFloat."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/float_layouts.jl"
+          ],
+          "result": "not-run",
+          "detail": "Awaiting execution in a freshly resolved upstream environment."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/float_layouts.jl"
+          ],
+          "result": "not-run",
+          "detail": "Awaiting execution in a freshly resolved upstream environment."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/float_layouts.jl"
+          ],
+          "result": "not-run",
+          "detail": "Awaiting execution in a freshly resolved upstream environment."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/float_layouts.jl"
+          ],
+          "result": "not-run",
+          "detail": "Awaiting execution in a freshly resolved upstream environment."
         }
       ],
       "draft": {
