@@ -116,6 +116,7 @@ function slot_reload_ir(typed::Bool)
     obj = typed ? "{} addrspace(10)*" : "ptr addrspace(10)"
     slot = typed ? "{} addrspace(10)**" : "ptr"
     int = typed ? "i64*" : "ptr"
+    nocapture = LLVM.version() >= v"21" ? "captures(none)" : "nocapture"
     # The zero store, through the cast that typed pointers need.
     clear(name) = typed ?
         "%$(name)z = bitcast $slot %$name to $int\n  store i64 0, $int %$(name)z, align 8" :
@@ -124,6 +125,7 @@ function slot_reload_ir(typed::Bool)
     declare $obj @ijl_box_int64(i64)
     declare $obj @ijl_box_float32(float)
     declare void @opaque($slot)
+    declare void @inspect($slot readonly $nocapture)
 
     define $obj @typed(i64 %x) {
     top:
@@ -131,6 +133,7 @@ function slot_reload_ir(typed::Bool)
       $(clear("a"))
       %box = call $obj @ijl_box_int64(i64 %x)
       store $obj %box, $slot %a, align 8
+      call void @inspect($slot %a)
       %reload = load $obj, $slot %a, align 8
       ret $obj %reload
     }

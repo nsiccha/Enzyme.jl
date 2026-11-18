@@ -102,11 +102,7 @@ function slot_field_call!(
         if isa(callee, LLVM.Function) && i <= length(callee.parameters)
             append!(attrs, collect(callee.parameter_attributes[i]))
         end
-        nocapture = false
-        for attr in attrs
-            attr.kind == NOCAPTURE_ATTR_KIND && (nocapture = true)
-        end
-        nocapture || return false
+        any(is_nocapture_attr, attrs) || return false
     end
     return true
 end
