@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T17:27:47Z",
+  "prepared_at": "2026-11-18T17:54:43Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -76,6 +76,54 @@
           ],
           "result": "passed",
           "detail": "Saved November 4 per-file exit records for this exact commit. Native-library provenance and the 1.12 patch version are not present in the retained group summary; no forced-bounds result is claimed."
+        },
+        {
+          "base": "dd86d5435d55c97d34bcb3cfd470923859de6dd8",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.304+0, artifact f7fbac002d5b12c938bc4fd732d90b45770e940f",
+          "tests": [
+            "test/data_pointer_phi.jl",
+            "test/passes.jl"
+          ],
+          "result": "passed",
+          "detail": "75/75 assertions passed on Julia build d93beab124c. The data-pointer gradient suite passed all six assertions and the compiler-pass suite passed all 69. Both loaded native products came from the declared artifact."
+        },
+        {
+          "base": "dd86d5435d55c97d34bcb3cfd470923859de6dd8",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.304+0, artifact f7fbac002d5b12c938bc4fd732d90b45770e940f",
+          "tests": [
+            "test/data_pointer_phi.jl",
+            "test/passes.jl"
+          ],
+          "result": "passed",
+          "detail": "75/75 assertions passed on Julia build d93beab124c. The data-pointer gradient suite passed all six assertions and the compiler-pass suite passed all 69. Both loaded native products came from the declared artifact."
+        },
+        {
+          "base": "dd86d5435d55c97d34bcb3cfd470923859de6dd8",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.304+0, artifact 27ef5572bfad9f7ed7ec475502496e836bb4d26b",
+          "tests": [
+            "test/data_pointer_phi.jl",
+            "test/passes.jl"
+          ],
+          "result": "passed",
+          "detail": "76/76 assertions passed on Julia build 6d172b025e4. The data-pointer gradient suite passed all six assertions and the compiler-pass suite passed all 70. Both loaded native products came from the declared artifact."
+        },
+        {
+          "base": "dd86d5435d55c97d34bcb3cfd470923859de6dd8",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.304+0, artifact 27ef5572bfad9f7ed7ec475502496e836bb4d26b",
+          "tests": [
+            "test/data_pointer_phi.jl",
+            "test/passes.jl"
+          ],
+          "result": "passed",
+          "detail": "76/76 assertions passed on Julia build 6d172b025e4. The data-pointer gradient suite passed all six assertions and the compiler-pass suite passed all 70. Both loaded native products came from the declared artifact."
         }
       ],
       "fix": {
@@ -3636,21 +3684,165 @@
     {
       "id": "float-ranges",
       "role": "fix",
-      "title": "A float range loses the derivatives of its first value and step",
-      "summary": "A loss can consume values of a floating-point range. Its gradient should follow changes to the first element and step through the range implementation, including Base.truncbits, and agree with differentiation of the equivalent explicit values.",
+      "title": "Differentiating a scaled floating-point range fails or uses the wrong reference element",
+      "summary": "The first element and step of an active range determine its tangent, including when the stored reference is an interior element.",
       "repairs": [],
-      "upstream_refs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3889",
+          "relation": "reports"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3890",
+          "relation": "related"
+        }
+      ],
       "fix": {
-        "commits": [],
-        "why_together": "The original commits identify the historical float-ranges topic. Its validation on 01265672 covered the assembled group. The smallest passing subset on current upstream remains to be verified."
+        "branch": "rebase/float-range-construction",
+        "commits": [
+          {
+            "sha": "612fb5707e702f29010f9a21baed38bead7d7d5a",
+            "title": "Differentiate float ranges through their first element and step",
+            "original": [
+              "312c0129a3ec219ef286d6997c445fcde1b96bc7"
+            ]
+          }
+        ],
+        "why_together": "Range construction and conversion between the first element, step and stored reference. This commit works on upstream 1ee9a6f8 without the arithmetic rules."
       },
       "depends_on": [],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/rules/internal_rules/ranges.jl"
+          ],
+          "result": "passed",
+          "detail": "245/245 assertions passed on Julia build d93beab124c. Range construction agreed with the analytic result. The arithmetic probe still raised EnzymeNoDerivativeError."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/rules/internal_rules/ranges.jl"
+          ],
+          "result": "passed",
+          "detail": "245/245 assertions passed on Julia build d93beab124c. Range construction agreed with the analytic result. The arithmetic probe still raised EnzymeNoDerivativeError."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/rules/internal_rules/ranges.jl"
+          ],
+          "result": "passed",
+          "detail": "245/245 assertions passed on Julia build 6d172b025e4. Range construction agreed with the analytic result. The arithmetic probe still raised EnzymeNoDerivativeError."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/rules/internal_rules/ranges.jl"
+          ],
+          "result": "passed",
+          "detail": "245/245 assertions passed on Julia build 6d172b025e4. Range construction agreed with the analytic result. The arithmetic probe still raised EnzymeNoDerivativeError."
+        }
+      ],
       "draft": {
-        "title": "A float range loses the derivatives of its first value and step",
-        "body": "A loss can consume values of a floating-point range. Its gradient should follow changes to the first element and step through the range implementation, including Base.truncbits, and agree with differentiation of the equivalent explicit values.\n\nOriginal fork commits in historical order: [312c0129](https://github.com/nsiccha/Enzyme.jl/commit/312c0129a3ec219ef286d6997c445fcde1b96bc7), [c2ee2017](https://github.com/nsiccha/Enzyme.jl/commit/c2ee20174c025ec86666f358a3896094ce90d31e).\n\nRegression coverage on the fork: [test/rules/internal_rules/ranges.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/ranges.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "title": "Differentiating a scaled floating-point range fails or uses the wrong reference element",
+        "body": "A range produced by multiplying a scalar by an integer range has differentiable first and step values. On upstream 1ee9a6f8, forward differentiation of this loss raises EnzymeNoDerivativeError.\n\n```julia\nusing Enzyme\nf(x) = sum(sin.(x * (1:5)))\nx = 0.5\ndx = only(autodiff(Forward, f, Duplicated(x, 1.0)))\n@assert dx ≈ sum(k * cos(k * x) for k in 1:5)\n```\n\nThe same first-and-step calculation should work for reverse differentiation and for ranges crossing zero, where Julia can store an interior element as the reference.\n\nUpstream #3889 already reports the incorrect offset in the start/stop constructor, and PR #3890 proposes a fix for that case. The scaled integer-range example above exercises the start/step constructor.",
+        "prepared_at": "2026-11-18T17:54:43Z"
+      }
+    },
+    {
+      "id": "float-range-arithmetic",
+      "role": "fix",
+      "title": "Twice-precision arithmetic on a floating-point range blocks differentiation",
+      "summary": "Differentiation of arithmetic on a floating-point range fails in the bit operations used by compensated arithmetic.",
+      "repairs": [],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/4016",
+          "relation": "related"
+        }
+      ],
+      "fix": {
+        "branch": "rebase/float-range-arithmetic",
+        "commits": [
+          {
+            "sha": "17b40e1ce940f1de0beb80ba01c543fe806b6e62",
+            "title": "Treat Base.truncbits as the identity",
+            "original": [
+              "c2ee20174c025ec86666f358a3896094ce90d31e"
+            ]
+          }
+        ],
+        "why_together": "Apply the construction commit first. The arithmetic rules call its four tangent helpers and the regression file uses its batched reverse-mode test helper. The regression distinguishes constructing a range from differentiating subsequent twice-precision arithmetic."
+      },
+      "depends_on": [
+        "float-ranges"
+      ],
+      "requires": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/rules/internal_rules/ranges.jl"
+          ],
+          "result": "passed",
+          "detail": "336/336 assertions passed on Julia build d93beab124c. Both range construction and the arithmetic probe agreed with their analytic derivatives after the construction commit."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/rules/internal_rules/ranges.jl"
+          ],
+          "result": "passed",
+          "detail": "336/336 assertions passed on Julia build d93beab124c. Both range construction and the arithmetic probe agreed with their analytic derivatives after the construction commit."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/rules/internal_rules/ranges.jl"
+          ],
+          "result": "passed",
+          "detail": "336/336 assertions passed on Julia build 6d172b025e4. Both range construction and the arithmetic probe agreed with their analytic derivatives after the construction commit."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/rules/internal_rules/ranges.jl"
+          ],
+          "result": "passed",
+          "detail": "336/336 assertions passed on Julia build 6d172b025e4. Both range construction and the arithmetic probe agreed with their analytic derivatives after the construction commit."
+        }
+      ],
+      "draft": {
+        "title": "Twice-precision arithmetic on a floating-point range blocks differentiation",
+        "body": "Dividing a floating-point range by an active scalar takes a twice-precision arithmetic path that masks low bits. Forward differentiation raises EnzymeNoDerivativeError on upstream 1ee9a6f8.\n\n```julia\nusing Enzyme\nf(x) = sum(abs2, (-1.0:0.5:1.0) / x)\nx = 0.5\ndx = only(autodiff(Forward, f, Duplicated(x, 1.0)))\n@assert dx ≈ -5 / x^3\n```\n\nThe five squared range elements sum to 2.5 before scaling, so the loss is 2.5/x². Its derivative at 0.5 is -40. The expected result concerns the full compensated arithmetic operation. The historical patch implements a rule for the internal Base.truncbits primitive.\n\nUpstream #4016 records a related twice-precision failure for a range built from constant inputs. Here the scale itself is active.",
+        "prepared_at": "2026-11-18T17:54:43Z"
       }
     },
     {
