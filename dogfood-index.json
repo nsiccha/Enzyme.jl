@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T21:07:48Z",
+  "prepared_at": "2026-11-18T21:09:27Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -2873,8 +2873,8 @@
     {
       "id": "householder-q-products",
       "role": "fix",
-      "title": "Products with the Q from QR, LQ and Hessenberg factorizations need derivatives",
-      "summary": "LinearAlgebra represents Q implicitly in these factorizations. Applying it to a vector or matrix should support forward and reverse differentiation without materializing Q. Check transpose cases and nested derivatives against an explicit small reference.",
+      "title": "Reverse differentiation of a product with a constant QR factor Q fails",
+      "summary": "The adjoint of a product with a fixed orthogonal Q should apply its transpose to the output adjoint. Upstream reverse differentiation stops at the LAPACK product.",
       "repairs": [
         {
           "id": "householder_q_products",
@@ -2886,25 +2886,169 @@
       ],
       "upstream_refs": [],
       "fix": {
-        "commits": [],
-        "why_together": "The original commits were selected from the householder-products review group. The smallest independently passing subset on 1ee9a6f8 still needs testing. The full group used lapack-helpers. Its prerequisites have yet to be verified for this issue alone. The Householder rules use the shared LAPACK shadow and return helpers.",
+        "branch": "rebase/fixed-householder-products",
         "originals": [
           "d5dffdf2a7c0dc79695c2dc449952876c66dc837",
           "930ec4bebe5a2a9839b455b544944224a31ee553",
           "0f6d362b2cc9016679c383a3273294df554a8a69",
-          "6c6b9ad716e7bc71b6a2e7e55094ea3b3637a419",
-          "de6bb994ea8cdb6787d461dd8c80dccaeadb711d"
-        ]
+          "6c6b9ad716e7bc71b6a2e7e55094ea3b3637a419"
+        ],
+        "commits": [
+          {
+            "sha": "cbe9fbe429e8ac8f06efd294a16e933db83ce712",
+            "original": [
+              "d5dffdf2a7c0dc79695c2dc449952876c66dc837",
+              "930ec4bebe5a2a9839b455b544944224a31ee553",
+              "0f6d362b2cc9016679c383a3273294df554a8a69",
+              "6c6b9ad716e7bc71b6a2e7e55094ea3b3637a419"
+            ],
+            "title": "Differentiate products with constant Householder Q factors"
+          }
+        ],
+        "why_together": "The shared LAPACK helper supplies the shadow and return handling. Apply the Householder commit next for the first-order product. Its static forward-over-reverse regression suite still needs work before an upstream merge. It combines the product rules, the forward return-activity correction and their numerical tests. The [later test-only change](https://github.com/nsiccha/Enzyme.jl/commit/de6bb994ea8cdb6787d461dd8c80dccaeadb711d) strengthens the nested checks on the fork after the [literal constant capture repair](https://github.com/nsiccha/Enzyme.jl/commit/1232a97d96205d399cd7636aab8d60c1cdf55db8)."
       },
       "depends_on": [
         "lapack-helpers"
       ],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Adjoint of a product with a constant QR factor"
+          ],
+          "result": "passed",
+          "detail": "The patched gradient matched the dense reference [-0.4, -2.2]. Upstream and helper-only controls raised EnzymeNoDerivativeError. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/rules/internal_rules/householder_multiply.jl"
+          ],
+          "result": "failed",
+          "detail": "28,609 assertions passed, three static forward-over-reverse cases raised EnzymeRuntimeActivityError, and four were marked broken. The three errors were for qr, qr, two blocks, qr, ColumnNorm."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Adjoint of a product with a constant QR factor"
+          ],
+          "result": "passed",
+          "detail": "The patched gradient matched the dense reference [-0.4, -2.2]. Upstream and helper-only controls raised EnzymeNoDerivativeError. Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/rules/internal_rules/householder_multiply.jl"
+          ],
+          "result": "failed",
+          "detail": "28,609 assertions passed, three static forward-over-reverse cases raised EnzymeRuntimeActivityError, and four were marked broken. The three errors were for qr, qr, two blocks, qr, ColumnNorm."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Hessian-vector products for seven fixed Q factors with runtime activity"
+          ],
+          "result": "passed",
+          "detail": "All seven matched the analytical Hessian-vector product for sum(exp, Q*x) with set_runtime_activity(Forward). Upstream and the shared helper alone failed to produce a derivative in every case."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Hessian-vector products for seven fixed Q factors with static activity"
+          ],
+          "result": "failed",
+          "detail": "All seven static cases raised EnzymeRuntimeActivityError on the patch. Neither control produced a gradient in any of these cases."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "Adjoint of a product with a constant QR factor"
+          ],
+          "result": "passed",
+          "detail": "The patched gradient matched the dense reference [-0.4, -2.2]. Upstream and helper-only controls raised EnzymeNoDerivativeError. Julia build 6d172b025e4."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/rules/internal_rules/householder_multiply.jl"
+          ],
+          "result": "failed",
+          "detail": "28,609 assertions passed, three static forward-over-reverse cases raised EnzymeRuntimeActivityError, and four were marked broken. The three errors were for hessenberg, hessenberg, Hermitian U, hessenberg, Hermitian L."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "Adjoint of a product with a constant QR factor"
+          ],
+          "result": "passed",
+          "detail": "The patched gradient matched the dense reference [-0.4, -2.2]. Upstream and helper-only controls raised EnzymeNoDerivativeError. Julia build 6d172b025e4."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/rules/internal_rules/householder_multiply.jl"
+          ],
+          "result": "failed",
+          "detail": "28,609 assertions passed, three static forward-over-reverse cases raised EnzymeRuntimeActivityError, and four were marked broken. The three errors were for hessenberg, hessenberg, Hermitian U, hessenberg, Hermitian L."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "Hessian-vector products for seven fixed Q factors with runtime activity"
+          ],
+          "result": "passed",
+          "detail": "All seven matched the analytical Hessian-vector product for sum(exp, Q*x) with set_runtime_activity(Forward). Upstream and the shared helper alone failed to produce a derivative in every case."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "Hessian-vector products for seven fixed Q factors with static activity"
+          ],
+          "result": "failed",
+          "detail": "All seven static cases raised EnzymeRuntimeActivityError on the patch. Neither control produced a gradient in any of these cases."
+        }
+      ],
       "draft": {
-        "title": "Products with the Q from QR, LQ and Hessenberg factorizations need derivatives",
-        "body": "LinearAlgebra represents Q implicitly in these factorizations. Applying it to a vector or matrix should support forward and reverse differentiation without materializing Q. Check transpose cases and nested derivatives against an explicit small reference.\n\nOriginal fork commits in historical order: [d5dffdf2](https://github.com/nsiccha/Enzyme.jl/commit/d5dffdf2a7c0dc79695c2dc449952876c66dc837), [930ec4be](https://github.com/nsiccha/Enzyme.jl/commit/930ec4bebe5a2a9839b455b544944224a31ee553), [0f6d362b](https://github.com/nsiccha/Enzyme.jl/commit/0f6d362b2cc9016679c383a3273294df554a8a69), [6c6b9ad7](https://github.com/nsiccha/Enzyme.jl/commit/6c6b9ad716e7bc71b6a2e7e55094ea3b3637a419), [de6bb994](https://github.com/nsiccha/Enzyme.jl/commit/de6bb994ea8cdb6787d461dd8c80dccaeadb711d).\n\nRegression coverage on the fork: [test/rules/internal_rules/householder_multiply.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rules/internal_rules/householder_multiply.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "title": "Reverse differentiation of a product with a constant QR factor Q fails",
+        "body": "Multiplication by the Q from a QR factorization is linear in its vector input. On Enzyme.jl `1ee9a6f8` with Enzyme_jll 0.0.311+0, reverse differentiation of this scalar product raises `EnzymeNoDerivativeError` on Julia 1.10.12 and 1.12.7.\n\n```julia\nusing Enzyme, LinearAlgebra\n\nweighted_q(x, Q, w) = dot(w, Q * x)\nQ = qr([3.0 0.0; 4.0 5.0]).Q\nx, w = [1.0, 2.0], [2.0, -1.0]\ndx = zeros(2)\nautodiff(Reverse, weighted_q, Active, Duplicated(x, dx), Const(Q), Const(w))\n```\n\nThe expected gradient is `Matrix(Q)' * w`. The shared LAPACK helpers and the Householder rules together give `[-0.4, -2.2]`. For the separate objective `sum(exp, Q*x)`, runtime activity also gives the analytical Hessian-vector product for all seven tested QR, LQ and Hessenberg factors. Static forward-over-reverse still raises an activity error for all seven on both Julia versions. The full regression suite exits with three errors and four marked broken in each bounds mode.\n\n[Shared helper](https://github.com/nsiccha/Enzyme.jl/commit/a17f475adf8f46679740d19feac022a079a70fce) · [Householder rules and numerical tests](https://github.com/nsiccha/Enzyme.jl/commit/cbe9fbe429e8ac8f06efd294a16e933db83ce712)",
+        "prepared_at": "2026-11-18T21:09:27Z"
       }
     },
     {
