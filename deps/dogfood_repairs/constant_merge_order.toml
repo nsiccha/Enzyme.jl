@@ -1,0 +1,2 @@
+summary = "Static Reverse no longer crashes (segfault or UndefRefError while compiling) when a load through a select of pointers flows into a phi of pointers that merges constant or function-made data with other data"
+tests = ["test/constant_merge_order.jl"]

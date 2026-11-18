@@ -33,7 +33,9 @@ One kind of call in the compiled code of a derivative, found by [`derivative_rep
   code that is not differentiated.
 - `frames`: the source lines the call comes from, from debug info, innermost first.
 - `in_loop`: whether the call is in a loop, or in a function called from one.
-- `throw_only`: whether the call is only reached on a path that ends in an error.
+- `throw_only`: whether the call is only reached on a path that ends in an error,
+  including when every call of its helper is on such a path. Code the derivative
+  provably cannot reach has no findings.
 - `bytes`: for an allocation, its size when that is a constant, and `nothing` when it depends
   on run-time values (or is not an argument of the call, as for an array).
 - `count`: how many calls of the module this finding stands for.
@@ -117,17 +119,31 @@ end
 # A reference LLVM hands out, as a key.
 reference_key(ref::Ptr)::UInt = reinterpret(UInt, ref)
 
+is_constant_pointer_cast(v::LLVM.Value) =
+    v isa LLVM.ConstantExpr && v.opcode in (LLVM.Opcode.BitCast, LLVM.Opcode.AddrSpaceCast)
+
 # `v` without the constant casts around it.
 function strip_constant_casts(@nospecialize(v::LLVM.Value))::LLVM.Value
-    while v isa LLVM.ConstantExpr
-        op = v.opcode
-        if op == LLVM.Opcode.BitCast || op == LLVM.Opcode.AddrSpaceCast
-            v = v.operands[1]
-        else
-            break
-        end
+    while is_constant_pointer_cast(v)
+        v = v.operands[1]
     end
     return v
+end
+
+# Can something call this function without a direct edge in our call graph?
+function has_indirect_callers(v::LLVM.Value)::Bool
+    for use in v.uses
+        user = use.user
+        if user isa LLVM.CallBase
+            # The callee is the last operand. Passing the same function as an argument
+            # of that very call is a separate use of its address.
+            use.ref == LLVM.API.LLVMGetOperandUse(user, length(user.operands) - 1) && continue
+        elseif is_constant_pointer_cast(user)
+            has_indirect_callers(user) || continue
+        end
+        return true
+    end
+    return false
 end
 
 # The value of argument `i` of `call` when it is a constant integer.
@@ -339,11 +355,16 @@ function reaches(succ::Vector{Vector{Int}}, targets::BitVector)::BitVector
     for v in 1:n, w in succ[v]
         push!(pred[w], v)
     end
-    reached = copy(targets)
-    work = findall(targets)
+    return reachable_from(pred, targets)
+end
+
+# Which vertices can be reached from any of `roots`.
+function reachable_from(succ::Vector{Vector{Int}}, roots::BitVector)::BitVector
+    reached = copy(roots)
+    work = findall(roots)
     while !isempty(work)
         w = pop!(work)
-        for v in pred[w]
+        for v in succ[w]
             if !reached[v]
                 reached[v] = true
                 push!(work, v)
@@ -358,6 +379,8 @@ struct ScannedFunction
     name::String
     fn::LLVM.Function
     blocks::Vector{LLVM.BasicBlock}
+    # Whether the function's entry reaches the block.
+    reachable::BitVector
     # Whether a block reaches a return: one that does not only leads to an error.
     returns::BitVector
     # Whether a block is on a cycle of the control flow graph.
@@ -388,7 +411,7 @@ function scanned_function(fn::LLVM.Function, defined::Dict{String, Int})::Scanne
         end
         for target in term.successors
             j = get(position, reference_key(target.ref), 0)
-            j == 0 || j in succ[i] || push!(succ[i], j)
+            j == 0 || push!(succ[i], j)
         end
     end
     sweep = if startswith(name, "augmented_") || startswith(name, "fwddiffe")
@@ -422,7 +445,9 @@ function scanned_function(fn::LLVM.Function, defined::Dict{String, Int})::Scanne
             reverse[i] = !reached[i]
         end
     end
-    return ScannedFunction(name, fn, blks, reaches(succ, returning), on_cycle(succ), reverse, sweep)
+    entry = falses(n)
+    entry[1] = true
+    return ScannedFunction(name, fn, blks, reachable_from(succ, entry), reaches(succ, returning), on_cycle(succ), reverse, sweep)
 end
 
 # The source lines `inst` comes from, innermost first: its own, those it was inlined into, and
@@ -466,32 +491,29 @@ stands for, where a module compiled for a package image names an address.
 The module is only read.
 """
 function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{String, String}} = nothing)::Vector{DerivativeFinding}
-    defined = Dict{String, Int}()
-    scanned = ScannedFunction[]
-    for fn in mod.functions
-        isempty(fn.blocks) && continue
-        defined[fn.name] = length(scanned) + 1
-        # Filled in below: a function has to know the names of all others.
-        push!(scanned, ScannedFunction(fn.name, fn, LLVM.BasicBlock[], falses(0), falses(0), falses(0), :primal))
-    end
+    definitions = [fn for fn in mod.functions if !isempty(fn.blocks)]
+    defined = Dict{String, Int}(fn.name => k for (k, fn) in enumerate(definitions))
+    scanned = ScannedFunction[scanned_function(fn, defined) for fn in definitions]
     nf = length(scanned)
-    for k in 1:nf
-        scanned[k] = scanned_function(scanned[k].fn, defined)
-    end
-
-    # The calls between the module's functions: for each callee, its callers and their blocks.
-    callers = Vector{Tuple{Int, Int}}[Tuple{Int, Int}[] for _ in 1:nf]
     callees = Vector{Int}[Int[] for _ in 1:nf]
+    returning_callees = Vector{Int}[Int[] for _ in 1:nf]
+    loop_calls = Tuple{Int, Int}[]
+    roots = falses(nf)
     external = Tuple{Int, Int, LLVM.Instruction, String}[]
     address_names = Dict{UInt, String}()
-    for k in 1:nf
-        for (b, bb) in enumerate(scanned[k].blocks)
+    for (k, sf) in enumerate(scanned)
+        # A local definition with no callers can survive optimization. Only exported
+        # or indirectly callable functions need to be treated as independent entries.
+        roots[k] = !(sf.fn.linkage in (LLVM.Linkage.Internal, LLVM.Linkage.Private)) || has_indirect_callers(sf.fn)
+        for (b, bb) in enumerate(sf.blocks)
+            sf.reachable[b] || continue
             for inst in bb.instructions
                 inst isa LLVM.CallBase || continue
                 how, name, idx = called_function(inst, defined, global_names, address_names)
                 if how === :internal
-                    push!(callers[idx], (k, b))
-                    idx in callees[k] || push!(callees[k], idx)
+                    push!(callees[k], idx)
+                    sf.returns[b] && push!(returning_callees[k], idx)
+                    sf.cyclic[b] && push!(loop_calls, (k, idx))
                 elseif how === :named
                     push!(external, (k, b, inst, name))
                 elseif how === :indirect
@@ -501,54 +523,21 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
         end
     end
 
-    # A function is only reached on the way to an error when every call of it is. One whose
-    # address is taken, or that nothing in the module calls, may be called from anywhere.
-    error_only = falses(nf)
-    in_loop = falses(nf)
-    open = falses(nf)
-    for k in 1:nf
-        uses = 0
-        for _ in scanned[k].fn.uses
-            uses += 1
-        end
-        open[k] = isempty(callers[k]) || uses != length(callers[k])
+    # A recursive group cannot make itself reachable on a returning path: some
+    # entry must reach it through call sites that can all return.
+    reachable = reachable_from(callees, roots)
+    returning = reachable_from(returning_callees, roots)
+    loop_roots = reachable .& on_cycle(callees)
+    for (caller, callee) in loop_calls
+        reachable[caller] && (loop_roots[callee] = true)
     end
-    recursive = on_cycle(callees)
-    changed = true
-    while changed
-        changed = false
-        for k in 1:nf
-            if !error_only[k] && !open[k]
-                all = true
-                for (caller, b) in callers[k]
-                    if !(error_only[caller] || !scanned[caller].returns[b])
-                        all = false
-                        break
-                    end
-                end
-                if all
-                    error_only[k] = true
-                    changed = true
-                end
-            end
-            if !in_loop[k]
-                looped = recursive[k]
-                for (caller, b) in callers[k]
-                    looped && break
-                    looped = in_loop[caller] || scanned[caller].cyclic[b]
-                end
-                if looped
-                    in_loop[k] = true
-                    changed = true
-                end
-            end
-        end
-    end
+    in_loop = reachable_from(callees, loop_roots)
 
     counts = Dict{DerivativeFinding, Int}()
     order = DerivativeFinding[]
     frames_of = Dict{Tuple{UInt, UInt}, Vector{StackTraces.StackFrame}}()
     for (k, b, inst, name) in external
+        reachable[k] || continue
         sf = scanned[k]
         # A call through a pointer computed at run time has no name to classify.
         kind, callee = if isempty(name)
@@ -567,7 +556,7 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
         finding = DerivativeFinding(
             kind, callee, sf.name, sweep, frames,
             in_loop[k] || sf.cyclic[b],
-            error_only[k] || !sf.returns[b],
+            !returning[k] || !sf.returns[b],
             isempty(name) ? nothing : allocation_bytes(inst, kind, name),
             1,
         )

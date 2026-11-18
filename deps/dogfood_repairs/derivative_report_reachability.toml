@@ -1,0 +1,2 @@
+summary = "Derivative reports omit unreachable calls and track error-only calls through recursive helpers"
+tests = ["test/derivative_report.jl"]
