@@ -527,7 +527,16 @@ dx = zero(x)
 autodiff(set_atomic_add(Reverse, false), f, Active, Duplicated(x, dx))
 ```
 
-The setting works for every reverse mode (`ReverseWithPrimal`, the split modes of [`autodiff_thunk`](@ref), [`gradient`](@ref), ...). It applies to the function being differentiated: the bodies of `Threads.@threads` loops and spawned tasks, and dynamically dispatched callees, are compiled separately and keep the default. A function that itself starts or waits for a task or runs a threaded loop cannot opt out, because the reverse pass of a task runs concurrently with its caller's; `set_atomic_add(Reverse, false)` on such a function throws an `EnzymeAtomicAddError` instead of silently using atomics. GPU code always uses atomic updates. `set_atomic_add(Reverse, true)` requests atomic updates even when Julia runs a single thread, and `set_atomic_add(Reverse, nothing)` restores the default.
+The setting works for every reverse mode (`ReverseWithPrimal`, the split modes of [`autodiff_thunk`](@ref), [`gradient`](@ref), ...). A function that itself starts or waits for a task or runs a threaded loop cannot opt out, because the reverse pass of a task runs concurrently with its caller's; `set_atomic_add(Reverse, false)` on such a function throws an `EnzymeAtomicAddError` instead of silently using atomics. GPU code always uses atomic updates. `set_atomic_add(Reverse, true)` requests atomic updates even when Julia runs a single thread, and `set_atomic_add(Reverse, nothing)` restores the default.
+
+The setting also reaches the functions the derivative calls through dynamic dispatch, that is, through a call Julia resolves at run time: `Base.invokelatest`, a call it could not infer, or a splat. Enzyme compiles the derivative of such a callee when the call first runs, with the caller's setting: plain updates under `false`, atomic ones under `true`.
+
+```julia
+g(x) = Base.invokelatest(f, x)::Float64
+autodiff(set_atomic_add(Reverse, false), g, Active, Duplicated(x, dx))  # `f` accumulates with plain updates too
+```
+
+The caller cannot know which method a dynamic call reaches, so a callee that itself starts or waits for a task or runs a threaded loop does not raise the error under `false`. It is compiled with the default instead, and so are the functions it calls dynamically, since those may run while its tasks do. The bodies of `Threads.@threads` loops and spawned tasks are compiled separately and keep the default under every setting, together with what they call dynamically, so `true` does not reach them in a process with one thread.
 
 ## Complex numbers
 

@@ -108,29 +108,211 @@ function referenceCaller(fn::Ref{Clos}, args...) where {Clos}
     fval(args...)
 end
 
-function runtime_pfor_fwd(
-    thunk::ThunkTy,
-    ft::FT,
-    threading_args...,
-)::Cvoid where {ThunkTy,FT}
-    function fwd(tid_args...)
-        if length(tid_args) == 0
-            thunk(ft)
-        else
-            thunk(ft, Const(tid_args[1]))
-        end
+# The derivative of a `Threads.@threads` loop runs the derivative of the loop's body on
+# every thread. `ForwardPFor`, `AugmentedPFor` and `ReversePFor` are the callables it hands
+# to `threading_run` for that, one per derivative of the body.
+#
+# `thunk` holds the body's derivative by its address, which the rule that emits the loop's
+# derivative takes from the module it compiles (`threadsfor_common`). Code that runs calls
+# it through that address. An outer derivative of such code, as in Forward over Reverse,
+# differentiates the callable itself, and a call through an address it does not know has no
+# derivative. So the rule of the outer derivative differentiates the callable with
+# `Rederived = true` instead (`rederived_body`): the same data, called by a method that
+# asks `thunk` for the body's derivative. That one is a constant where it is compiled, so
+# the outer derivative takes its code up like that of any other nested derivative.
+#
+# `S` is `(ModifiedBetween, RuntimeActivity, StrongZero)`: the settings of the body's
+# derivative that the type of its thunk does not carry. Its `AtomicAdd` setting is the
+# default, as for every loop body (`threadsfor_common`). The body runs on every thread, and
+# all of them add into the same shadows, so the number of threads decides how it
+# accumulates. A package image is written with one thread for sessions with any number: the
+# derivative it keeps for sessions with several takes the body's derivative up as such a
+# session compiles it (see `Compiler.ForSeveralThreads`), like everything else that is
+# linked into it.
+struct ForwardPFor{ThunkTy, FT, S, Rederived}
+    thunk::ThunkTy
+    ft::FT
+end
+
+struct AugmentedPFor{ThunkTy, FT, AnyJL, byRef, TT, S, Rederived}
+    thunk::ThunkTy
+    ft::FT
+    tapes::TT
+end
+
+struct ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, Rederived}
+    thunk::ThunkTy
+    ft::FT
+    tapes::TT
+end
+
+"""
+    rederived_body(T)
+
+The type an outer derivative differentiates in place of the loop body `T` of a
+`Threads.@threads` loop: for one of the callables Enzyme's own derivative of such a loop
+runs (`ForwardPFor`, `AugmentedPFor`, `ReversePFor`), the same type with `Rederived = true`,
+whose fields and layout are the same; for any other type, `T` itself.
+"""
+rederived_body(@nospecialize(T::Type)) = T
+rederived_body(::Type{ForwardPFor{ThunkTy, FT, S, false}}) where {ThunkTy, FT, S} =
+    ForwardPFor{ThunkTy, FT, S, true}
+rederived_body(::Type{AugmentedPFor{ThunkTy, FT, AnyJL, byRef, TT, S, false}}) where {ThunkTy, FT, AnyJL, byRef, TT, S} =
+    AugmentedPFor{ThunkTy, FT, AnyJL, byRef, TT, S, true}
+rederived_body(::Type{ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, false}}) where {ThunkTy, FT, AnyJL, byRef, TT, S} =
+    ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, true}
+
+# The forward derivative of a loop body, for the thunk type and settings the loop's
+# derivative holds it with.
+@inline function rederived_forward(
+        ::Type{<:ForwardModeThunk{<:Any, FA, <:Any, TT, Width}}, ::Val{S},
+    ) where {FA, TT, Width, S}
+    return thunk(
+        Val(0),
+        FA,
+        Const,
+        TT,
+        Val(API.DEM_ForwardMode),
+        Val(Width),
+        Val(S[1]),
+        Val(false),
+        Val(false),
+        FFIABI,
+        Val(false),
+        Val(S[2]),
+        Val(S[3]),
+        Val(nothing),
+    )
+end
+
+# The augmented forward and the reverse derivative of a loop body, likewise. Both callables
+# of one loop get them from this one compilation, so the tape the first writes is the tape
+# the second reads.
+@inline function rederived_split(
+        ::Type{<:Union{AugmentedForwardThunk{<:Any, FA, <:Any, TT, Width}, AdjointThunk{<:Any, FA, <:Any, TT, Width}}},
+        ::Val{S},
+    ) where {FA, TT, Width, S}
+    return thunk(
+        Val(0),
+        FA,
+        Const,
+        TT,
+        Val(API.DEM_ReverseModePrimal),
+        Val(Width),
+        Val(S[1]),
+        Val(false),
+        Val(false),
+        FFIABI,
+        Val(false),
+        Val(S[2]),
+        Val(S[3]),
+        Val(nothing),
+    )
+end
+
+# The tapes of a loop are stored as the loop's derivative allocated them, for the tape
+# type of the body's derivative it was compiled with. A rederived body has to write that
+# same type.
+@inline rederived_tape_check(
+    ::AbstractThunk, ::Type{<:Union{Vector{TapeType}, Ptr{TapeType}}},
+) where {TapeType} = throw(
+    AssertionError(
+        "The derivative of a Threads.@threads loop body, compiled again for an outer derivative, keeps another tape than the $TapeType the loop's derivative stores",
+    ),
+)
+@inline rederived_tape_check(
+    ::Union{
+        AugmentedForwardThunk{<:Any, <:Any, <:Any, <:Any, <:Any, <:Any, TapeType},
+        AdjointThunk{<:Any, <:Any, <:Any, <:Any, <:Any, TapeType},
+    },
+    ::Type{<:Union{Vector{TapeType}, Ptr{TapeType}}},
+) where {TapeType} = nothing
+
+@inline function pfor_forward(thunk, ft, tid_args...)
+    if length(tid_args) == 0
+        thunk(ft)
+    else
+        thunk(ft, Const(tid_args[1]))
     end
-    Base.Threads.threading_run(fwd, threading_args...)
+    return nothing
+end
+
+@inline function pfor_augmented(thunk, ft, tapes, ::Val{AnyJL}, ::Val{byRef}, tid) where {AnyJL, byRef}
+    tres = if byRef
+        thunk(Const(referenceCaller), ft, Const(tid))
+    else
+        thunk(ft, Const(tid))
+    end
+
+    if !AnyJL
+        unsafe_store!(tapes, tres[1], tid)
+    else
+        @inbounds tapes[tid] = tres[1]
+    end
+    return nothing
+end
+
+@inline function pfor_reverse(thunk, ft, tapes, ::Val{AnyJL}, ::Val{byRef}, tid) where {AnyJL, byRef}
+    tres = if !AnyJL
+        unsafe_load(tapes, tid)
+    else
+        @inbounds tapes[tid]
+    end
+
+    if byRef
+        thunk(Const(referenceCaller), ft, Const(tid), tres)
+    else
+        thunk(ft, Const(tid), tres)
+    end
+    return nothing
+end
+
+function (st::ForwardPFor{ThunkTy, FT, S, false})(tid_args...) where {ThunkTy, FT, S}
+    return pfor_forward(st.thunk, st.ft, tid_args...)
+end
+
+function (st::ForwardPFor{ThunkTy, FT, S, true})(tid_args...) where {ThunkTy, FT, S}
+    return pfor_forward(rederived_forward(ThunkTy, Val(S)), st.ft, tid_args...)
+end
+
+function (st::AugmentedPFor{ThunkTy, FT, AnyJL, byRef, TT, S, false})(tid) where {ThunkTy, FT, AnyJL, byRef, TT, S}
+    return pfor_augmented(st.thunk, st.ft, st.tapes, Val(AnyJL), Val(byRef), tid)
+end
+
+function (st::AugmentedPFor{ThunkTy, FT, AnyJL, byRef, TT, S, true})(tid) where {ThunkTy, FT, AnyJL, byRef, TT, S}
+    augmented = rederived_split(ThunkTy, Val(S))[1]
+    rederived_tape_check(augmented, TT)
+    return pfor_augmented(augmented, st.ft, st.tapes, Val(AnyJL), Val(byRef), tid)
+end
+
+function (st::ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, false})(tid) where {ThunkTy, FT, AnyJL, byRef, TT, S}
+    return pfor_reverse(st.thunk, st.ft, st.tapes, Val(AnyJL), Val(byRef), tid)
+end
+
+function (st::ReversePFor{ThunkTy, FT, AnyJL, byRef, TT, S, true})(tid) where {ThunkTy, FT, AnyJL, byRef, TT, S}
+    adjoint = rederived_split(ThunkTy, Val(S))[2]
+    rederived_tape_check(adjoint, TT)
+    return pfor_reverse(adjoint, st.ft, st.tapes, Val(AnyJL), Val(byRef), tid)
+end
+
+function runtime_pfor_fwd(
+        thunk::ThunkTy,
+        ft::FT,
+        ::Val{S},
+        threading_args...,
+    )::Cvoid where {ThunkTy, FT, S}
+    Base.Threads.threading_run(ForwardPFor{ThunkTy, FT, S, false}(thunk, ft), threading_args...)
     return
 end
 
 function runtime_pfor_augfwd(
-    thunk::ThunkTy,
-    ft::FT,
-    ::Val{AnyJL},
-    ::Val{byRef},
-    threading_args...,
-) where {ThunkTy,FT,AnyJL,byRef}
+        thunk::ThunkTy,
+        ft::FT,
+        ::Val{AnyJL},
+        ::Val{byRef},
+        ::Val{S},
+        threading_args...,
+    ) where {ThunkTy, FT, AnyJL, byRef, S}
     TapeType = EnzymeRules.tape_type(ThunkTy)
 
     n = Base.Threads.threadpoolsize()
@@ -143,55 +325,26 @@ function runtime_pfor_augfwd(
         )
     end
 
-    function fwd(tid_args...)
-        tid = tid_args[1]
-        if byRef
-            tres = thunk(Const(referenceCaller), ft, Const(tid))
-        else
-            tres = thunk(ft, Const(tid))
-        end
-
-        if !AnyJL
-            unsafe_store!(tapes, tres[1], tid)
-        else
-            @inbounds tapes[tid] = tres[1]
-        end
-    end
-    Base.Threads.threading_run(fwd, threading_args...)
+    Base.Threads.threading_run(
+        AugmentedPFor{ThunkTy, FT, AnyJL, byRef, typeof(tapes), S, false}(thunk, ft, tapes),
+        threading_args...,
+    )
     return tapes
 end
 
-struct ReversePFor{ThunkTy, FT, AnyJL, byRef, TT}
-    thunk::ThunkTy
-    ft::FT
-    tapes::TT
-end
-
-function (st::ReversePFor{ThunkTy, FT, AnyJL, byRef, TT})(tid) where {ThunkTy, FT, AnyJL, byRef, TT}
-    tres = if !AnyJL
-        unsafe_load(st.tapes, tid)
-    else
-        @inbounds st.tapes[tid]
-    end
-    
-    if byRef
-        st.thunk(Const(referenceCaller), st.ft, Const(tid), tres)
-    else
-        st.thunk(st.ft, Const(tid), tres)
-    end
-
-    nothing
-end
-
 function runtime_pfor_rev(
-    thunk::ThunkTy,
-    ft::FT,
-    ::Val{AnyJL},
-    ::Val{byRef},
-    tapes,
-    threading_args...,
-) where {ThunkTy,FT,AnyJL,byRef}
-    Base.Threads.threading_run(ReversePFor{ThunkTy, FT, AnyJL, byRef, typeof(tapes)}(thunk, ft, tapes), threading_args...)
+        thunk::ThunkTy,
+        ft::FT,
+        ::Val{AnyJL},
+        ::Val{byRef},
+        ::Val{S},
+        tapes,
+        threading_args...,
+    ) where {ThunkTy, FT, AnyJL, byRef, S}
+    Base.Threads.threading_run(
+        ReversePFor{ThunkTy, FT, AnyJL, byRef, typeof(tapes), S, false}(thunk, ft, tapes),
+        threading_args...,
+    )
     if !AnyJL
         Libc.free(tapes)
     end
@@ -267,6 +420,11 @@ end
         end
     end
 
+    # Enzyme's own derivative of a loop runs a callable that reaches the body's derivative
+    # through an address. Differentiating that callable takes the one that asks for the
+    # body's derivative instead (see `ForwardPFor`).
+    rederived = rederived_body(funcT) !== funcT
+    funcT = rederived_body(funcT)
 
     # TODO actually do modifiedBetween
     e_tt = Tuple{Const{Int}}
@@ -320,6 +478,7 @@ end
                 false,
                 get_runtime_activity(gutils),
                 get_strong_zero(gutils),
+                Compiler.linked_default_atomic_add(enzyme_ctx),
             ) #=ErrIfFuncWritten=#
             ejob = Compiler.CompilerJob(
                 mi2,
@@ -381,6 +540,7 @@ end
                 false,
                 get_runtime_activity(gutils),
                 get_strong_zero(gutils),
+                Compiler.linked_default_atomic_add(enzyme_ctx),
             ) #=ErrIfFuncWritten=#
             ejob = Compiler.CompilerJob(
                 mi2,
@@ -698,7 +858,10 @@ end
 
     push!(vals, new_from_original(gutils, arg_operands_view(orig)[end]))
 
-    return refed, LLVM.name(subfunc), dfuncT, vals, thunkTy, TapeType, copies
+    # What the body's derivative was compiled with beyond what `thunkTy` says (see `ForwardPFor`).
+    settings = (modifiedBetween, get_runtime_activity(gutils), get_strong_zero(gutils))
+
+    return refed, LLVM.name(subfunc), dfuncT, vals, thunkTy, TapeType, copies, settings
 end
 
 @register_fwd function threadsfor_fwd(B, orig, gutils, normalR, shadowR)
@@ -712,10 +875,10 @@ end
     shadow =
         (unsafe_load(shadowR) != C_NULL) ? LLVM.Instruction(unsafe_load(shadowR)) : nothing
 
-    _, sname, dfuncT, vals, thunkTy, _, _ =
+    _, sname, dfuncT, vals, thunkTy, _, _, settings =
         threadsfor_common(orig, gutils, B, API.DEM_ForwardMode, enzyme_context())
 
-    tt = Tuple{thunkTy,dfuncT,Bool}
+    tt = Tuple{thunkTy, dfuncT, Val{settings}, Bool}
     mode = get_mode(gutils)
     entry = nested_codegen!(mode, mod, runtime_pfor_fwd, tt)
     push!(function_attributes(entry), EnumAttribute("alwaysinline"))
@@ -753,7 +916,7 @@ end
     shadow =
         (unsafe_load(shadowR) != C_NULL) ? LLVM.Instruction(unsafe_load(shadowR)) : nothing
 
-    byRef, sname, dfuncT, vals, thunkTy, _, copies =
+    byRef, sname, dfuncT, vals, thunkTy, _, copies, settings =
         threadsfor_common(orig, gutils, B, API.DEM_ReverseModePrimal, enzyme_context())
 
     tt = Tuple{
@@ -761,6 +924,7 @@ end
         dfuncT,
         Val{any_jltypes(EnzymeRules.tape_type(thunkTy))},
         Val{byRef},
+        Val{settings},
         Bool,
     }
     mode = get_mode(gutils)
@@ -804,7 +968,7 @@ end
         return
     end
 
-    byRef, sname, dfuncT, vals, thunkTy, TapeType, copies =
+    byRef, sname, dfuncT, vals, thunkTy, TapeType, copies, settings =
         threadsfor_common(orig, gutils, B, API.DEM_ReverseModeGradient, enzyme_context(), tape)
 
     STT = if !any_jltypes(TapeType)
@@ -818,6 +982,7 @@ end
         dfuncT,
         Val{any_jltypes(EnzymeRules.tape_type(thunkTy))},
         Val{byRef},
+        Val{settings},
         STT,
         Bool,
     }

@@ -7,6 +7,7 @@ testsuite = find_tests(@__DIR__)
 # Add threads tests to be run with multiple Julia threads (will be configured in
 # `test_worker`).
 testsuite["threads/2"] = :(include($(joinpath(@__DIR__, "threads.jl"))))
+testsuite["nested_threads/2"] = :(include($(joinpath(@__DIR__, "nested_threads.jl"))))
 # Exclude integration tests, they're handled differently (they each run in their
 # own environment)
 for (k, _) in testsuite
@@ -30,8 +31,8 @@ if filter_tests!(testsuite, args)
 end
 
 function test_worker(name)
-    if name == "threads/2"
-        # Run the `threads/2` testset, with multiple threads.
+    if name == "threads/2" || name == "nested_threads/2"
+        # Run these testsets with multiple threads.
         return addworker(; exeflags = ["--threads=2"])
     end
 end

@@ -115,6 +115,14 @@ primal_return_type_world(
 
 function primal_return_type end
 
+# Deferred calls are inferred in the compiler of their caller, including its device
+# method table. A generated host-side query cannot see that table: for example, CUDA
+# array reads have throwing CPU stubs. Julia's return_type intrinsic uses the current
+# interpreter and keeps the inferred type available to the deferred job and its thunk.
+@inline function deferred_return_type(::Type{F}, ::Type{TT}) where {F, TT <: Tuple}
+    return Core.Compiler.return_type(Tuple{F, TT.parameters...})
+end
+
 function primal_return_type_generator(world::UInt, source, self, @nospecialize(mode::Type), @nospecialize(ft::Type), @nospecialize(tt::Type))
     @nospecialize
     @assert Core.Compiler.isType(ft) && Core.Compiler.isType(tt)

@@ -1,3 +1,19 @@
+"""
+    TapeMemory
+
+What a pointer in a tape points to when its layout is not known: with opaque pointers
+(Julia 1.11 and later) that is every pointer of a tape, and with typed pointers the table
+of a cache's chunks. The first slot of such a table points to elements; where libEnzyme
+packs the chunks into one buffer, the slots after it hold offsets.
+
+Such memory may hold values that carry derivatives, so a pointer to it is not constant
+(`active_reg_inner`), and its type tree says only that it is a pointer. An outer derivative
+of code that hands a tape on relies on both. Called constant, the tape loses its tangent
+and a second derivative comes out zero. Typed as pointers to elements in every slot, the
+table contradicts the reads the reverse pass itself makes of its offsets.
+"""
+struct TapeMemory end
+
 # return result and if contains any
 function to_tape_type(Type::LLVM.API.LLVMTypeRef)::Tuple{DataType,Bool}
     tkind = LLVM.API.LLVMGetTypeKind(Type)
@@ -26,12 +42,15 @@ function to_tape_type(Type::LLVM.API.LLVMTypeRef)::Tuple{DataType,Bool}
         if 10 <= addrspace <= 12
             return Any, true
         elseif LLVM.is_opaque(LLVM.PointerType(Type))
-            return Core.LLVMPtr{Cvoid,Int(addrspace)}, false
+            return Core.LLVMPtr{TapeMemory, Int(addrspace)}, false
         else
             e = LLVM.API.LLVMGetElementType(Type)
             tkind2 = LLVM.API.LLVMGetTypeKind(e)
             if tkind2 == LLVM.API.LLVMFunctionTypeKind
                 return Core.LLVMPtr{Cvoid,Int(addrspace)}, false
+            elseif tkind2 == LLVM.API.LLVMPointerTypeKind && !(10 <= LLVM.API.LLVMGetPointerAddressSpace(e) <= 12)
+                # The table of a cache's chunks (see `TapeMemory`)
+                return Core.LLVMPtr{TapeMemory, Int(addrspace)}, false
             else
                 return Core.LLVMPtr{to_tape_type(e)[1],Int(addrspace)}, false
             end

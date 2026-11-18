@@ -2,6 +2,161 @@
 
 ## Unreleased
 
+- Differentiate a `ccall` whose library Julia does not resolve while compiling
+  the method. Julia 1.12 leaves a module-qualified library
+  (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
+  `getproperty` call although `Mod.lib` is a constant; a non-constant global
+  and, through Julia 1.12, any other expression are read the first time the
+  call runs. Such a call reached Enzyme as an indirect call through a
+  looked-up address: with `Ref` arguments, as in a hand-written BLAS or LAPACK
+  wrapper, compiling the derivative aborted the process
+  (`Assertion '!gutils->isConstantValue(baseOp)' failed`), and with scalar
+  arguments it raised "No augmented forward pass found for
+  ijl_lazy_load_and_lookup". A library read from a module global is now
+  resolved when the derivative is compiled. Behind any other expression the
+  call is named for its symbol, so a derivative rule for a math function
+  applies; a BLAS or LAPACK routine there, and a native function without a
+  rule, raise `EnzymeNoDerivativeError`.
+  `Enzyme.has_dogfood_repair(:ccall_runtime_library)` reports the repair;
+  `test/ccall_library.jl` covers each spelling of the library for a libm
+  function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
+  Reverse, calls that carry no derivative, and a function without a rule.
+- Accept captured BLAS input buffers in the readonly check for an unannotated
+  function argument. The proof uses per-argument readonly and nocapture
+  attributes only for typed raw data pointers, and ignores uses solely in
+  Julia GC-root bundles. Captured output buffers and aliases in writable
+  positions still raise `EnzymeMutabilityException`.
+  `Enzyme.has_dogfood_repair(:readonly_pointer_operands)` reports the repair.
+- Differentiate the derivative of a `Threads.@threads` loop. Forward over
+  Reverse of a function with such a loop, a Hessian-vector product, aborted the
+  process while compiling: "Call parameter type does not match function
+  signature!", then "LLVM ERROR: function failed verification". Two things
+  stood in the way. The code Enzyme keeps of a derivative for an outer one to
+  differentiate had lost the scheduling flag of its `threading_run` calls,
+  which a dead-argument pass folded into the callee, so the outer rule read
+  the loop body in its place. And the callable that runs the body's derivative
+  on each thread reached it through an address, which an outer derivative
+  cannot differentiate ("No derivative available for indirect call through an
+  inactive function pointer"). Functions whose calls the thread rules
+  differentiate now keep their parameters in that code, and an outer derivative
+  differentiates a callable that asks for the body's derivative, as any nested
+  derivative does. First-order derivatives call the body's derivative as before.
+  While a package image is written, the body's derivative that an outer one
+  compiles accumulates atomically, so what the image keeps is right in sessions
+  with any number of threads.
+  `Enzyme.has_dogfood_repair(:nested_threaded_loops)` reports the repair;
+  `test/nested_threads.jl` covers Forward over Reverse (also with a batch of
+  directions, runtime activity, the static schedule and an active scalar held
+  by the loop body), Reverse over Forward, Forward over Forward and Reverse over
+  Reverse against closed forms, with one and with two threads, and a package
+  whose image keeps two of them, run with one, two and four threads. Reverse
+  over Reverse works on Julia 1.10; on Julia 1.12 and 1.13 it still stops with
+  an `EnzymeInternalError` ("Illegal address space propagation"), which the
+  tests pin as broken.
+- Keep the tangent of a tape that an outer derivative hands from one function to
+  another. On Julia 1.11 and later every pointer in a tape had the type
+  `Core.LLVMPtr{Cvoid}`, which Enzyme takes for constant data, so Forward over
+  a split-mode Reverse returned a second derivative of zero with no error.
+  Enzyme differentiates a dynamic call and the body of a `Threads.@threads`
+  loop in split mode, so a Hessian-vector product lost everything that flowed
+  through a dynamic call (a method with unused trailing arguments, a call
+  through `Base.inferencebarrier`, type-unstable code); `autodiff_thunk` with
+  the reverse pass in a function Julia does not inline showed it directly.
+  On Julia 1.10 a tape named the table of a cache's chunks a pointer to
+  pointers to elements, although its later slots can hold offsets, and an outer
+  derivative stopped with `IllegalTypeAnalysisException` under
+  `--check-bounds=yes`. Both are now pointers to `Enzyme.Compiler.TapeMemory`,
+  memory of unknown layout that may carry derivatives.
+  `Enzyme.has_dogfood_repair(:tape_memory_pointers)` reports the repair;
+  `test/nested_threads.jl` covers Forward over a split-mode Reverse without
+  threads, for a loop that reads its input and for one that overwrites it, and
+  the Hessian-vector product through a dynamic call in
+  `test/readonly_argument.jl` is no longer pinned as broken on Julia 1.12.
+- Return zero gradients when a guard rejects a nonfinite product, including
+  `isfinite(x) && 0 <= x <= 1 ? x * x : -Inf` at `NaN` and either infinity.
+  The native select repair now protects products whose operands are nonfinite
+  or overflowed, extending the existing guarded-division repair.
+  `Enzyme.has_dogfood_repair(:select_nonfinite_products)` reports the repair;
+  `test/select_strong_zero.jl` covers scalar, array, batched and split Reverse,
+  Forward over Reverse, and finite inputs whose intermediate products overflow.
+- Clear the adjoint of a BLAS output that the call overwrote. A routine that
+  computes `out := ... + beta * out` does not read `out` when `beta == 0`, and
+  a copy never reads its destination, so the adjoint of what `out` held before
+  is exactly zero. The reverse rules of `gemv`, `symv`, `spmv`, `gemm`, `symm`,
+  `syrk` and `lacpy` multiplied the output's shadow by `beta` instead: a `NaN`
+  or an infinity in the adjoint of the result stayed there (`0 * NaN` is `NaN`),
+  and a later reverse pass over the same shadow, as with a work buffer whose
+  shadow is kept across calls, returned `NaN` gradients. The reverse rule of
+  `copy` did not clear the destination's shadow at all, so two copies into one
+  vector gave a wrong gradient within a single reverse pass, and a shadow used
+  again kept growing. The forward rule of `copy` with a constant source now
+  writes a zero tangent instead of `0 *` the tangent it found.
+  `Enzyme.has_dogfood_repair(:blas_overwritten_output)` reports the repair;
+  `test/blas_overwritten_output.jl` covers every routine with `NaN` and
+  infinite output adjoints, shadows used again, `beta != 0`, the triangle
+  `syrk` writes, strided and reversed copies, batches, split mode, runtime
+  activity, and Forward over Reverse.
+- Compile a function that a Reverse derivative reaches through dynamic dispatch
+  (`Base.invokelatest`, a call Julia could not infer, a splat) with the
+  caller's `set_atomic_add` setting. Such a callee used to get the
+  thread-count default whatever the caller set, so `false` left atomic updates
+  in it in a process with several threads, and `true` was ignored in a process
+  with one. A callee reached from `false` that itself runs a threaded loop or
+  tasks is compiled with the default, as before, and so are the functions it
+  calls dynamically; the bodies of threaded loops and tasks keep the default.
+  A derivative kept in a package image for such a callee has one variant when
+  it runs no work in parallel and two otherwise.
+  `Enzyme.has_dogfood_repair(:atomic_add_dynamic_callees)` reports the repair;
+  `test/threads.jl` covers generic, `invokelatest` and splatted calls and
+  calls of a method without a specialized entry point under each setting,
+  nested callees, callees that run threaded loops or tasks, and a shared
+  shadow under contention, and `test/precompile.jl` the variants an image
+  keeps.
+- Compile everything a derivative kept in a package image links in as a
+  session with several threads compiles it, in the variant the image keeps
+  for such sessions. An image is written by a process with one thread, and
+  that variant held the body of a `Threads.@threads` loop, a derivative
+  taken with `autodiff_deferred` inside the function and the inner
+  derivative of a nested one as compiled for one thread, with plain updates
+  of shadow memory. A session with several threads that linked it lost
+  updates and returned wrong gradients without an error: of a function with
+  a threaded loop under the default setting, under
+  `set_atomic_add(mode, true)` and in split mode, and of Forward over
+  Reverse called from several threads that share a shadow. A derivative
+  whose own setting settles how it accumulates now has a variant for several
+  threads as well when it links such a part in. The body of `Enzyme.pmap`
+  and `Enzyme.@parallel` lost updates the same way. Its derivative is taken
+  with the inline ABI, whose code goes wherever the rule's value goes, so
+  the rules now hold a plain and an atomic derivative of the body and take
+  the one for the number of threads of the process that runs the loop. Any
+  other derivative with the inline ABI is compiled for several threads while
+  a package image is written. The body of a threaded loop that an outer
+  derivative differentiates again, as in Forward over Reverse, follows the
+  same rule in place of accumulating atomically whenever an image is
+  written, so a session with one thread runs the plain variant of such a
+  kept derivative.
+  `Enzyme.has_dogfood_repair(:retained_several_threads)` reports the repair;
+  `test/precompile.jl` runs these shapes in sessions with one and with two
+  threads, and `test/threads.jl` counts the atomic updates of each variant.
+- Leave a `getelementptr` address that names no element of an internal
+  constant global alone when loads of the global are replaced by parts of its
+  initializer. An address before the first element (index `-1`) with such a
+  global as its base stopped the compile of a derivative with
+  `InexactError: trunc(UInt32, 18446744073709551615)`, and a smaller index past
+  the end crashed the process. With opaque pointers (Julia 1.11 and later) an
+  address that indexes the global through another type, such as a struct read
+  as an array, replaced the load by a different element with no error.
+  `Enzyme.has_dogfood_repair(:constant_global_gep_paths)` reports the repair;
+  `test/constant_global_gep.jl` covers addresses before and past arrays,
+  vectors and nested fields, addresses through another type, the element loads
+  that are still replaced, and a table read behind a `-1` sentinel in Reverse,
+  Forward, and Forward over Reverse.
+- Differentiate real `logabsbeta` with scalar partials, removing the recursive
+  reverse tapes reached through `logbeta` and `beta`. Large positive arguments
+  retain the stable log-gamma-ratio derivative, and the sign and nonpositive
+  integer branches keep their existing behavior. Regression tests cover
+  Forward, Reverse, batching, split and nested modes, and loop allocations.
+  `Enzyme.has_dogfood_repair(:logbeta_partials)` reports the repair.
 - Retrieve cached custom-rule return values at their reverse use instead of
   reusing a forward load that may not dominate that use. A conditional
   `reshape` followed by a broadcast could otherwise abort LLVM verification
@@ -10,12 +165,31 @@
   `Enzyme.has_dogfood_repair(:conditional_rule_return)`;
   `test/conditional_rule_return.jl` covers early returns, empty arrays,
   combined and split Reverse, batched Reverse, and Forward over Reverse.
+- Sync upstream through `580628c`: Julia-zeroed allocations no longer get
+  redundant null stores into their GC fields (#3766), and the
+  `LLVM.OperandBundleDef` compatibility branches are gone (#4064).
+  Enzyme_jll remains pinned to 0.0.301 with the declared dogfood library.
+  Upstream's LLVM.jl 10 migration (#3741) and the formatting commits after it
+  are held back: no Reactant release admits LLVM.jl 10 yet, and Reactant
+  requires Enzyme, so the two could not be installed together.
 - Limit the runtime `map` wrapper to long-tuple calls. A custom collection's
   `map` with an imprecise return type could otherwise re-enter the wrapper
   indefinitely and overflow the stack during differentiation.
   `Enzyme.has_dogfood_repair(:runtime_map_collection)` reports the repair;
   `test/tuple_map.jl` checks direct and splatted calls in Reverse, Forward,
   and batched Forward, alongside the existing long-tuple checks.
+- Infer the return type of `autodiff_deferred` with the compiler of the calling
+  code. The previous host-side query saw only host methods: where device code
+  reads an array, such as a CUDA device array or a view of one, it met a
+  throwing host stub and inferred `Union{}`. A kernel differentiating such a
+  function with an inferred `Active` return then failed to compile, with
+  `InvalidIRError` naming a dynamic `deferred_id_codegen`. Reverse and Forward
+  deferred calls now see the caller's method table. An explicit reverse return
+  annotation such as `Active{Float64}`, which raised an error, is accepted too.
+  `Enzyme.has_dogfood_repair(:deferred_return_inference)` reports the repair;
+  `test/cuda.jl` differentiates column views of device matrices in Reverse and
+  Forward for Float32 and Float64, and `test/core/deferred.jl` covers the
+  explicit annotation.
 - Retain package-image derivatives that call library functions whose selected
   implementation has no exported name, such as glibc's `memchr` reached through
   `findfirst`. Enzyme uses its known foreign-function names and verifies that

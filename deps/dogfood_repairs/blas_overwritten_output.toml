@@ -1,0 +1,3 @@
+summary = "Reverse rules of BLAS calls that overwrite their output (beta == 0, copy, lacpy) clear the output's adjoint instead of multiplying it by zero, which kept NaN or Inf in a shadow that is used again"
+libenzyme_build = "5639cd2f13d3ba4cb84b8af031801cf183129efb"
+tests = ["test/blas_overwritten_output.jl"]

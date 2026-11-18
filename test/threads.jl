@@ -300,6 +300,278 @@ atomic_via_dynamic(x, N) = atomic_threaded_ref[](x, N)::Float64
     end
 end
 
+# Callees reached through dynamic dispatch, which inherit the caller's `AtomicAdd` setting. Each
+# case has a callee type of its own, so that `callee_settings` tells the cases apart.
+struct AtomicCallee{Case} end
+(::AtomicCallee)(x) = atomic_sumsq(x)
+atomic_callee(case) = Ref{Any}(AtomicCallee{case}())
+
+atomic_generic(x, f) = f[](x)::Float64
+atomic_latest(x, f) = Base.invokelatest(f[], x)::Float64
+# A splat of unknown length: `xs` holds the one argument
+atomic_splat(xs, f) = f[](xs...)::Float64
+# A method Julia compiles without a specialized entry point, as all it takes and returns is
+# boxed: a call of it is resolved statically, and still made through the runtime (`jl_invoke`)
+struct AtomicBoxed{Case} end
+@noinline (::AtomicBoxed)(@nospecialize(x)) = Base.inferencebarrier(atomic_sumsq(x::Vector{Float64}))
+atomic_boxed(x, ::AtomicBoxed{Case}) where {Case} = AtomicBoxed{Case}()(x)::Float64
+
+# A callee that reaches another one through dynamic dispatch
+struct AtomicMiddle{Case} end
+(::AtomicMiddle{Case})(x) where {Case} = atomic_generic(x, atomic_callee(Case))
+
+# A callee that runs a threaded loop, and reaches other callees outside and inside of it
+struct AtomicThreaded{Case} end
+function (::AtomicThreaded{Case})(x) where {Case}
+    outside = atomic_generic(x, atomic_callee((Case, :outside)))
+    inside = atomic_callee((Case, :inside))
+    out = zeros(8)
+    Threads.@threads for i in 1:8
+        @inbounds out[i] = atomic_generic(x, inside)
+    end
+    return outside + sum(out)
+end
+
+# A callee that reaches another one while a task it spawned runs
+struct AtomicSpawning{Case} end
+function (::AtomicSpawning{Case})(x) where {Case}
+    out = zeros(1)
+    task = Threads.@spawn begin
+        @inbounds out[1] = atomic_sumsq(x)
+    end
+    between = atomic_generic(x, atomic_callee((Case, :between)))
+    wait(task)
+    return between + @inbounds out[1]
+end
+
+# The `AtomicAdd` settings with which the run-time rules asked for the derivative of a callee of
+# type `FT`, read off the specializations of the `runtime_thunk` method they call:
+# (runtime_thunk, world, FA, A, TT, ..., strongzero, atomicadd)
+function callee_settings(::Type{FT}) where {FT}
+    settings = Set{Any}()
+    for m in methods(Enzyme.Compiler.runtime_thunk), mi in Base.specializations(m)
+        mi isa Core.MethodInstance || continue
+        params = Base.unwrap_unionall(mi.specTypes).parameters
+        (length(params) == 15 && params[3] === Type{Const{FT}}) || continue
+        push!(settings, params[15].parameters[1])
+    end
+    return settings
+end
+callee_settings(case) = callee_settings(AtomicCallee{case})
+
+# A sum whose derivative shows how it was accumulated, where the derivative contracts a
+# multiplication into the addition after it: plain accumulation then gives -2^-54 and atomic
+# accumulation, which rounds the product first, gives 0
+function atomic_gather(x, c)
+    a, b, indices = c
+    s = 0.0
+    @inbounds for i in eachindex(a)
+        s += (x[indices[i]] * a[i]) * b[i]
+    end
+    return s
+end
+const atomic_gather_ref = Ref{Any}(atomic_gather)
+atomic_gather_generic(x, c) = atomic_gather_ref[](x, c)::Float64
+atomic_gather_latest(x, c) = Base.invokelatest(atomic_gather, x, c)::Float64
+
+@testset "Atomic accumulation in dynamically dispatched callees $(Threads.nthreads())" begin
+    Inherited = Enzyme.InheritedPlainAdd
+    ForSeveralThreads = Enzyme.Compiler.ForSeveralThreads
+    multithreaded = Threads.nthreads() > 1
+    # What a callee inherits from a caller with each setting
+    inherited = ((nothing, nothing), (false, Inherited), (true, true))
+    VecDup = Tuple{Duplicated{Vector{Float64}}}
+    function atomics(f, setting)
+        ir = sprint() do io
+            Enzyme.Compiler.enzyme_code_llvm(io, f, Active, VecDup; dump_module = true, AtomicAdd = setting)
+        end
+        return count("atomicrmw", ir)
+    end
+    function threaded_sumsq(x)
+        out = zeros(4)
+        Threads.@threads for i in 1:4
+            @inbounds out[i] = i * atomic_sumsq(x)
+        end
+        return sum(out)
+    end
+
+    # A callee that inherits plain accumulation accumulates plainly. One that runs work in
+    # parallel is compiled with the default instead of refused, as an explicit `false` is
+    @test atomics(atomic_sumsq, Inherited) == 0
+    @test_throws Enzyme.Compiler.EnzymeAtomicAddError atomics(threaded_sumsq, false)
+    @test atomics(threaded_sumsq, Inherited) == atomics(threaded_sumsq, nothing)
+    # The variants a package image keeps for sessions with several threads: the default made
+    # as such a session makes it, also where a callee falls back to it
+    @test atomics(atomic_sumsq, ForSeveralThreads(nothing)) == atomics(atomic_sumsq, true)
+    @test atomics(atomic_sumsq, ForSeveralThreads(Inherited)) == 0
+    @test atomics(threaded_sumsq, ForSeveralThreads(Inherited)) == atomics(threaded_sumsq, ForSeveralThreads(nothing))
+    @test atomics(threaded_sumsq, ForSeveralThreads(Inherited)) > atomics(threaded_sumsq, Inherited) || multithreaded
+    # The compile cache is keyed by the hash of a job, which must tell the settings apart
+    jobs = [
+        Enzyme.Compiler.get_job(atomic_sumsq, Active, VecDup; AtomicAdd = setting)
+            for setting in (nothing, false, true, Inherited)
+    ]
+    @test allunique(map(hash, jobs))
+
+    x = collect(1.0:10.0)
+    # Every kind of dynamic call hands the caller's setting to its callee
+    for (kind, caller) in ((:generic, atomic_generic), (:latest, atomic_latest))
+        for (setting, callee) in inherited
+            case = (kind, setting)
+            dx = zero(x)
+            autodiff(set_atomic_add(Reverse, setting), Const(caller), Active, Duplicated(x, dx), Const(atomic_callee(case)))
+            @test dx == 2 .* x
+            @test callee_settings(case) == Set{Any}((callee,))
+        end
+    end
+    for (setting, callee) in inherited
+        case = (:splat, setting)
+        xs = [copy(x)]
+        dxs = [zero(x)]
+        autodiff(set_atomic_add(Reverse, setting), Const(atomic_splat), Active, Duplicated(xs, dxs), Const(atomic_callee(case)))
+        @test dxs[1] == 2 .* x
+        @test callee_settings(case) == Set{Any}((callee,))
+    end
+    for (setting, callee) in inherited
+        case = (:boxed, setting)
+        dx = zero(x)
+        autodiff(set_atomic_add(Reverse, setting), Const(atomic_boxed), Active, Duplicated(x, dx), Const(AtomicBoxed{case}()))
+        @test dx == 2 .* x
+        @test callee_settings(AtomicBoxed{case}) == Set{Any}((callee,))
+    end
+    # and so does a callee to the callees it reaches
+    for (setting, callee) in inherited
+        case = (:nested, setting)
+        dx = zero(x)
+        autodiff(set_atomic_add(Reverse, setting), Const(atomic_generic), Active, Duplicated(x, dx), Const(Ref{Any}(AtomicMiddle{case}())))
+        @test dx == 2 .* x
+        @test callee_settings(AtomicMiddle{case}) == Set{Any}((callee,))
+        @test callee_settings(case) == Set{Any}((callee,))
+    end
+    # With split modes too
+    for (setting, callee) in inherited
+        case = (:split, setting)
+        f = atomic_callee(case)
+        fwd, rev = autodiff_thunk(
+            set_atomic_add(ReverseSplitNoPrimal, setting), Const{typeof(atomic_generic)}, Active,
+            Duplicated{Vector{Float64}}, Const{typeof(f)},
+        )
+        dx = zero(x)
+        tape, = fwd(Const(atomic_generic), Duplicated(x, dx), Const(f))
+        rev(Const(atomic_generic), Duplicated(x, dx), Const(f), 1.0, tape)
+        @test dx == 2 .* x
+        @test callee_settings(case) == Set{Any}((callee,))
+    end
+
+    # A callee gives the bits of a direct call with the same setting, also after the callee was
+    # compiled with another one in this process
+    c = ([1 + 2.0^-27, 1.0], [1 - 2.0^-27, -1.0], [1, 1])
+    for setting in (nothing, false, true, nothing, false), caller in (atomic_gather_generic, atomic_gather_latest)
+        mode = set_atomic_add(Reverse, setting)
+        dx = zeros(2)
+        autodiff(mode, Const(atomic_gather), Active, Duplicated([0.7, 1.3], dx), Const(c))
+        ddx = zeros(2)
+        autodiff(mode, Const(caller), Active, Duplicated([0.7, 1.3], ddx), Const(c))
+        @test ddx == dx
+        @test iszero(dx[2]) && abs(dx[1]) <= 2.0^-54
+    end
+
+    # A callee that runs a threaded loop is not refused under an inherited `false`: it keeps the
+    # default, and so do the callees it reaches, outside of the loop and inside. The iterations
+    # share one shadow, which stays exact
+    for (setting, own, callees) in ((nothing, nothing, nothing), (false, Inherited, nothing), (true, true, true))
+        case = (:threaded, setting)
+        dx = zero(x)
+        autodiff(set_atomic_add(Reverse, setting), Const(atomic_generic), Active, Duplicated(x, dx), Const(Ref{Any}(AtomicThreaded{case}())))
+        @test dx == 18 .* x
+        @test callee_settings(AtomicThreaded{case}) == Set{Any}((own,))
+        @test callee_settings((case, :outside)) == Set{Any}((callees,))
+        # The loop body is compiled with the default under every setting
+        @test callee_settings((case, :inside)) == Set{Any}((nothing,))
+    end
+    # A callee that spawns a task keeps the default too, with what it reaches while the task runs
+    for (setting, own, callees) in ((nothing, nothing, nothing), (false, Inherited, nothing), (true, true, true))
+        case = (:spawning, setting)
+        dx = zero(x)
+        autodiff(set_atomic_add(Reverse, setting), Const(atomic_generic), Active, Duplicated(x, dx), Const(Ref{Any}(AtomicSpawning{case}())))
+        @test dx == 4 .* x
+        @test callee_settings(AtomicSpawning{case}) == Set{Any}((own,))
+        @test callee_settings((case, :between)) == Set{Any}((callees,))
+    end
+
+    # Shared shadows under contention: many iterations of a threaded loop, each reaching its
+    # callee through dynamic dispatch, behind a caller that asked for plain accumulation
+    N = 2000
+    for setting in (false, nothing)
+        dx = zero(x)
+        autodiff(set_atomic_add(Reverse, setting), Const(atomic_via_dynamic), Active, Duplicated(x, dx), Const(N))
+        @test dx == 2N .* x
+    end
+    # The callee inside that loop was only ever compiled with the default
+    @test callee_settings(typeof(atomic_sumsq)) == Set{Any}((nothing,))
+end
+
+# The inner derivatives of nested ones: taken with `autodiff`, whose thunk is compiled while
+# the outer function is inferred and imported into the outer derivative, and with
+# `autodiff_deferred`, which the outer compilation compiles itself.
+function atomic_inner_gradient!(dx, x)
+    autodiff(Reverse, Const(atomic_sumsq), Active, Duplicated(x, dx))
+    return nothing
+end
+function atomic_deferred_gradient!(dx, x)
+    autodiff_deferred(Reverse, Const(atomic_sumsq), Active, Duplicated(x, dx))
+    return nothing
+end
+
+# A package image is written by a process with one thread and keeps, for sessions with several,
+# a variant of each derivative compiled as such a session compiles it
+# (`Compiler.ForSeveralThreads`). That has to hold for every derivative compiled on its behalf
+# and linked into it as well: the body of a threaded loop, which gets the default under every
+# setting, and the inner derivative of a nested one. This compiles those variants directly, so
+# what it counts does not depend on the number of threads of this process.
+@testset "Derivatives compiled for several threads $(Threads.nthreads())" begin
+    function threaded_sumsq(x)
+        out = zeros(4)
+        Threads.@threads for i in 1:4
+            @inbounds out[i] = i * atomic_sumsq(x)
+        end
+        return sum(out)
+    end
+    function atomics(f, A, TT, setting; mode = Enzyme.API.DEM_ReverseModeCombined)
+        ir = sprint() do io
+            Enzyme.Compiler.enzyme_code_llvm(io, f, A, TT; dump_module = true, AtomicAdd = setting, mode)
+        end
+        return count("atomicrmw", ir)
+    end
+    several = Enzyme.Compiler.ForSeveralThreads
+    multithreaded = Threads.nthreads() > 1
+    VecDup = Tuple{Duplicated{Vector{Float64}}}
+
+    # A serial function for several threads is the function compiled with atomics
+    @test atomics(atomic_sumsq, Active, VecDup, several(nothing)) == atomics(atomic_sumsq, Active, VecDup, true) > 0
+    @test atomics(atomic_sumsq, Active, VecDup, several(false)) == 0
+
+    # The body of a threaded loop is compiled with the default whatever the function's own
+    # setting is, so with one thread `true` leaves it accumulating plainly. For several threads
+    # the body accumulates atomically under either setting, as it does in a process with
+    # several
+    for_several = atomics(threaded_sumsq, Active, VecDup, several(nothing))
+    @test for_several == atomics(threaded_sumsq, Active, VecDup, several(true))
+    @test (for_several > atomics(threaded_sumsq, Active, VecDup, true)) == !multithreaded
+    multithreaded && @test for_several == atomics(threaded_sumsq, Active, VecDup, nothing)
+    @test_throws Enzyme.Compiler.EnzymeAtomicAddError atomics(threaded_sumsq, Active, VecDup, several(false))
+
+    # Forward over Reverse: the inner derivative accumulates into shadows the caller may share
+    # between threads, with the default setting. Forward mode has no accumulation of its own
+    MatDup = Tuple{Duplicated{Vector{Float64}}, Duplicated{Vector{Float64}}}
+    for inner in (atomic_inner_gradient!, atomic_deferred_gradient!)
+        forward(setting) = atomics(inner, Const, MatDup, setting; mode = Enzyme.API.DEM_ForwardMode)
+        @test forward(several(nothing)) > 0
+        @test (forward(nothing) > 0) == multithreaded
+        multithreaded && @test forward(several(nothing)) == forward(nothing)
+    end
+end
+
 @testset "Forward constant captured by threads closure" begin
     function thr_const_capture(x, a)
         y = zeros(length(x))

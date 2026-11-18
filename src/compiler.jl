@@ -16,6 +16,7 @@ import Enzyme:
     eltype,
     API,
     EnzymeContext,
+    InheritedPlainAdd,
     ENZYME_CONTEXT,
     enzyme_context,
     enzyme_world,
@@ -113,6 +114,28 @@ GPUCompiler.dwarf_version(target::EnzymeTarget) = GPUCompiler.dwarf_version(targ
 module Runtime end
 
 abstract type AbstractEnzymeCompilerParams <: AbstractCompilerParams end
+
+# The `AtomicAdd` settings a derivative is compiled with: those of a mode (see
+# `EnzymeCore.set_atomic_add`), and the one a callee reached through dynamic dispatch inherits
+# from a caller that accumulates plainly.
+const AtomicAddSetting = Union{Bool, Nothing, Type{InheritedPlainAdd}}
+
+# `setting`, with every choice the number of threads decides made as a process with several
+# makes it. A package image is written by a process with one thread for sessions with any
+# number, and this is the setting of the variant it keeps for the others (see
+# `retained_derivatives!`). The callees inherit what they inherit under `setting`.
+#
+# The choice is not only the one `atomic_add_for` makes for the job itself. A derivative that
+# is compiled on the job's behalf and linked into its module makes its own: the body of a
+# threaded loop, which is compiled with the default under every setting, a derivative taken
+# with `autodiff_deferred` inside the function, and the inner derivative of a nested one. Each
+# is compiled for several threads too (see `for_several_threads`), so that the whole object
+# is what a process with several threads would have compiled. A job that settles its own
+# choice (`true`, `false`) therefore has such a variant as well when it links one of those in.
+struct ForSeveralThreads
+    setting::AtomicAddSetting
+end
+
 struct EnzymeCompilerParams{Params<:AbstractCompilerParams} <: AbstractEnzymeCompilerParams
     params::Params
 
@@ -143,9 +166,12 @@ struct EnzymeCompilerParams{Params<:AbstractCompilerParams} <: AbstractEnzymeCom
     # Whether to enforce that a zero derivative propagates as a zero (and never a nan)
     strongZero::Bool
 
-    # Whether to accumulate into shadow memory atomically: `true`, `false`, or `nothing` to
-    # decide in `codegen` (see `atomic_add_for`)
-    atomicAdd::Union{Bool, Nothing}
+    # Whether to accumulate into shadow memory atomically: `true`, `false`, `nothing` to
+    # decide in `codegen`, or `InheritedPlainAdd` for a callee that a caller compiled with
+    # `false` reaches through dynamic dispatch (see `atomic_add_for`). A `ForSeveralThreads`
+    # is the variant of one of them that a package image keeps for sessions with several
+    # threads.
+    atomicAdd::Union{AtomicAddSetting, ForSeveralThreads}
 end
 
 # FIXME: Should this take something like PTXCompilerParams/CUDAParams?
@@ -1450,22 +1476,48 @@ function parallel_work_in(mod::LLVM.Module)
     return nothing
 end
 
-# Whether a CPU derivative accumulates into shadow memory atomically, given the mode's
-# `AtomicAdd` setting (see `EnzymeCore.set_atomic_add`). By default it does whenever Julia runs
-# more than one thread, because a shadow may then be updated from several threads at once,
-# for instance by `autodiff` calls on different threads that share one shadow. `false` is the
-# caller's promise that this does not happen. It cannot hold for a function that runs work in
-# parallel itself, since the reverse of a task runs while the caller's reverse pass continues,
-# so that is refused rather than compiled with atomics anyway. The bodies of threaded loops
-# and tasks are compiled as their own jobs, which do not carry the caller's setting.
-function atomic_add_for(setting::Union{Bool, Nothing}, mod::LLVM.Module, mi::Core.MethodInstance)
-    setting === true && return true
-    if setting === false
-        call = parallel_work_in(mod)
-        call === nothing && return false
-        throw(EnzymeAtomicAddError(call, mi))
-    end
-    return Base.Threads.nthreads() > 1
+# Whether a CPU derivative accumulates into shadow memory atomically, given its `AtomicAdd`
+# setting, and the setting the callees it reaches through dynamic dispatch are compiled with.
+# By default it does whenever Julia runs more than one thread (`threads`), because a shadow may
+# then be updated from several threads at once, for instance by `autodiff` calls on different
+# threads that share one shadow. `false` is the caller's promise that this does not happen. It
+# cannot hold for a function that runs work in parallel itself, since the reverse of a task
+# runs while the caller's reverse pass continues, so that is refused rather than compiled with
+# atomics anyway. The bodies of threaded loops and tasks are compiled as their own jobs, which
+# do not carry the caller's setting.
+#
+# A callee reached through dynamic dispatch runs within its caller's derivative, so it is
+# compiled with the caller's setting. One reached from plain accumulation gets
+# `InheritedPlainAdd` rather than `false`: the caller cannot know which method the call
+# reaches, so a callee that runs work in parallel is compiled with the default instead of
+# refused. Its own callees get the default too, since they may run while its tasks do.
+#
+# The callees get `nothing` exactly when the number of threads made the choice (see
+# `atomic_add_by_threads`).
+function atomic_add_for(setting::AtomicAddSetting, threads::Bool, mod::LLVM.Module, mi::Core.MethodInstance)
+    setting === true && return (true, true)
+    setting === nothing && return (threads, nothing)
+    call = parallel_work_in(mod)
+    call === nothing && return (false, InheritedPlainAdd)
+    setting === false && throw(EnzymeAtomicAddError(call, mi))
+    return (threads, nothing)
+end
+atomic_add_for(setting::AtomicAddSetting, mod::LLVM.Module, mi::Core.MethodInstance) =
+    atomic_add_for(setting, Base.Threads.nthreads() > 1, mod, mi)
+atomic_add_for(variant::ForSeveralThreads, mod::LLVM.Module, mi::Core.MethodInstance) =
+    atomic_add_for(variant.setting, true, mod, mi)
+
+# Whether the number of threads made the choice of `atomic_add_for` for a derivative, given
+# the setting its callees got: its code is then another in a process with another number.
+atomic_add_by_threads(callees::AtomicAddSetting)::Bool = callees === nothing
+
+# The `AtomicAdd` setting of a derivative that the compilation of `enzyme_ctx` compiles with
+# the default and links into its module, as it does the body of a threaded loop under every
+# setting. The number of threads decides how that derivative accumulates, so it decides
+# something in the module, and a compilation for several threads has it decided for several.
+function linked_default_atomic_add(enzyme_ctx::EnzymeContext)
+    enzyme_ctx.by_threads = true
+    return enzyme_ctx.several_threads ? ForSeveralThreads(nothing) : nothing
 end
 
 function handleCustom(state::HandlerState, custom, k_name::String, llvmfn::LLVM.Function, name::String, attrs::Vector{LLVM.Attribute} = LLVM.Attribute[], setlink::Bool = true, noinl::Bool = true)
@@ -1919,18 +1971,27 @@ end
     if func == typeof(Base.enq_work) &&
        length(sparam_vals) == 1 &&
        first(sparam_vals) <: Task
-        handleCustom(state, custom, k_name, llvmfn, "jl_enq_work", LLVM.Attribute[StringAttribute("enzyme_ta_norecur")])
+        handleCustom(
+            state, custom, k_name, llvmfn, "jl_enq_work",
+            LLVM.Attribute[StringAttribute("enzyme_ta_norecur"), StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+        )
         return
     end
     if func == typeof(Base.wait) || func == typeof(Base._wait)
         if length(sparam_vals) == 1 && first(sparam_vals) <: Task
-            handleCustom(state, custom, k_name, llvmfn, "jl_wait", LLVM.Attribute[StringAttribute("enzyme_ta_norecur")])
+            handleCustom(
+                state, custom, k_name, llvmfn, "jl_wait",
+                LLVM.Attribute[StringAttribute("enzyme_ta_norecur"), StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+            )
         end
         return
     end
     if func == typeof(Base.Threads.threading_run)
         if length(sparam_vals) == 1 || length(sparam_vals) == 2
-            handleCustom(state, custom, k_name, llvmfn, "jl_threadsfor")
+            handleCustom(
+                state, custom, k_name, llvmfn, "jl_threadsfor",
+                LLVM.Attribute[StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*")],
+            )
         end
         return
     end
@@ -2724,6 +2785,23 @@ function create_recursive_stores(B::LLVM.IRBuilder, @nospecialize(Ty::DataType),
     end
 end
 
+# Since julia#60924 (1.14.0-DEV.1697, backported to 1.13.4) codegen attaches
+# these operand bundles to `julia.gc_alloc_obj`, and late-gc-lowering uses them
+# to zero the GC pointer fields of the object right where it is allocated.
+# Enzyme copies them onto shadow allocations, so such allocations need no
+# explicit null stores. A Julia that does not lower the bundles never emits
+# them, so no version check is needed.
+function has_gc_zeroing_bundle(@nospecialize(inst::LLVM.Value))::Bool
+    isa(inst, LLVM.CallInst) || return false
+    for bundle in operand_bundles(inst)
+        tag = LLVM.tag(bundle)
+        if tag == "julia.gc_alloc_ptr_offsets" || tag == "julia.gc_alloc_zeroinit"
+            return true
+        end
+    end
+    return false
+end
+
 function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradientUtilsRef, Orig::LLVM.API.LLVMValueRef, idx::UInt64, prev::API.LLVMValueRef, used::UInt8)
     enzyme_ctx = enzyme_context()
     used = used != 0
@@ -2838,10 +2916,12 @@ function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradie
 
         # Reverse mode will do similarly, except doing the shadow first
         prev = LLVM.Instruction(prev)
-        B = LLVM.IRBuilder()
-        position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(prev)))
+        if !has_gc_zeroing_bundle(prev)
+            B = LLVM.IRBuilder()
+            position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(prev)))
 
-	create_recursive_stores(B, Ty, prev, count)
+            create_recursive_stores(B, Ty, prev, count)
+        end
     end
     if (mode == API.DEM_ReverseModePrimal || mode == API.DEM_ReverseModeCombined) && used
         # Zero any jlvalue_t inner elements of preceeding allocation.
@@ -2863,10 +2943,12 @@ function shadow_alloc_rewrite(V::LLVM.API.LLVMValueRef, gutils::API.EnzymeGradie
         #   store orig[0] = jlvaluet
         #
         # Julia could decide to dead store eliminate the memset (not being read before the store of jlvaluet'), resulting in an error
-        B = LLVM.IRBuilder()
-        position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(V)))
-	
-	create_recursive_stores(B, Ty, V, count)
+        if !has_gc_zeroing_bundle(V)
+            B = LLVM.IRBuilder()
+            position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(V)))
+
+            create_recursive_stores(B, Ty, V, count)
+        end
     end
 
     nothing
@@ -6709,10 +6791,21 @@ function GPUCompiler.compile_unhooked(output::Symbol, job::CompilerJob{<:EnzymeT
         logger = Base.CoreLogging.SimpleLogger(Core.stderr, level)
         return ScopedValues.with_logger(CompileUnhooked(output, job), logger)
     end
+    # A derivative compiled on behalf of the compilation in progress, for `autodiff_deferred`
+    # in the function that one differentiates, is linked into its module. It is compiled for
+    # the number of threads the module is compiled for, and what the number of threads decides
+    # in it, it decides in the module (see `ForSeveralThreads`).
+    outer = !job.config.toplevel && isassigned(ENZYME_CONTEXT) ? ENZYME_CONTEXT[] : nothing
+    if outer !== nothing && outer.several_threads
+        job = for_several_threads(job)
+    end
     # Every compilation runs under its own context; a nested compilation gets
     # its own and hands the outer one back when it returns.
     mod, meta = @with ENZYME_CONTEXT => EnzymeContext(job.world) begin
         compile_unhooked_impl(output, job)
+    end
+    if outer !== nothing
+        outer.by_threads |= meta.by_threads
     end
     # A host derivative compiled on behalf of another job is linked into that job's module:
     # the module of the compilation in progress, for `autodiff_deferred` in the function it
@@ -7002,6 +7095,12 @@ function readonly_walk!(
                     if is_inactive_operand(user, called, cur, world)
                         continue
                     end
+                    # Calls such as BLAS read some buffers and write others.
+                    # Prove this operand readonly without following unrelated
+                    # outputs, or treating a GC root as a passed argument.
+                    if is_readonly_call_operand(user, called, cur, world, enzyme_ctx)
+                        continue
+                    end
                     if is_readonly(called)
                         slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
                         if slegal
@@ -7165,6 +7264,8 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     params = config.params
 
     enzyme_ctx = enzyme_context()
+    # Known before anything is compiled on this job's behalf (see `ForSeveralThreads`).
+    enzyme_ctx.several_threads = params.atomicAdd isa ForSeveralThreads
 
     expectedTapeType = params.expectedTapeType
     mode = params.mode
@@ -7477,7 +7578,8 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     process_module = false
     device_module = false
     if primal_target isa GPUCompiler.NativeCompilerTarget
-        parallel = atomic_add_for(job.config.params.atomicAdd, mod, job.source)
+        parallel, enzyme_ctx.callee_atomic_add = atomic_add_for(job.config.params.atomicAdd, mod, job.source)
+        enzyme_ctx.by_threads |= atomic_add_by_threads(enzyme_ctx.callee_atomic_add)
     else
         # All other targets are GPU targets
         parallel = true
@@ -8049,7 +8151,9 @@ end
     else
         nothing
     end
-    return mod, (; adjointf, augmented_primalf, entry, compiled = meta.compiled, TapeType, edges, value_table, relocations)
+    callee_atomic_add = enzyme_ctx.callee_atomic_add
+    by_threads = enzyme_ctx.by_threads
+    return mod, (; adjointf, augmented_primalf, entry, compiled = meta.compiled, TapeType, edges, value_table, relocations, callee_atomic_add, by_threads)
 end
 
 # Compiler result
@@ -8873,7 +8977,7 @@ const DumpPrePostOpt = Ref(false)
 const DumpPostOpt = Ref(false)
 
 # actual compilation
-function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, String, Union{String, Nothing}, Type, String, JuliaValueTable}
+function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, String, Union{String, Nothing}, Type, String, JuliaValueTable, Bool}
     config = CompilerConfig(job.config; optimize=false)
     job = CompilerJob(job.source, config, job.world)
     mod, meta = compile(:llvm, job)
@@ -8945,7 +9049,7 @@ function _thunk(job, postopt::Bool = true)::Tuple{LLVM.Module, Vector{Any}, Stri
     # The module string above keeps the rule declarations symbolic for nested
     # differentiation; the compiled module binds them to their addresses.
     restore_native_invokes!(mod)
-    return (mod, meta.edges, adjoint_name, primal_name, meta.TapeType, prepost, value_table)
+    return (mod, meta.edges, adjoint_name, primal_name, meta.TapeType, prepost, value_table, meta.by_threads)
 end
 
 const cache = Dict{UInt,CompileResult}()
@@ -8957,11 +9061,23 @@ What `autodiff_cache` keeps of a thunk for a later compilation to import (see
 [`import_cached_autodiff!`](@ref)): the name of the function to call (`entry`), the bitcode
 of the module before post-optimization (`bitcode`), which refers to Julia values by name, and
 those values (`value_table`, see [`JuliaValueTable`](@ref)).
+
+The rest is what it takes to import the thunk into a compilation for several threads (see
+[`ForSeveralThreads`](@ref) and [`cached_autodiff_for_several_threads`](@ref)): the job
+that compiled it (`job`), whether the entry is its augmented primal rather than its adjoint
+(`augmented`), its tape type (`TapeType`), whether the number of threads decided anything in
+its code (`by_threads`), and what the job compiled for several threads gave, once something
+asked for it (`several_threads`, which the two thunks of one job share).
 """
 struct CachedThunk
     entry::String
     bitcode::String
     value_table::JuliaValueTable
+    job::CompilerJob
+    augmented::Bool
+    TapeType::Type
+    by_threads::Bool
+    several_threads::Base.RefValue{Any}
 end
 
 # adjoint/primal pointer => the thunk's IR, for nested differentiation
@@ -8993,20 +9109,61 @@ function cached_autodiff(ptr::Ptr{Cvoid})::Union{Nothing, CachedThunk}
     end
 end
 
+"""
+    cached_autodiff_for_several_threads(cached)::CachedThunk
+
+What a compilation for several threads imports in place of `cached` (see
+[`ForSeveralThreads`](@ref)).
+
+A thunk in `autodiff_cache` was compiled for the number of threads of this process. Where
+that number decided nothing in its code, the code is right for any number and `cached` is
+returned. Otherwise its job is compiled again as a process with several threads compiles it,
+once, and nothing but the bitcode is kept: the thunk at the address stays what it was, for
+this process to call.
+"""
+function cached_autodiff_for_several_threads(cached::CachedThunk)::CachedThunk
+    cached.by_threads || return cached
+    lock(cache_publish_lock)
+    compiled = try
+        cached.several_threads[]
+    finally
+        unlock(cache_publish_lock)
+    end
+    if compiled === nothing
+        mod, _, adjoint_name, primal_name, TapeType, prepost, value_table, _ = _thunk(for_several_threads(cached.job))
+        dispose(mod)
+        lock(cache_publish_lock)
+        compiled = try
+            if cached.several_threads[] === nothing
+                cached.several_threads[] = (; adjoint_name, primal_name, TapeType, prepost, value_table)
+            end
+            cached.several_threads[]
+        finally
+            unlock(cache_publish_lock)
+        end
+    end
+    if compiled.TapeType !== cached.TapeType
+        error("the derivative of $(cached.job.source) has another tape type when it is compiled for several threads")
+    end
+    entry = cached.augmented ? compiled.primal_name::String : compiled.adjoint_name
+    return CachedThunk(entry, compiled.prepost, compiled.value_table, cached.job, cached.augmented, cached.TapeType, true, cached.several_threads)
+end
+
 # Compile `job` and publish it under `key`. If another compile of the same job published
 # first, return that one: a compile beside the holder of `cache_lock` (see
 # `cached_compilation`) can finish the same job.
 function compile_and_publish(@nospecialize(job::CompilerJob), key::UInt)::CompileResult
     Threads.atomic_add!(compiled_derivatives, 1)
-    mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table = _thunk(job)
+    mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table, by_threads = _thunk(job)
     obj = _link(job, mod, edges, adjoint_name, primal_name, TapeType, prepost)
+    several_threads = Ref{Any}(nothing)
     lock(cache_publish_lock)
     try
         if obj.adjoint isa Ptr{Nothing}
-            autodiff_cache[obj.adjoint] = CachedThunk(adjoint_name, prepost, value_table)
+            autodiff_cache[obj.adjoint] = CachedThunk(adjoint_name, prepost, value_table, job, false, TapeType, by_threads, several_threads)
         end
         if obj.primal isa Ptr{Nothing} && primal_name isa String
-            autodiff_cache[obj.primal] = CachedThunk(primal_name, prepost, value_table)
+            autodiff_cache[obj.primal] = CachedThunk(primal_name, prepost, value_table, job, true, TapeType, by_threads, several_threads)
         end
         published = get(cache, key, nothing)
         if published !== nothing
@@ -9174,7 +9331,7 @@ function thunk_job(
         ErrIfFuncWritten::Union{Bool, Tuple},
         RuntimeActivity::Bool,
         StrongZero::Bool,
-        AtomicAdd::Union{Bool, Nothing},
+        AtomicAdd::AtomicAddSetting,
     )
     target = Compiler.EnzymeTarget()
     params = Compiler.EnzymeCompilerParams(
@@ -9306,7 +9463,7 @@ end
         ErrIfFuncWritten::Union{Bool, Tuple},
         RuntimeActivity::Bool,
         StrongZero::Bool,
-        AtomicAdd::Union{Bool, Nothing},
+        AtomicAdd::AtomicAddSetting,
         edges::Union{Nothing, Vector{Any}},
         may_wait::Bool = true,
     )
@@ -9327,6 +9484,15 @@ end
         StrongZero,
         AtomicAdd,
     )
+    # The code of a derivative with the inline ABI becomes part of whatever calls it. While a
+    # package image is written, that can be a derivative the image keeps for sessions with any
+    # number of threads, or a value such a derivative hands to code Julia compiles later, as
+    # the rule of `Enzyme.pmap` does with the derivative of its loop body. Nothing tells it
+    # apart there, so it is compiled for several threads from the start (see
+    # `ForSeveralThreads`): atomic accumulation is right with any number of threads.
+    if ABI <: InlineABI && generating_output()
+        job = for_several_threads(job)
+    end
 
     compile_result = cached_compilation(job, may_wait)
     if edges !== nothing
@@ -9811,18 +9977,18 @@ function keeps_split_thunks_lazy(Mode::API.CDerivativeMode, @nospecialize(ABI::T
     return !Interpreter.in_enzyme_inference()
 end
 
-function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
+function thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::AtomicAddSetting, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
     @nospecialize
     return thunk_codeinfo(thunk, false, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero, AtomicAdd)
 end
 
-function runtime_thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing}, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
+function runtime_thunk_generator(world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::AtomicAddSetting, @nospecialize(self), @nospecialize(fakeworld), @nospecialize(fa::Type), @nospecialize(a::Type), @nospecialize(tt::Type), @nospecialize(mode::Type), @nospecialize(width::Type), @nospecialize(modifiedbetween::Type), @nospecialize(returnprimal::Type), @nospecialize(shadowinit::Type), @nospecialize(abi::Type), @nospecialize(erriffuncwritten::Type), @nospecialize(runtimeactivity::Type), @nospecialize(strongzero::Type), @nospecialize(atomicadd::Type))
     @nospecialize
     return thunk_codeinfo(runtime_thunk, true, world, source, FA, A, TT, Mode, Width, ModifiedBetween, ReturnPrimal, ShadowInit, ABI, ErrIfFuncWritten, RuntimeActivity, StrongZero, AtomicAdd)
 end
 
 # The body of the generators of `thunk` and `runtime_thunk`.
-function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::Union{Bool, Nothing})
+function thunk_codeinfo(@nospecialize(fn), untyped_split::Bool, world::UInt, source::Union{Method, LineNumberNode}, @nospecialize(FA::Type), @nospecialize(A::Type), @nospecialize(TT::Type), Mode::Enzyme.API.CDerivativeMode, Width::Int, @nospecialize(ModifiedBetween::(NTuple{N, Bool} where {N})), ReturnPrimal::Bool, ShadowInit::Bool, @nospecialize(ABI::Type), ErrIfFuncWritten::Union{Bool, Tuple}, RuntimeActivity::Bool, StrongZero::Bool, AtomicAdd::AtomicAddSetting)
     
     slotnames = Core.svec(Symbol("#self#"), 
                     :fakeworld, :fa, :a, :tt, :mode, :width,

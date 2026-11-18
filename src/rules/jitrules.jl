@@ -618,6 +618,7 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
                 readonly_args(ActivityTup),
                 runtimeActivity,
                 strongZero,
+                calleeAtomicAdd,
             ) #=erriffuncwritten=#
 
             (forward(dupClosure0 ? $dup : Const(f), args...)..., annotationA)
@@ -660,11 +661,12 @@ function func_runtime_generic_augfwd(N, Width)
             strongZero::Val{StrongZero},
             width::Val{$Width},
             ModifiedBetween::Val{MB},
+                calleeAtomicAdd::Val{CalleeAtomicAdd},
             RT::Val{ReturnType},
             f::F,
             df::DF,
             $(allargs...),
-        )::ReturnType where {ActivityTup,MB,ReturnType,RuntimeActivity,StrongZero,F,DF,$(typeargs...)}
+            )::ReturnType where {ActivityTup, MB, CalleeAtomicAdd, ReturnType, RuntimeActivity, StrongZero, F, DF, $(typeargs...)}
             $body
         end
     end
@@ -676,11 +678,12 @@ end
     strongZero::Val{StrongZero},
     width::Val{Width},
     ModifiedBetween::Val{MB},
+        calleeAtomicAdd::Val{CalleeAtomicAdd},
     RT::Val{ReturnType},
     f::F,
     df::DF,
     allargs...,
-)::ReturnType where {ActivityTup,MB,RuntimeActivity,StrongZero,Width,ReturnType,F,DF}
+    )::ReturnType where {ActivityTup, MB, CalleeAtomicAdd, RuntimeActivity, StrongZero, Width, ReturnType, F, DF}
     N = div(length(allargs) + 2, Width + 1) - 1
     _, _, primtypes, _, _, wrapped, _, _, active_refs, dfns =
         setup_macro_wraps(false, N, Width, :allargs)
@@ -849,7 +852,8 @@ function body_runtime_generic_rev(
                 FFIABI,
                 readonly_args(ActivityTup),
                 runtimeActivity,
-                strongZero
+                strongZero,
+                calleeAtomicAdd,
             ) #=erriffuncwritten=#
 
             tup =
@@ -895,12 +899,13 @@ function func_runtime_generic_rev(N, Width, Atomic)
             strongZero::Val{StrongZero},
             width::Val{$Width},
             ModifiedBetween::Val{MB},
+                calleeAtomicAdd::Val{CalleeAtomicAdd},
             atomic::Val{$Atomic},
             tape::TapeType,
             f::F,
             df::DF,
             $(allargs...),
-        ) where {ActivityTup,RuntimeActivity,StrongZero,MB,TapeType,F,DF,$(typeargs...)}
+            ) where {ActivityTup, RuntimeActivity, StrongZero, MB, CalleeAtomicAdd, TapeType, F, DF, $(typeargs...)}
             $body
         end
     end
@@ -912,12 +917,13 @@ end
     strongZero::Val{StrongZero},
     width::Val{Width},
     ModifiedBetween::Val{MB},
+        calleeAtomicAdd::Val{CalleeAtomicAdd},
     atomic::Val{Atomic},
     tape::TapeType,
     f::F,
     df::DF,
     allargs...,
-) where {ActivityTup,MB,RuntimeActivity,StrongZero,Width,Atomic,TapeType,F,DF}
+    ) where {ActivityTup, MB, CalleeAtomicAdd, RuntimeActivity, StrongZero, Width, Atomic, TapeType, F, DF}
     N = div(length(allargs) + 2, Width + 1) - 1
     _, _, primtypes, _, _, wrapped, batchshadowargs, _, active_refs, dfns =
         setup_macro_wraps(false, N, Width, :allargs)
@@ -1367,6 +1373,7 @@ end
 function augfwd_with_return(
     runtimeActivity::Val{RuntimeActivity},
     strongZero::Val{StrongZero},
+        calleeAtomicAdd::Val{CalleeAtomicAdd},
     ::Val{width},
     ::Val{dupClosure0},
     ::Type{ReturnType},
@@ -1379,6 +1386,7 @@ function augfwd_with_return(
 )::ReturnType where {
     RuntimeActivity,
     StrongZero,
+        CalleeAtomicAdd,
     width,
     dupClosure0,
     ReturnType,
@@ -1444,7 +1452,8 @@ function augfwd_with_return(
             FFIABI,
             readonly_callee(dupClosure0, Val(Nargs)),
             runtimeActivity,
-            strongZero
+            strongZero,
+            calleeAtomicAdd,
         ) #=erriffuncwritten=#
         forward(fa, args...)
     else
@@ -1534,6 +1543,7 @@ function body_runtime_iterate_augfwd(N, Width, modbetween, wrapped, primtypes, a
         tmpvals = augfwd_with_return(
             runtimeActivity,
             strongZero,
+            calleeAtomicAdd,
             Val($Width),
             Val(ActivityTup[1]),
             ReturnType,
@@ -1561,11 +1571,12 @@ function func_runtime_iterate_augfwd(N, Width)
             strongZero::Val{StrongZero},
             width::Val{$Width},
             ModifiedBetween::Val{MB},
+                calleeAtomicAdd::Val{CalleeAtomicAdd},
             RT::Val{ReturnType},
             f::F,
             df::DF,
             $(allargs...),
-        ) where {ActivityTup,RuntimeActivity,StrongZero,MB,ReturnType,F,DF,$(typeargs...)}
+            ) where {ActivityTup, RuntimeActivity, StrongZero, MB, CalleeAtomicAdd, ReturnType, F, DF, $(typeargs...)}
             $body
         end
     end
@@ -1577,11 +1588,12 @@ end
     strongZero::Val{StrongZero},
     width::Val{Width},
     ModifiedBetween::Val{MB},
+        calleeAtomicAdd::Val{CalleeAtomicAdd},
     RT::Val{ReturnType},
     f::F,
     df::DF,
     allargs...,
-) where {ActivityTup,RuntimeActivity,StrongZero,MB,Width,ReturnType,F,DF}
+    ) where {ActivityTup, RuntimeActivity, StrongZero, MB, CalleeAtomicAdd, Width, ReturnType, F, DF}
     N = div(length(allargs) + 2, Width + 1) - 1
     _, _, primtypes, _, _, wrapped, _, modbetween, active_refs, dfns =
         setup_macro_wraps(false, N, Width, :allargs, true) #=iterate=#
@@ -1615,6 +1627,7 @@ end
 @generated function rev_with_return(
     runtimeActivity::Val{RuntimeActivity},
     strongZero::Val{StrongZero},
+        calleeAtomicAdd::Val{CalleeAtomicAdd},
     ::Val{width},
     ::Val{dupClosure0},
     ::Val{ModifiedBetween0},
@@ -1629,6 +1642,7 @@ end
 )::Nothing where {
     RuntimeActivity,
     StrongZero,
+        CalleeAtomicAdd,
     width,
     dupClosure0,
     ModifiedBetween0,
@@ -1768,7 +1782,8 @@ end
                 FFIABI,
                 readonly_callee($dupClosure0, Val($Nargs)),
                 runtimeActivity,
-                strongZero
+                strongZero,
+                calleeAtomicAdd,
             ) #=erriffuncwritten=#
 
             tup = if tape.shadow_return !== nothing
@@ -1844,6 +1859,7 @@ function body_runtime_iterate_rev(
         rev_with_return(
             runtimeActivity,
             strongZero,
+            calleeAtomicAdd,
             Val($Width),
             Val(ActivityTup[1]),
             Val($(Expr(:call, concat, modbetween...))),
@@ -1886,11 +1902,12 @@ function func_runtime_iterate_rev(N, Width)
             runtimeActivity::Val{RuntimeActivity},
             width::Val{$Width},
             ModifiedBetween::Val{MB},
+                calleeAtomicAdd::Val{CalleeAtomicAdd},
             tape::TapeType,
             f::F,
             df::DF,
             $(allargs...),
-        ) where {ActivityTup,RuntimeActivity,MB,TapeType,F,DF,$(typeargs...)}
+            ) where {ActivityTup, RuntimeActivity, MB, CalleeAtomicAdd, TapeType, F, DF, $(typeargs...)}
             $body
         end
     end
@@ -1902,11 +1919,12 @@ end
     strongZero::Val{StrongZero},
     width::Val{Width},
     ModifiedBetween::Val{MB},
+        calleeAtomicAdd::Val{CalleeAtomicAdd},
     tape::TapeType,
     f::F,
     df::DF,
     allargs...,
-) where {ActivityTup,RuntimeActivity,StrongZero,MB,Width,TapeType,F,DF}
+    ) where {ActivityTup, RuntimeActivity, StrongZero, MB, CalleeAtomicAdd, Width, TapeType, F, DF}
     N = div(length(allargs) + 2, Width + 1) - 1
     primargs, _, primtypes, _, _, wrapped, batchshadowargs, modbetween, active_refs, dfns =
         setup_macro_wraps(false, N, Width, :allargs, true; reverse = true) #=iterate=#
@@ -1941,6 +1959,12 @@ set_fn_max_args(runtime_iterate_rev)
 #     eval(func_runtime_iterate_augfwd(N, Width))
 #     eval(func_runtime_iterate_rev(N, Width))
 # end
+
+# Whether `func` is one of the run-time rules that compile the reverse-mode derivative of a
+# callee reached through dynamic dispatch.
+differentiates_callee(@nospecialize(func)) =
+    func === runtime_generic_augfwd || func === runtime_generic_rev ||
+    func === runtime_iterate_augfwd || func === runtime_iterate_rev
 
 function generic_setup(
     orig,
@@ -2075,6 +2099,12 @@ function generic_setup(
         end
         if func == runtime_generic_rev
             pushfirst!(vals, unsafe_to_llvm(B, Val(get_atomic_add(gutils))))
+        end
+        if differentiates_callee(func)
+            # The callee runs within this derivative: its own is compiled with the
+            # `AtomicAdd` setting this compilation hands on (see `atomic_add_for`), not
+            # with what `get_atomic_add` resolved it to here.
+            pushfirst!(vals, unsafe_to_llvm(B, Val(enzyme_ctx.callee_atomic_add)))
         end
         pushfirst!(vals, unsafe_to_llvm(B, Val((ModifiedBetween...,))))
     end
