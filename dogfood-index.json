@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "01265672787661ba298b7baf0643a154049ba4bd"
   },
-  "prepared_at": "2026-11-18T15:19:49Z",
+  "prepared_at": "2026-11-18T15:26:49Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -585,6 +585,275 @@
           ],
           "result": "passed",
           "detail": "35 of 35 passed. Julia build 6d172b025e4. The tested Git tree 0aece5ba5d93 is identical to the published commit's tree."
+        }
+      ]
+    },
+    {
+      "id": "tuple-zero",
+      "role": "fix",
+      "title": "Building a gradient shadow for a tuple of arrays and Refs allocates an identity table on every call",
+      "summary": "Enzyme.gradient builds a zero shadow for each argument. For a tuple of independent floating-point arrays and Refs, bookkeeping for repeated objects can cost more than building the shadow itself.",
+      "repairs": [
+        {
+          "id": "make_zero_tuple_points",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/2489",
+          "relation": "related"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/2607",
+          "relation": "related"
+        }
+      ],
+      "draft": {
+        "title": "Building a gradient shadow for a tuple of arrays and Refs allocates an identity table on every call",
+        "body": "A small tuple of arrays and references represents a common input to `Enzyme.gradient`. Constructing its zero shadow should cost roughly what it costs to construct the array and references. On Julia 1.10.12 the original repair measured 448 bytes for the general path versus 112 bytes by hand.\n\n```julia\nusing Enzyme\npoint = ([1.0, 2.0, 3.0], Ref(0.5), Ref(0.7))\ngeneral(p) = @allocated Enzyme.make_zero(p)\nbyhand(p) = (zero(p[1]), Ref(zero(p[2][])), Ref(zero(p[3][])))\nmanual(p) = @allocated byhand(p)\ngeneral(point)\nmanual(point)\n@show general(point) manual(point)\n```\n\nA zero shadow must still preserve aliases. For example, `Enzyme.make_zero((v, v))` should contain two references to one new array. The allocation regression compares warmed calls in the same process and covers both distinct and aliased inputs.",
+        "prepared_at": "2026-11-18T15:26:49Z"
+      },
+      "fix": {
+        "branch": "rebase/tuple-zero",
+        "commits": [
+          {
+            "sha": "c8d92e959d55136d0fce559fa4f16487c3eddc70",
+            "title": "Construct zero tuples with static field dispatch and no unnecessary seen table",
+            "original": [
+              "629979ff39426671e0909ea5180f61f2066592af"
+            ]
+          }
+        ],
+        "why_together": "One commit specializes zero-shadow construction for eligible tuples, preserves aliasing, and tests allocations, inference and the resulting gradient."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/make_zero.jl"
+          ],
+          "result": "passed",
+          "detail": "110,277 of 110,277 passed. Julia build 09cc1b5. The tested Git tree a88afd85ac7e is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/make_zero.jl"
+          ],
+          "result": "passed",
+          "detail": "110,277 of 110,277 passed. Julia build 09cc1b5. The tested Git tree a88afd85ac7e is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/make_zero.jl"
+          ],
+          "result": "passed",
+          "detail": "157,659 of 157,659 passed. Julia build 6d172b025e4. The tested Git tree a88afd85ac7e is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/make_zero.jl"
+          ],
+          "result": "passed",
+          "detail": "157,659 of 157,659 passed. Julia build 6d172b025e4. The tested Git tree a88afd85ac7e is identical to the published commit's tree."
+        }
+      ]
+    },
+    {
+      "id": "untaken-apply-type",
+      "role": "fix",
+      "title": "Derivative compilation throws a type error from a branch the primal never takes",
+      "summary": "Enzyme can evaluate an invalid type application while compiling both sides of a branch. Calling the function with the valid branch then fails during differentiation.",
+      "repairs": [
+        {
+          "id": "absint_apply_type",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3910",
+          "relation": "related"
+        }
+      ],
+      "draft": {
+        "title": "Derivative compilation throws a type error from a branch the primal never takes",
+        "body": "A function with a valid numeric branch and an error branch returns its normal result when the error branch is skipped. Its derivative should behave the same way.\n\n```julia\nusing Enzyme\n@noinline invalid_type(::Type{T}) where {T} = Complex{String}\nfunction f(x, take)\n    if take\n        invalid_type(typeof(x))\n        return x\n    end\n    return 2x\nend\n@assert f(1.5, false) == 3.0\n@assert autodiff(Reverse, f, Active, Active(1.5), Const(false))[1][1] == 2.0\n```\n\nOn the affected compiler path, forming `Complex{String}` raises a type error while compiling the derivative even when `take` is false. The invalid branch should still throw when `take` is true. The regression checks reverse mode, forward mode and runtime activity.",
+        "prepared_at": "2026-11-18T15:26:49Z"
+      },
+      "fix": {
+        "branch": "rebase/untaken-apply-type",
+        "commits": [
+          {
+            "sha": "65468377f1dc6b5748d6903509687b6a1cdd1a2d",
+            "title": "Fold invalid apply_type parameters on unreachable paths",
+            "original": [
+              "39ffdb75887c6271f053e2067306e38b152491f9"
+            ]
+          }
+        ],
+        "why_together": "One commit handles an invalid constant type application during abstract interpretation and tests both branches in the derivative."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/absint.jl"
+          ],
+          "result": "passed",
+          "detail": "112 passed. A pre-existing Julia 1.10 test for dynamic indexing is marked skipped. Julia build 09cc1b5. The tested Git tree 0f50ef2e2213 is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/absint.jl"
+          ],
+          "result": "passed",
+          "detail": "112 passed. A pre-existing Julia 1.10 test for dynamic indexing is marked skipped. Julia build 09cc1b5. The tested Git tree 0f50ef2e2213 is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/absint.jl"
+          ],
+          "result": "passed",
+          "detail": "122 of 122 passed. Julia build 6d172b025e4. The tested Git tree 0f50ef2e2213 is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/absint.jl"
+          ],
+          "result": "passed",
+          "detail": "122 of 122 passed. Julia build 6d172b025e4. The tested Git tree 0f50ef2e2213 is identical to the published commit's tree."
+        }
+      ]
+    },
+    {
+      "id": "post-ad-attributor",
+      "role": "fix",
+      "title": "LLVM attribute inference makes first-call compilation expensive for wide batched derivatives",
+      "summary": "On Julia 1.10 with LLVM 15, the Attributor revisits straight-line code after differentiation. Its work can grow quadratically in the batch width for forward-over-reverse Hessian-vector products.",
+      "repairs": [
+        {
+          "id": "attributor_before_ad_only",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3803",
+          "relation": "related"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3910",
+          "relation": "related"
+        }
+      ],
+      "draft": {
+        "title": "LLVM attribute inference makes first-call compilation expensive for wide batched derivatives",
+        "body": "Computing several Hessian-vector products in one batch expands the differentiated code. On Julia 1.10 with LLVM 15, the first call can spend most of its compile time re-inferring attributes of that expanded code. In the original width-64 model, this stage accounted for roughly four fifths of compilation.\n\nTo exercise the same pattern, take a scalar function of a vector, compute its gradient with `autodiff_deferred(Reverse, ...)`, then differentiate that gradient with `autodiff(Forward, ...)` and `BatchDuplicated` tangent vectors. Profile the first call in a fresh process at increasing batch widths. Compare each Hessian-vector product with the corresponding result from a narrower batch.\n\nThe local regression checks pass placement and numerical results. It compares widths 3 and 12 and checks a column against finite differences. Julia 1.12 already skips this LLVM pass. Upstream PR #3803 also changes how the Attributor treats generated IR and is relevant when reviewing pass placement.",
+        "prepared_at": "2026-11-18T15:26:49Z"
+      },
+      "fix": {
+        "branch": "rebase/post-ad-attributor",
+        "commits": [
+          {
+            "sha": "8d131e39c7c2f6569cb53d8d213d201a5fb49e8c",
+            "title": "Keep the Attributor out of already differentiated code",
+            "original": [
+              "29ddfdf709602d407d92eb2b3c6dc31cb0d3b6ed"
+            ]
+          }
+        ],
+        "why_together": "One commit updates the stages that run the Attributor, retains a switch to restore the prior behavior, and checks the stage counters and derivatives. The tests do not set a timing threshold."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/attributor_stages.jl"
+          ],
+          "result": "passed",
+          "detail": "23 of 23 passed. Julia build 09cc1b5. The tested Git tree 9cef86309cc4 is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-15.so, artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/attributor_stages.jl"
+          ],
+          "result": "passed",
+          "detail": "23 of 23 passed. Julia build 09cc1b5. The tested Git tree 9cef86309cc4 is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/attributor_stages.jl"
+          ],
+          "result": "passed",
+          "detail": "23 of 23 passed. Julia build 6d172b025e4. The tested Git tree 9cef86309cc4 is identical to the published commit's tree."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0, libEnzyme-18.so, artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/attributor_stages.jl"
+          ],
+          "result": "passed",
+          "detail": "23 of 23 passed. Julia build 6d172b025e4. The tested Git tree 9cef86309cc4 is identical to the published commit's tree."
         }
       ]
     }
