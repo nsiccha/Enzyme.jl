@@ -33,6 +33,24 @@
   tapes holds its address. The kept code now carries no such marks.
   `Enzyme.has_dogfood_repair(:kept_stack_slot_markers)` reports the repair;
   `test/nested_threads.jl` covers it.
+- Fix two defects in the reverse rule for `sizehint!` on a `Float32` or
+  `Float64` vector, on Julia 1.11 and later. The rule repeats the call on the
+  derivative vector, which allocates the new storage uninitialized, but zeroed
+  only the vector's current length. Elements that `push!`, `pushfirst!`,
+  `append!` or `resize!` later grew into the reserved storage started with
+  whatever the allocator had left there. So a Reverse gradient or a nested
+  derivative through, for example, `sizehint!(Float64[], n)` followed by `push!`
+  returned `NaN` or huge values in some calls and correct values in others,
+  more often after heavy allocation. The rule now zeroes all of the new storage.
+  Separately, the rule moved the adjoints of the elements the vector held at
+  the call back through the derivative vector's header as the reverse pass
+  found it. After `pushfirst!` into storage reserved with `first = true`, or a
+  `push!` past the reserved storage that reallocated, that header pointed
+  elsewhere and those adjoints were lost: the gradient of the retained elements
+  came back zero. The rule now reads them where the call put them.
+  `Enzyme.has_dogfood_repair(:sizehint_reserved_shadow)` reports both repairs.
+  `test/array_storage.jl` grows into reserved storage after leaving freed
+  storage nonzero, and `test/nested_unalias_view.jl` covers the original case.
 - Keep the type facts of a union return buffer independent of what compiled
   earlier in the process. A function returning, for example,
   `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct
@@ -47,6 +65,11 @@
   `Enzyme.has_dogfood_repair(:union_return_types)` reports the repair;
   `test/union_return_types.jl` caches the equivalent pointer type first and
   checks Reverse gradients on both return branches.
+- `Enzyme.derivative_report` omits unreachable calls and marks calls inside
+  recursive error-message helpers as `throw_only` when every path into the
+  helper ends in an error. A helper also called on a returning path still
+  reports its dispatch and allocations there.
+  `Enzyme.has_dogfood_repair(:derivative_report_reachability)` reports this repair.
 - Allocate the reverse caches of a ragged loop nest together. In a combined
   Reverse derivative (`autodiff(Reverse, ...)`, `gradient`, and
   DifferentiationInterface's `gradient` with
@@ -150,6 +173,18 @@
   as Julia does. `Enzyme.has_dogfood_repair(:ccall_without_library)` reports
   the repair; `test/ccall_library.jl` covers `findfirst`, `cmp` and
   `ccall(:cos, ...)`, and `test/precompile.jl` derivatives kept in an image.
+- Fix a crash while compiling a static Reverse derivative whose code has a
+  load through a select of pointers in a block that flows into a phi of
+  pointers, where both merge constant data or data the function made with
+  other data. Splitting the select rebuilt the phis after it, and the phi was
+  then split from freed memory: the process segfaulted in `merge_load_tree`,
+  or compiling raised `UndefRefError` from `merge_predecessors_branch`,
+  depending on what reused that memory (a Gaussian-process posterior with a
+  Cholesky-factored covariance hit it). Every select is now split before the
+  phis are collected.
+  `Enzyme.has_dogfood_repair(:constant_merge_order)` reports the repair;
+  `test/constant_merge_order.jl` covers the select's block placed before and
+  after the phi's block, and two selects flowing into two phis.
 - Accept captured BLAS input buffers in the readonly check for an unannotated
   function argument. The proof uses per-argument readonly and nocapture
   attributes only for typed raw data pointers, and ignores uses solely in

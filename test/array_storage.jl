@@ -73,6 +73,118 @@ using Enzyme, Test
         end
     end
 
+    # sizehint! reserves storage beyond the vector's length, uninitialized. The
+    # shadow's reserved storage must start at zero like any new shadow: push!,
+    # pushfirst!, append! and resize! grow into it, and the reverse pass accumulates
+    # adjoints there. The adjoints of the elements the vector held at the call must
+    # reach the old storage however the vector grew afterwards: pushfirst! moves its
+    # header within the reserved storage, and growth past it reallocates.
+    # Each objective is sum(abs2, 2x), so its gradient is 8x.
+    function reserved_push(x, hint)
+        v = sizehint!(Float64[], hint)
+        for i in eachindex(x)
+            push!(v, 2 * x[i])
+        end
+        return sum(abs2, v)
+    end
+
+    function reserved_append_view(x, hint)
+        y = x .* 2.0
+        v = sizehint!(Float64[], hint)
+        push!(v, y[1])
+        append!(v, @view y[2:end])
+        return sum(abs2, v)
+    end
+
+    function reserved_resize(x, hint)
+        v = sizehint!(Float64[], hint)
+        resize!(v, length(x))
+        for i in eachindex(x)
+            v[i] = 2 * x[i]
+        end
+        return sum(abs2, v)
+    end
+
+    function reserved_front(x, hint)
+        v = [2 * x[end]]
+        sizehint!(v, hint; first = true)
+        for i in (length(x) - 1):-1:1
+            pushfirst!(v, 2 * x[i])
+        end
+        return sum(abs2, v)
+    end
+
+    function reserved_regrow(x, hint)
+        v = [2 * x[1]]
+        sizehint!(v, 2)
+        for i in 2:length(x)
+            push!(v, 2 * x[i])
+        end
+        return sum(abs2, v)
+    end
+
+    # Leave freed storage of the reserved sizes holding nonzero values, so that
+    # storage allocated next, uninitialized, is likely to start nonzero.
+    @noinline function dirty_freed_storage(lens)
+        for len in lens, _ in 1:64
+            Base.donotdelete(fill(-1.0e300, len))
+        end
+        GC.gc(false)
+        return nothing
+    end
+
+    function reserved_gradient(mode, f, x, hint)
+        dx = zero(x)
+        autodiff(mode, Const(f), Active, Duplicated(x, dx), Const(hint))
+        return dx
+    end
+
+    function reserved_batch_gradient(f, x, hint)
+        dx1, dx2 = zero(x), zero(x)
+        autodiff(Reverse, Const(f), Active, BatchDuplicated(x, (dx1, dx2)), Const(hint))
+        return dx1, dx2
+    end
+
+    # Two separate defects, present without this rule too: batched Reverse through
+    # pushfirst! or a push! that reallocates loses adjoints (Enzyme todo `1t9iw45`),
+    # and Forward over Reverse through sizehint! then growth past the reserved
+    # storage throws (Enzyme todo `1o8ugkl`). So batch and nest only the shapes that
+    # do neither.
+    reserved_batch_shape(f) = f !== reserved_front && f !== reserved_regrow
+    reserved_nested_shape(f) = f !== reserved_regrow
+
+    @testset "Growth into storage reserved by sizehint!" begin
+        for f in (reserved_push, reserved_append_view, reserved_resize, reserved_front, reserved_regrow), n in (4, 7)
+            x = [0.3 * i - 1.1 for i in 1:n]
+            v = [(-1.0)^i * (0.5 + 0.25 * i) for i in 1:n]
+            want = 8 .* x
+            for hint in (n + 1, 3n)
+                lens = (2, n, n + 1, 3n)
+                wrong = 0
+                for _ in 1:20
+                    dirty_freed_storage(lens)
+                    reserved_gradient(Reverse, f, x, hint) ≈ want || (wrong += 1)
+                    dirty_freed_storage(lens)
+                    reserved_gradient(set_runtime_activity(Reverse), f, x, hint) ≈ want || (wrong += 1)
+                    reserved_batch_shape(f) || continue
+                    dirty_freed_storage(lens)
+                    dx1, dx2 = reserved_batch_gradient(f, x, hint)
+                    dx1 ≈ want && dx2 ≈ want || (wrong += 1)
+                end
+                @test wrong == 0
+            end
+            reserved_nested_shape(f) || continue
+            # Forward over Reverse: the Hessian is 8I.
+            wrong = 0
+            for _ in 1:20
+                dirty_freed_storage((2, n, n + 1))
+                hv = only(autodiff(Forward, Const(reserved_gradient), Const(Reverse), Const(f), Duplicated(x, v), Const(n + 1)))
+                hv ≈ 8 .* v || (wrong += 1)
+            end
+            @test wrong == 0
+        end
+    end
+
     function storage_alias_objective(x, count, hint, first, shrink)
         y = copy(x)
         old = y.ref.mem

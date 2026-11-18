@@ -573,7 +573,9 @@ Each entry says what was differentiated (`func`, `mode`, `arguments`, `return_an
 | `:native_allocation` | `malloc` and friends: Enzyme's tape and caches, and temporaries of foreign calls |
 | `:runtime_call` | any other call into the Julia runtime, a native library such as BLAS, or separately compiled Julia code |
 
-A finding also names the callee, the compiled function and the sweep that hold the call, the source lines it comes from, whether it is in a loop (`in_loop`), whether it is only reached on a path that ends in an error (`throw_only`), and the size of an allocation when that is a constant (`bytes`). Printing the report of the example, run from a file `example.jl` on Julia 1.10, shows (the directory of the file is left out)
+A finding also names the callee, the compiled function and sweep, the source lines, whether the call is in a loop (`in_loop`), whether it is only reached on a path that ends in an error (`throw_only`), and the allocation size when constant (`bytes`). For example, allocations inside a recursive helper that formats an exception are marked `throw_only` if the derivative calls it only on error paths. The report omits calls it can prove unreachable and treats functions that may be called indirectly as possible entry points.
+
+Printing the report of the example, run from a file `example.jl` on Julia 1.10, shows (the directory of the file is left out)
 
 ```
 DerivativeReport(2 derivatives)
