@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T19:35:49Z",
+  "prepared_at": "2026-11-18T20:05:36Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -1636,8 +1636,8 @@
     {
       "id": "logbeta-partials",
       "role": "fix",
-      "title": "Reverse differentiation of scalar logabsbeta builds a recursive tape",
-      "summary": "Scalar logabsbeta has analytic partial derivatives. Reverse mode should use stable partials for both arguments, including large inputs, and avoid a recursive derivative tape.",
+      "title": "Reverse differentiation of a sum of log-beta values allocates a tape that grows with the input",
+      "summary": "Reverse mode allocates per-element tape storage for scalar log-beta. Its two real partials can be computed directly while preserving numerical accuracy at large arguments.",
       "repairs": [
         {
           "id": "logbeta_partials",
@@ -1649,19 +1649,77 @@
       ],
       "upstream_refs": [],
       "fix": {
-        "commits": [],
-        "why_together": "The original source and test hunks require a rebase onto upstream 1ee9a6f8. The original commits identify the changes to extract.",
+        "branch": "rebase/logbeta-partials",
         "originals": [
           "ec6a56dc802342b19df0c1f1f80dc1599a3dcbc4"
-        ]
+        ],
+        "commits": [
+          {
+            "sha": "f5ba5a06c6210759e4bbfed7e647dc49b5812477",
+            "title": "Use stable scalar partials for logabsbeta differentiation",
+            "original": [
+              "ec6a56dc802342b19df0c1f1f80dc1599a3dcbc4"
+            ]
+          }
+        ],
+        "why_together": "One commit adds the scalar rule and its numerical and allocation regressions. It applies directly to upstream 1ee9a6f8. The sign output is inactive. For widely separated positive arguments, the rule uses a stable log-gamma ratio for the small partial."
       },
       "depends_on": [],
       "requires": [],
-      "validation": [],
+      "validation": [
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/ext/logbeta.jl",
+            "warmed reverse-mode allocation probe"
+          ],
+          "result": "passed",
+          "detail": "476 assertions in the committed suite and one independent allocation/gradient check passed. For 8 and 256 terms the upstream gradient allocated 272 and 11,328 bytes. With the rule both calls allocated zero bytes. SpecialFunctions 2.9.2, Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/ext/logbeta.jl",
+            "warmed reverse-mode allocation probe"
+          ],
+          "result": "passed",
+          "detail": "476 assertions in the committed suite and one independent allocation/gradient check passed. For 8 and 256 terms the upstream gradient allocated 272 and 11,328 bytes. With the rule both calls allocated zero bytes. SpecialFunctions 2.9.2, Julia build d93beab124c."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/ext/logbeta.jl",
+            "warmed reverse-mode allocation probe"
+          ],
+          "result": "passed",
+          "detail": "476 assertions in the committed suite and one independent allocation/gradient check passed. For 8 and 256 terms the upstream gradient allocated 352 and 15,616 bytes. With the rule both calls allocated zero bytes. SpecialFunctions 2.9.2, Julia build 6d172b025e4."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.12.7",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact 06ea93b0b58e45226d3c8730e8dec36ba2a14643",
+          "tests": [
+            "test/ext/logbeta.jl",
+            "warmed reverse-mode allocation probe"
+          ],
+          "result": "passed",
+          "detail": "476 assertions in the committed suite and one independent allocation/gradient check passed. For 8 and 256 terms the upstream gradient allocated 352 and 15,616 bytes. With the rule both calls allocated zero bytes. SpecialFunctions 2.9.2, Julia build 6d172b025e4."
+        }
+      ],
       "draft": {
-        "title": "Reverse differentiation of scalar logabsbeta builds a recursive tape",
-        "body": "Scalar logabsbeta has analytic partial derivatives. Reverse mode should use stable partials for both arguments, including large inputs, and avoid a recursive derivative tape.\n\nOriginal fork commit: [ec6a56dc](https://github.com/nsiccha/Enzyme.jl/commit/ec6a56dc802342b19df0c1f1f80dc1599a3dcbc4).\n\nRegression coverage on the fork: [test/ext/logbeta.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/logbeta.jl), [test/ext/specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/ext/specialfunctions.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "title": "Reverse differentiation of a sum of log-beta values allocates a tape that grows with the input",
+        "body": "Consider a sum of real log-beta values over paired vectors. Reverse mode computes the expected gradient with respect to the first vector, but a warmed call continues to allocate as the number of terms increases.\n\n```julia\nusing Enzyme, SpecialFunctions\n\nfunction objective(x, y)\n    total = zero(eltype(x))\n    for i in eachindex(x, y)\n        total += logbeta(x[i], y[i])\n    end\n    return total\nend\n\nfunction gradient!(dx, x, y)\n    fill!(dx, 0)\n    autodiff(Reverse, objective, Active, Duplicated(x, dx), Const(y))\n    return nothing\nend\n\nn = 256\nx = [0.5 + mod(i, 17) / 4 for i in 1:n]\ny = [1.5 + mod(i, 23) / 2 for i in 1:n]\ndx = zero(x)\ngradient!(dx, x, y)\n@allocated gradient!(dx, x, y)\n```\n\nOn upstream `1ee9a6f8` with its declared Enzyme_jll 0.0.311+0, 8 and 256 terms allocated 272 and 11,328 bytes on Julia 1.10.12, and 352 and 15,616 bytes on Julia 1.12.7. A scalar rule for `logabsbeta` reduces both measurements to zero. The computed gradient agrees with `digamma.(x) .- digamma.(x .+ y)`.\n\n[Original change](https://github.com/nsiccha/Enzyme.jl/commit/ec6a56dc802342b19df0c1f1f80dc1599a3dcbc4) · [Rule and regression tests](https://github.com/nsiccha/Enzyme.jl/commit/f5ba5a06c6210759e4bbfed7e647dc49b5812477)",
+        "prepared_at": "2026-11-18T20:05:36Z"
       }
     },
     {
