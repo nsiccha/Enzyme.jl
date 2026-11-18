@@ -229,7 +229,11 @@ end
         LLVM.dispose(buf)
 
         ptr = reinterpret(Ptr{Cvoid}, UInt(0x2788))
-        Enzyme.Compiler.autodiff_cache[ptr] = Enzyme.Compiler.CachedThunk("thunk", bitcode, Enzyme.Compiler.JuliaValueTable())
+        # The synthetic thunk has the same body for every thread count.
+        job = Enzyme.Compiler.get_job(identity, Const, Tuple{Const{Int64}})
+        Enzyme.Compiler.autodiff_cache[ptr] = Enzyme.Compiler.CachedThunk(
+            "thunk", bitcode, Enzyme.Compiler.JuliaValueTable(), job, false, Nothing, false, Ref{Any}(nothing),
+        )
         try
             Enzyme.@with Enzyme.Compiler.ENZYME_CONTEXT =>
                 Enzyme.Compiler.EnzymeContext(GPUCompiler.tls_world_age()) begin
