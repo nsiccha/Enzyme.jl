@@ -1,0 +1,188 @@
+{
+  "schema": 1,
+  "line": {
+    "repo": "nsiccha/Enzyme.jl",
+    "ref": "dogfood",
+    "sha": "83ff174ab9466aa7de5090dfec6cab9d2d3d4731"
+  },
+  "upstream": {
+    "repo": "EnzymeAD/Enzyme.jl",
+    "ref": "main",
+    "sha": "01265672787661ba298b7baf0643a154049ba4bd"
+  },
+  "prepared_at": "2026-11-18T11:40:48.711166Z",
+  "problems": [
+    {
+      "id": "nodecayed-parent-fold",
+      "title": "Julia 1.10 reverse compilation caches a reloaded Const array data pointer",
+      "summary": "Reverse compilation fails when a throwing call forces a Const array data pointer reload in a loop. Fold redundant reconstructed parent phis only where the replacement dominates each use.",
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3822",
+          "relation": "reports"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3886",
+          "relation": "related"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3927",
+          "relation": "related"
+        }
+      ],
+      "role": "fix",
+      "repairs": [
+        {
+          "id": "nodecayed_phi_fold",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        },
+        {
+          "id": "nodecayed_phi_dominance",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "draft": {
+        "title": "Julia 1.10 reverse compilation caches a reloaded Const array data pointer",
+        "body": "On Julia 1.10.12, reverse compilation can fail with `Illegal cached pointer` when a loop reads a `Const` array on both sides of an uninlined call that may throw.\n\n```julia\nusing Enzyme, SpecialFunctions\n@noinline g(x::Float64) = loggamma(x)\nfunction h(x::Vector{Float64}, y::Vector{Float64})\n    s = 0.0\n    for k in eachindex(x)\n        @inbounds if y[k] > 0\n            s += g(y[k])\n        end\n        @inbounds s += y[k] * x[k]\n    end\n    return s\nend\nx = [0.1, -0.2, 0.3, 0.4, -0.5]\ny = [0.0, 2.0, 1.0, 4.0, 3.0]\ndx = zero(x)\nautodiff(Reverse, h, Active, Duplicated(x, dx), Const(y))\n@assert dx \u2248 y\n```\n\nExpected: compilation succeeds and `dx == y`. The existing report reproduces the compilation error with Enzyme 0.13.216 / Enzyme_jll 0.0.303 and upstream `6932801964f3140e53ca0e88d2fe867b9d47ace6`; Julia 1.12.7 passes that example.\n\nAfter the call, LLVM reloads the array's data pointer. `nodecayed_phis!` reconstructs it through cyclic parent/offset phis that all represent the same object and offset. Folding those redundant phis lets reverse mode recompute the pointer instead of caching a GC-derived pointer.\n\nThe fold must check that the replacement value **dominates each replaced phi**. Ignoring undef/poison incoming values does not establish this: forced bounds checking exposes paths where the value is unavailable. The dominance follow-up belongs with the initial fix.\n\nAlready reported in https://github.com/EnzymeAD/Enzyme.jl/issues/3822; existing fix proposal: https://github.com/EnzymeAD/Enzyme.jl/pull/3886.\n",
+        "prepared_at": "2026-11-18T11:03:10.384467+00:00"
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "dd86d5435d55c97d34bcb3cfd470923859de6dd8",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "tests": [
+            "test/data_pointer_phi.jl",
+            "test/passes.jl"
+          ],
+          "result": "passed",
+          "detail": "Saved November 4 per-file exit records for this exact commit. Native-library provenance and the 1.12 patch version are not present in the retained group summary; no forced-bounds result is claimed."
+        },
+        {
+          "base": "dd86d5435d55c97d34bcb3cfd470923859de6dd8",
+          "julia": "1.12",
+          "bounds": "default",
+          "tests": [
+            "test/data_pointer_phi.jl",
+            "test/passes.jl"
+          ],
+          "result": "passed",
+          "detail": "Saved November 4 per-file exit records for this exact commit. Native-library provenance and the 1.12 patch version are not present in the retained group summary; no forced-bounds result is claimed."
+        }
+      ],
+      "fix": {
+        "branch": "rebase/nodecayed-phis",
+        "commits": [
+          {
+            "sha": "59a6d65c00740cb8db79bc1154bc9a672144c0b6",
+            "title": "Fold redundant rooted pointer phis with a dominance guard",
+            "original": [
+              "fdd80c1cd88c8a72f26b427d3bd65b7809fed80c",
+              "02b2678f343dac32e86e685d5834228260fe169a"
+            ]
+          }
+        ],
+        "why_together": "One combined commit folds redundant parent phis and checks that the replacement dominates each phi. The dominance correction is required under forced bounds checking. This published November 4 candidate is prepared on an older upstream base and excludes the later data-phi load-unfolding changes."
+      }
+    },
+    {
+      "id": "small-typetag-boxes",
+      "title": "GC abort when Enzyme boxes a small-tag primal or custom-rule tape",
+      "summary": "An incorrectly tagged Bool, Char or integer box can abort GC. Emit Julia small tags and reuse Bool singleton boxes in union-return and custom-rule tape paths.",
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/4039",
+          "relation": "reports"
+        },
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/2800",
+          "relation": "related"
+        }
+      ],
+      "role": "fix",
+      "repairs": [
+        {
+          "id": "small_typetag_boxes",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "draft": {
+        "title": "GC abort when Enzyme boxes a small-tag primal or custom-rule tape",
+        "body": "An Enzyme-generated boxed primal for a small-tag Julia type can abort the process during garbage collection. This example uses only Enzyme:\n\n```julia\nusing Enzyme\n@noinline f(x::Float64, flag::Bool) = flag ? missing : x > 0.0\nconst kept = Any[]\npush!(kept, autodiff(ForwardWithPrimal, Const(f), Const,\n                    Duplicated(2.0, 1.0), Const(false)))\nGC.gc(true)\nprintln(\"survived: \", kept[1])\n```\n\nExpected: `survived: (true,)`. The existing report records a GC corruption diagnostic and SIGABRT (exit 134) on x86_64 Linux, upstream `01265672787661ba298b7baf0643a154049ba4bd` (Enzyme 0.13.220), stock Enzyme_jll 0.0.308+0, Julia 1.10.12 and 1.12.7. A reverse-mode `Union{Nothing,Int}` primal has the same allocation-tag problem; ordinary Julia Bool and Enzyme Float64-union controls survive.\n\nThe affected boxing paths supply a DataType pointer where Julia expects its encoded small type tag. The fix uses the runtime's tag encoding and Julia's Bool singletons, including custom-rule tape boxing. Bool singleton handling is part of the fix because Julia can compare Bool objects by identity.\n\nAlready reported in https://github.com/EnzymeAD/Enzyme.jl/issues/4039.\n",
+        "prepared_at": "2026-11-18T11:03:10.385102+00:00"
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": [
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "\\\",VERSION,\\\"",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0; libEnzyme-15.so; artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/small_typetag_boxes.jl"
+          ],
+          "result": "passed",
+          "detail": "77/77 passed; exit 0. Julia build \\\",Base.GIT_VERSION_INFO.commit_short,\\n. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "\\\",VERSION,\\\"",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0; libEnzyme-15.so; artifact 7fe4abc39ad51f023d5dfc4dd628bce96feb5813",
+          "tests": [
+            "test/small_typetag_boxes.jl"
+          ],
+          "result": "passed",
+          "detail": "77/77 passed; exit 0. Julia build \\\",Base.GIT_VERSION_INFO.commit_short,\\n. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "\\\",VERSION,\\\"",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.308+0; libEnzyme-18.so; artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/small_typetag_boxes.jl"
+          ],
+          "result": "passed",
+          "detail": "77/77 passed; exit 0. Julia build \\\",Base.GIT_VERSION_INFO.commit_short,\\n. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+        },
+        {
+          "base": "01265672787661ba298b7baf0643a154049ba4bd",
+          "julia": "\\\",VERSION,\\\"",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.308+0; libEnzyme-18.so; artifact 0bfecde12c4c0562e2a3db799452e3c5bdd7711b",
+          "tests": [
+            "test/small_typetag_boxes.jl"
+          ],
+          "result": "passed",
+          "detail": "77/77 passed; exit 0. Julia build \\\",Base.GIT_VERSION_INFO.commit_short,\\n. Recorded November 18, 2026. The larger review batch is still running; this entry describes only this completed check."
+        }
+      ],
+      "fix": {
+        "branch": "rebase/small-typetag-boxes",
+        "commits": [
+          {
+            "sha": "71d76f0639d691d0222497a761a1e18789a053fb",
+            "title": "Use Julia runtime tag encodings for boxed Bool, Char and integer unions",
+            "original": [
+              "e1ce6518a3c94df5911220b479bc3e619c94dd31"
+            ]
+          }
+        ],
+        "why_together": "One commit fixes runtime tag encoding, Bool singleton reuse, union-return boxing and custom-rule tape boxing, with focused regressions. It needs no other review group. The fork-only registry assertion stays on dogfood and is omitted from this upstream candidate."
+      }
+    }
+  ]
+}
