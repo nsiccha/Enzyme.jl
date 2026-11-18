@@ -1966,6 +1966,43 @@ differentiates_callee(@nospecialize(func)) =
     func === runtime_generic_augfwd || func === runtime_generic_rev ||
     func === runtime_iterate_augfwd || func === runtime_iterate_rev
 
+# Julia boxes an inline immutable before a dynamic call. When the box is
+# filled exclusively from a Const argument, the callee must see that argument
+# as Const as well, including any abstract fields whose values contain floats.
+function boxed_constant_argument(gutils, @nospecialize(box::LLVM.Value), call::LLVM.CallInst, enzyme_ctx)
+    called_function_name(box) == "julia.gc_alloc_obj" || return false
+    known, T, _ = abs_typeof(box, enzyme_ctx)
+    known && isconcretetype(T) && !ismutabletype(T) || return false
+    bb = LLVM.parent(call)
+    LLVM.parent(box) == bb || return false
+    addresses = LLVM.Value[box]
+    copied = false
+    while !isempty(addresses)
+        address = pop!(addresses)
+        for use in LLVM.uses(address)
+            inst = LLVM.user(use)
+            if inst == call && address == box
+                continue
+            elseif inst isa Union{LLVM.BitCastInst, LLVM.AddrSpaceCastInst, LLVM.GetElementPtrInst}
+                operands(inst)[1] == address || return false
+                push!(addresses, inst)
+            elseif inst isa LLVM.StoreInst && operands(inst)[2] == address
+                LLVM.parent(inst) == bb && precedes(inst, call) || return false
+                value = operands(inst)[1]
+                while value isa LLVM.ExtractValueInst
+                    value = operands(value)[1]
+                end
+                value isa Union{LLVM.ConstantInt, LLVM.ConstantFP, LLVM.PointerNull} && continue
+                value isa LLVM.Argument && is_constant_value(gutils, value) || return false
+                copied = true
+            else
+                return false
+            end
+        end
+    end
+    return copied
+end
+
 function generic_setup(
     orig,
     func,
@@ -2022,7 +2059,7 @@ function generic_setup(
         push!(vals, val)
 
         inverted = nothing
-        active = !is_constant_value(gutils, op)
+        active = !is_constant_value(gutils, op) && !boxed_constant_argument(gutils, op, orig, enzyme_ctx)
         checked = (i + firstconst) in readonly
 
         if !active

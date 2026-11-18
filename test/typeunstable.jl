@@ -558,3 +558,39 @@ end
     @test dx ≈ 1 ./ x
     @test (@allocated sum_log_gradient!(dx, x)) == 0
 end
+
+struct SavedScoreInputs
+    data::Vector{Float64}
+    scale::Any
+    offset::Float64
+end
+
+struct SavedScoreCall
+    inputs::SavedScoreInputs
+    score::Any
+end
+
+@noinline saved_score(t::SavedScoreInputs, x) = (t.scale * x + t.data[1] * x + t.offset)::Float64
+(f::SavedScoreCall)(x) = f.score(f.inputs, x[1])::Float64
+
+function score_with_active_fields(x, score)
+    t = SavedScoreInputs(x, 2.0, x[1])
+    return score[](t, x[1])::Float64
+end
+
+@testset "Boxing captured fields at a dynamic call" begin
+    x = [0.4]
+    dx = zero(x)
+    inputs = SavedScoreInputs([3.0], 2.0, 1.0)
+    f = SavedScoreCall(inputs, saved_score)
+    _, value = autodiff(ReverseWithPrimal, Const(f), Active, Duplicated(x, dx))
+    @test value ≈ 3.0
+    @test dx ≈ [5.0]
+    @test inputs.data == [3.0]
+
+    # The same record has active fields when constructed from the input.
+    dx .= 0.0
+    _, value = autodiff(ReverseWithPrimal, Const(score_with_active_fields), Active, Duplicated(x, dx), Const(Ref{Any}(saved_score)))
+    @test value ≈ 1.36
+    @test dx ≈ [3.8]
+end
