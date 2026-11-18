@@ -15,6 +15,21 @@
   `Enzyme.has_dogfood_repair(:forward_memory_shadow_init)` reports the repair;
   `test/forward_memory_shadow.jl` repeats batched Forward through such a
   memory under automatic collection.
+- Allocate the reverse caches of a ragged loop nest together. In a combined
+  Reverse derivative (`autodiff(Reverse, ...)`, `gradient`, and
+  DifferentiationInterface's `gradient` with
+  `AutoEnzyme(; mode = Enzyme.Reverse)`), the packed caches of repair
+  `packed_ragged_cache` that share an element type and a loop nest now share
+  one offset table and one growing buffer of records, one slot per cached
+  value. Before, every cached value had a table and a buffer of its own, so a
+  gradient made a native `malloc` and `free` per cached value and per capacity
+  doubling of each. Now the nest makes one table and one growth per doubling,
+  however many values it caches. An event walk that caches 13 values made 39,
+  91 and 117 allocations per gradient at 2, 20 and 100 groups, and makes 6,
+  14 and 18 (Julia 1.10.12). Split mode (`autodiff_thunk`) keeps a table and
+  a buffer per cached value. Needs libEnzyme build `15345e27`;
+  `Enzyme.has_dogfood_repair(:packed_cache_groups)` reports the repair and
+  `test/packed_cache_groups.jl` checks it.
 - Differentiate a `ccall` whose library Julia does not resolve while compiling
   the method. Julia 1.12 leaves a module-qualified library
   (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
