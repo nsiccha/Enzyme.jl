@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Keep the type facts of a union return buffer independent of what compiled
+  earlier in the process. A function returning, for example,
+  `Union{Tuple{Nothing, T}, Tuple{T, T}}` with an inline floating-point struct
+  `T` returns through a buffer whose type Enzyme read back from the `Ptr` type
+  of that buffer. Julia can reuse an equivalent `Ptr` type cached earlier, whose
+  element type spells the union as the abstract `Tuple{Union{Nothing, T}, T}`,
+  and Enzyme then annotated the buffer's `Float64` fields as pointers. Plain
+  Reverse raised `IllegalTypeAnalysisException` only after other code had
+  compiled: DynamicPPL's `gp_pois_regr` catalogue model failed after
+  `diamonds` in one process and passed alone. The buffer is now annotated from
+  the inferred return type itself. Strict aliasing and static activity stay on.
+  `Enzyme.has_dogfood_repair(:union_return_types)` reports the repair;
+  `test/union_return_types.jl` caches the equivalent pointer type first and
+  checks Reverse gradients on both return branches.
 - Differentiate a `ccall` whose library Julia does not resolve while compiling
   the method. Julia 1.12 leaves a module-qualified library
   (`ccall((:f, Mod.lib), ...)`, `@ccall Mod.lib.f(...)`) to a run-time
