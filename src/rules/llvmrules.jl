@@ -2528,6 +2528,15 @@ end
         @revfunc(jl_nthfield_rev),
         @fwdfunc(jl_nthfield_fwd),
     )
+    @static if VERSION >= v"1.11-"
+        register_handler!(
+            ("jl_genericmemoryref", "ijl_genericmemoryref"),
+            @augfunc(jl_genericmemoryref_aug),
+            @revfunc(jl_genericmemoryref_rev),
+            # Both indexed reads call their primal on each forward shadow.
+            @fwdfunc(jl_nthfield_fwd),
+        )
+    end
     register_handler!(
         ("jl_array_sizehint", "ijl_array_sizehint"),
         @augfunc(jl_array_sizehint_augfwd),

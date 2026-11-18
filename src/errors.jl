@@ -1300,7 +1300,11 @@ function constant_argument_data(
     while !isa(ptr, LLVM.Argument)
         literal_constant_data(gutils, ptr, enzyme_ctx) && return true
         is_stack_slot(ptr) && return constant_slot_load(gutils, last_load, enzyme_ctx, seen)
-        if isa(ptr, LLVM.LoadInst)
+        if isa(ptr, LLVM.PHIInst) || isa(ptr, LLVM.SelectInst)
+            # A field can be read through a join of GC references. Its owner
+            # comes from constant data only when every incoming reference does.
+            return constant_argument_data(gutils, ptr, enzyme_ctx, seen)
+        elseif isa(ptr, LLVM.LoadInst)
             last_load = ptr
             ptr = ptr.operands[1]
         elseif isa(ptr, LLVM.GetElementPtrInst) ||

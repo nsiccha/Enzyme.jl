@@ -1,0 +1,3 @@
+summary = "Reverse preserves the field layout of inline records and distinct boxed objects in persistent collections"
+libenzyme_build = "53d288ebbf8c47ff2fc6403458c88c3eb60329b7"
+tests = ["test/integration/Gen/runtests.jl"]

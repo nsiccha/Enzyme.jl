@@ -1914,6 +1914,111 @@ end
     return nothing
 end
 
+# Boxed elements of abstract arrays can be active immutable records. A dynamic
+# callee accumulates into a Ref, while the array holds the record itself.
+# Zero only the register fields in a fresh accumulator; mutable fields must
+# share the array's existing shadow, including its accumulated derivatives.
+function boxed_register_zero(x::T)::T where {T}
+    activity = active_reg_nothrow(T)
+    activity == ActiveState && return make_zero(x)
+    activity == MixedState || return x
+    fields = Vector{Any}(undef, fieldcount(T))
+    count = 0
+    for i in eachindex(fields)
+        isdefined(x, i) || break
+        fields[i] = boxed_register_zero(getfield(x, i))
+        count = i
+    end
+    return ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), T, fields, count)::T
+end
+
+function boxed_memory_shadow(mem, index::Int, constant::Bool)
+    value = @inbounds mem[index + 1]
+    if guaranteed_nonactive(typeof(value))
+        return constant ? make_zero(value) : value
+    end
+    return Ref(constant ? make_zero(value) : boxed_register_zero(value))
+end
+
+function add_boxed_memory_shadow!(mem, index::Int, adjoint)
+    value = @inbounds mem[index + 1]
+    if !guaranteed_nonactive(typeof(value))
+        @inbounds mem[index + 1] = recursive_add(value, adjoint[], identity, guaranteed_nonactive)
+    end
+    return nothing
+end
+
+const BOXED_MEMORY_ADJOINT_LOCK = ReentrantLock()
+
+function boxed_memory_reverse(mem, index::Int, adjoint, constant::Bool, ::Val{atomic}) where {atomic}
+    constant && return nothing
+    if atomic
+        # An immutable record is replaced as a whole. Serialize simultaneous
+        # contributions to the same slot in a parallel reverse pass.
+        Base.@lock BOXED_MEMORY_ADJOINT_LOCK add_boxed_memory_shadow!(mem, index, adjoint)
+    else
+        add_boxed_memory_shadow!(mem, index, adjoint)
+    end
+    return nothing
+end
+
+function emit_boxed_memory_rule!(B, orig, gutils, tape)
+    mem, idx = orig.operands[1], orig.operands[2]
+    width = get_width(gutils)
+    constant = is_constant_value(gutils, mem)
+    reverse = tape !== nothing
+    shadow = constant ? new_from_original(gutils, mem) : invert_pointer(gutils, mem, B)
+    index = new_from_original(gutils, idx)
+    if reverse
+        shadow = lookup_value(gutils, shadow, B)
+        index = lookup_value(gutils, index, B)
+    end
+    index = (sizeof(Int) == 8 ? emit_box_int64! : emit_box_int32!)(B, index)
+    dynamic = !constant && get_runtime_activity(gutils)
+    primal = if dynamic
+        p = new_from_original(gutils, mem)
+        reverse ? lookup_value(gutils, p, B) : p
+    end
+    result = LLVM.UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, orig.value_type)))
+    for lane in 1:width
+        buf = width == 1 || constant ? shadow : extract_value!(B, shadow, lane - 1)
+        inactive = if dynamic
+            select!(B, icmp!(B, LLVM.API.LLVMIntEQ, buf, primal), unsafe_to_llvm(B, true), unsafe_to_llvm(B, false))
+        else
+            unsafe_to_llvm(B, constant)
+        end
+        if reverse
+            adjoint = width == 1 ? tape : extract_value!(B, tape, lane - 1)
+            args = LLVM.Value[unsafe_to_llvm(B, boxed_memory_reverse), buf, index, adjoint, inactive, unsafe_to_llvm(B, Val(get_atomic_add(gutils)))]
+        else
+            args = LLVM.Value[unsafe_to_llvm(B, boxed_memory_shadow), buf, index, inactive]
+        end
+        call = emit_apply_generic!(B, args)
+        debug_from_orig!(gutils, call, orig)
+        if !reverse
+            result = width == 1 ? call : insert_value!(B, result, call, lane - 1)
+        end
+    end
+    return result
+end
+
+@register_aug function jl_genericmemoryref_aug(B, orig, gutils, normalR, shadowR, tapeR)
+    if is_constant_value(gutils, orig) || unsafe_load(shadowR) == C_NULL
+        return true
+    end
+    res = emit_boxed_memory_rule!(B, orig, gutils, nothing)
+    unsafe_store!(shadowR, res.ref)
+    unsafe_store!(tapeR, res.ref)
+    return false
+end
+
+@register_rev function jl_genericmemoryref_rev(B, orig, gutils, tape)
+    if tape !== nothing && !is_constant_value(gutils, orig.operands[1])
+        emit_boxed_memory_rule!(B, orig, gutils, tape)
+    end
+    return nothing
+end
+
 @register_fwd function jl_getfield_fwd(B, orig, gutils, normalR, shadowR)
     common_jl_getfield_fwd(1, B, orig, gutils, normalR, shadowR)
 end

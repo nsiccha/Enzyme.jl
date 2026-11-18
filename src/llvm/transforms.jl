@@ -478,6 +478,104 @@ function dereferenceable_root_ptr(@nospecialize(v::LLVM.Value))::Bool
     return false
 end
 
+# A Julia by-reference immutable argument and its separate roots array contain
+# the references the caller supplied. LLVM can copy one of those fields into a
+# freshly boxed object as a machine integer. Keep it GC-tracked, and read it
+# before the allocation so reverse mode can obtain a separate zero shadow
+# without calling the collector during object initialization.
+function restore_boxed_reference_copies!(mod::LLVM.Module, enzyme_ctx::EnzymeContext)
+    layout = mod.datalayout
+    tracked = LLVM.PointerType(LLVM.StructType(LLVMType[]), Tracked)
+    init_blocks = Set{LLVM.BasicBlock}()
+    for name in GC_OBJECT_ALLOCATORS
+        haskey(mod.functions, name) || continue
+        allocator = mod.functions[name]
+        for call in allocator.users
+            call isa LLVM.CallInst && call.called_operand == allocator && push!(init_blocks, call.parent)
+        end
+    end
+    for bb in init_blocks
+        first_alloc = nothing
+        fresh = Set{LLVM.Value}()
+        for inst in collect(bb.instructions)
+            if called_function_name(inst) in GC_OBJECT_ALLOCATORS
+                first_alloc === nothing && (first_alloc = inst)
+                push!(fresh, inst)
+            elseif first_alloc !== nothing
+                if inst isa Union{LLVM.FenceInst, LLVM.AtomicCmpXchgInst, LLVM.AtomicRMWInst} ||
+                        (inst isa LLVM.LoadInst && (LLVM.isatomic(inst) || Bool(LLVM.API.LLVMGetVolatile(inst))))
+                    first_alloc = nothing
+                    empty!(fresh)
+                elseif inst isa LLVM.LoadInst
+                    restore_boxed_reference_copy!(inst, first_alloc, fresh, tracked, layout, enzyme_ctx)
+                elseif root_path_may_write(inst)
+                    dst = written_pointer(inst)
+                    if dst === nothing || !(first(get_base_and_offset(dst)) in fresh)
+                        first_alloc = nothing
+                        empty!(fresh)
+                    end
+                end
+            end
+        end
+    end
+    return nothing
+end
+
+function restore_boxed_reference_copy!(ld::LLVM.LoadInst, first_alloc::LLVM.CallInst, fresh, tracked, layout, enzyme_ctx)
+    ty = ld.value_type
+    integer_copy = ty == LLVM.IntType(8 * sizeof(Int))
+    (integer_copy || ty == tracked) || return
+    (LLVM.isatomic(ld) || Bool(LLVM.API.LLVMGetVolatile(ld)) || haskey(ld.metadata, "range")) && return
+    src = ld.operands[1]
+    base, off = get_base_and_offset(src)
+    base isa LLVM.Argument && dereferenceable_root_ptr(src) || return
+    f = base.parent
+    idx = findfirst(==(base), collect(f.parameters))::Int
+    if haskey(f.parameter_attributes[idx], "enzymejl_rooted_typ")
+        iszero(rem(off, sizeof(Int))) || return
+    else
+        ok, T, cc = abs_typeof(base, enzyme_ctx)
+        ok && cc == GPUCompiler.BITS_REF && isconcretetype(T) && !ismutabletype(T) || return
+        lt = convert(LLVMType, T)
+        inline_roots_type(lt) == 0 && off in tracked_pointer_offsets!(Int[], layout, lt) || return
+    end
+    stores = LLVM.StoreInst[]
+    for st in ld.users
+        st isa LLVM.StoreInst && st.operands[1] == ld || continue
+        dst, offset = get_base_and_offset(st.operands[2])
+        dst in fresh || continue
+        if integer_copy
+            ok, T, _ = abs_typeof(dst, enzyme_ctx)
+            ok && isconcretetype(T) && !ismutabletype(T) || continue
+            offset in tracked_pointer_offsets!(Int[], layout, convert(LLVMType, T)) || continue
+        end
+        push!(stores, st)
+    end
+    isempty(stores) && return
+    @dispose b = LLVM.IRBuilder() begin
+        position!(b, LLVM.before(first_alloc))
+        as = base.value_type.addrspace
+        bytes = pointercast!(b, base, LLVM.PointerType(LLVM.Int8Type(), as))
+        p = gep!(b, LLVM.Int8Type(), bytes, [LLVM.ConstantInt(off)])
+        ptr = pointercast!(b, p, LLVM.PointerType(tracked, as))
+        ref = load!(b, tracked, ptr)
+        ref.alignment = ld.alignment
+        copy_metadata!(ref, ld)
+        # A noalias scope may have been introduced after the allocation.
+        for key in ("alias.scope", "noalias")
+            haskey(ref.metadata, key) && delete!(ref.metadata, key)
+        end
+        for st in stores
+            position!(b, LLVM.before(st))
+            dst = st.operands[2]
+            st.operands[2] = pointercast!(b, dst, LLVM.PointerType(tracked, dst.value_type.addrspace))
+            st.operands[1] = ref
+        end
+    end
+    isempty(ld.uses) && LLVM.erase!(ld)
+    return nothing
+end
+
 """
     root_load_in(inst, ptr, bb, T_prjlvalue)
 
