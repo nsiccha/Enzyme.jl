@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-18T22:04:46Z",
+  "prepared_at": "2026-11-18T22:26:41Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -5015,8 +5015,8 @@
       "upstream_refs": [],
       "draft": {
         "title": "Reverse mode confuses field layouts across nodes of a persistent collection",
-        "body": "Gen 0.4.9 stores observations in a persistent tree. A static `Gen.Map` with four observations fits in one leaf. Forty observations exercise a second leaf. When reverse mode copies inline records or follows boxed nodes of different types, it must keep the integer counts and floating-point rates distinct.\n\nFor a normal prior on `a` and Poisson observations with log rates `a*t[i]`, the expected score derivative is `-a + sum(t .* (counts .- exp.(a .* t)))`. The linked fixture fixes all observations and checks both tree sizes. It separately checks that updating a normal-model trace preserves the original trace.\n\nOn fork commit `c9fc2948` with libEnzyme `c423e860`, all seven assertions passed on Julia 1.13.1 with default bounds checks. On Julia 1.10.12 the dynamic trace errors while allocating an array shadow, and the static Map errors in type analysis at a persistent-vector leaf. Both errors occur with either bounds setting.\n\n[Regression test](https://github.com/nsiccha/Enzyme.jl/blob/c9fc29483fe6cf1dd2b3de23f0d4b1df5a4d434d/test/integration/Gen/runtests.jl) · [Original fork change](https://github.com/nsiccha/Enzyme.jl/commit/0e64c92ce595d219f3e3eb7e279d88c1d4509f36)",
-        "prepared_at": "2026-11-18T22:04:46Z"
+        "body": "Gen 0.4.9 stores observations in a persistent tree. A static `Gen.Map` with four observations fits in one leaf. Forty observations exercise a second leaf. When reverse mode copies inline records or follows boxed nodes of different types, it must keep the integer counts and floating-point rates distinct.\n\nFor a normal prior on `a` and Poisson observations with log rates `a*t[i]`, the expected score derivative is `-a + sum(t .* (counts .- exp.(a .* t)))`. The linked fixture fixes all observations and checks both tree sizes. It separately checks that updating a normal-model trace preserves the original trace.\n\nOn fork commit `c9fc2948` with libEnzyme `c423e860`, all seven assertions passed on Julia 1.12.7 and 1.13.1 with both default and forced bounds checks. On Julia 1.10.12 the dynamic trace errors while allocating an array shadow, and the static Map errors in type analysis at a persistent-vector leaf. Both errors occur with either bounds setting.\n\n[Regression test](https://github.com/nsiccha/Enzyme.jl/blob/c9fc29483fe6cf1dd2b3de23f0d4b1df5a4d434d/test/integration/Gen/runtests.jl) · [Original fork change](https://github.com/nsiccha/Enzyme.jl/commit/0e64c92ce595d219f3e3eb7e279d88c1d4509f36)",
+        "prepared_at": "2026-11-18T22:26:41Z"
       },
       "fix": {
         "originals": [
