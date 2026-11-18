@@ -763,7 +763,7 @@ end
     short = sprint(show, report)
     @test occursin("DerivativeReport", short)
     full = sprint(show, MIME"text/plain"(), report)
-    @test occursin("derivative of typeof(sum_dispatched)", full)
+    @test occursin("derivative of $(typeof(sum_dispatched)) with ", full)
     @test occursin("compiled earlier in this session", full)
     @test occursin("enzyme_runtime_fallback", full)
     @test occursin("on paths that return", full)
