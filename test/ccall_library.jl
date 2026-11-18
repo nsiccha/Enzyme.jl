@@ -29,6 +29,13 @@ cos_nested_constant(x) = ccall((:cos, CcallLibraries.Inner.constant), Float64, (
 cos_variable(x) = ccall((:cos, ccall_library_variable), Float64, (Float64,), x)
 cos_qualified_variable(x) = ccall((:cos, CcallLibraries.variable), Float64, (Float64,), x)
 cos_at_ccall(x) = @ccall CcallLibraries.constant.cos(x::Float64)::Float64
+# No library: Julia looks the symbol up in the process. While compiling, Julia 1.10 and 1.12
+# attribute a C library function that libjulia-internal links (libc's `memchr` and `memcmp`,
+# and `cos`) to libjulia-internal; Julia 1.13 names no library for it.
+cos_without_library(x) = ccall(:cos, Float64, (Float64,), x)
+# `findfirst` of an ASCII character in a `String` calls `memchr`, `cmp` of two calls `memcmp`.
+first_a(x, s) = x * something(findfirst('a', s), 0)
+compared(x, s) = x * cmp(s, "m")
 
 # A call that carries no derivative: its argument is a constant.
 scaled_by_constant(x) = x * ccall((:cos, CcallLibraries.constant), Float64, (Float64,), 2.0)
@@ -42,7 +49,7 @@ end
 
 const scalar_libraries = Any[
     cos_constant, cos_qualified_constant, cos_nested_constant, cos_variable, cos_qualified_variable,
-    cos_at_ccall,
+    cos_at_ccall, cos_without_library,
 ]
 const lapack_spellings = Pair{Symbol, Any}[
     :qualified_constant => :(BLAS.libblastrampoline),
@@ -119,6 +126,17 @@ reverse_derivative(f, x) = autodiff(Reverse, f, Active, Active(x))[1][1]
     @testset "$f" for f in scaled
         @test autodiff(Reverse, f, Active, Active(0.7))[1][1] ≈ cos(2.0)
         @test autodiff(Forward, f, Duplicated(0.7, 1.0))[1] ≈ cos(2.0)
+    end
+
+    # On Julia 1.13 Reverse mode through `memchr` raised "No create nofree of empty function
+    # (ejlptr$memchr$0)"; Forward mode, `memcmp` and `cos` got their derivatives.
+    @testset "C library functions without a library: $s" for (s, at, order) in
+        (("banana", 2, -1), ("xyz", 0, 1), ("λa", 3, 1), ("m", 0, 0))
+        @test autodiff(Reverse, first_a, Active, Active(3.0), Const(s))[1][1] == at
+        @test autodiff(Forward, first_a, Duplicated(3.0, 1.0), Const(s))[1] == at
+        @test autodiff(set_runtime_activity(Reverse), first_a, Active, Active(3.0), Const(s))[1][1] == at
+        @test autodiff(Reverse, compared, Active, Active(3.0), Const(s))[1][1] == order
+        @test autodiff(Forward, compared, Duplicated(3.0, 1.0), Const(s))[1] == order
     end
 
     without_rule = Any[remquo_qualified_constant]
