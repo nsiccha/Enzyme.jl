@@ -707,12 +707,62 @@ function cache_memoryref_pointer_integers(value::LLVM.Value)
     return nothing
 end
 
+# LLVM can reassociate a MemoryRef byte offset (data - base) + index into
+# (index - base) + data, or split that sum across two byte GEPs. Group the
+# two addresses so Enzyme can recognize their difference as a displacement.
+function regroup_memoryref_offset!(gep::LLVM.GetElementPtrInst, intptr::LLVM.IntegerType)
+    length(gep.operands) == 2 && gep.source_element_type == LLVM.Int8Type() || return
+    ptr, offset = gep.operands
+    offset.value_type == intptr || return
+    split = ptr isa LLVM.GetElementPtrInst
+    loaded = split ? ptr.operands[1] : ptr
+    called_function_name(loaded) == "julia.gc_loaded" || return
+    if split
+        length(ptr.operands) == 2 && ptr.source_element_type == LLVM.Int8Type() || return
+        delta = ptr.operands[2]
+        delta.value_type == intptr || return
+        data = offset
+        original = gep
+    else
+        original = nodecayed_strip(offset)
+        original isa LLVM.AddInst || return
+        delta, data = original.operands
+    end
+    if data isa LLVM.SubInst
+        delta, data = data, delta
+    end
+    delta isa LLVM.SubInst && data isa LLVM.PtrToIntInst || return
+    index, base = delta.operands
+    base isa LLVM.PtrToIntInst && base.operands[1] == loaded.operands[2] || return
+    index isa LLVM.PtrToIntInst && return
+
+    @dispose b = IRBuilder() begin
+        position!(b, LLVM.before(original))
+        # Use wrapping arithmetic because the original flags apply to different operands.
+        distance = sub!(b, data, base)
+        replacement = add!(b, distance, index)
+        if split
+            replacement = gep!(b, LLVM.Int8Type(), loaded, [replacement])
+        end
+        copy_metadata!(replacement, original)
+        replace_uses!(original, replacement)
+    end
+    LLVM.erase!(original)
+    split && isempty(ptr.uses) && LLVM.erase!(ptr)
+    isempty(delta.uses) && LLVM.erase!(delta)
+    return
+end
+
 function force_recompute!(mod::LLVM.Module)
+    intptr = LLVM.intptr(mod.datalayout, 13)
     for f in mod.functions, bb in f.blocks
         iter = LLVM.API.LLVMGetFirstInstruction(bb)
         while iter != C_NULL
             inst = LLVM.Instruction(iter)
             iter = LLVM.API.LLVMGetNextInstruction(iter)
+            if inst isa LLVM.GetElementPtrInst && inst.value_type isa LLVM.PointerType && inst.value_type.addrspace == 13
+                regroup_memoryref_offset!(inst, intptr)
+            end
             if isa(inst, LLVM.CallInst)
                 cf = inst.called_operand
                 if isa(cf, LLVM.Function) && cf.name == "julia.gc_loaded"
