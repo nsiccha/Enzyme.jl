@@ -3556,6 +3556,7 @@ include("compiler/fold_type_tests.jl")
 include("compiler/conditioned_selects.jl")
 include("compiler/constant_fields.jl")
 include("compiler/empty_array_types.jl")
+include("compiler/record_merges.jl")
 include("compiler/retained_shadows.jl")
 include("compiler/slot_field_types.jl")
 include("compiler/memory_lengths.jl")
@@ -3583,6 +3584,9 @@ function enzyme!(
     simplify_conditioned_selects!(mod)
     narrow_tuple_fields!(mod, enzyme_ctx)
     relax_empty_array_types!(mod, enzyme_ctx)
+    if mode in (API.DEM_ReverseModeCombined, API.DEM_ReverseModeGradient, API.DEM_ReverseModePrimal)
+        split_record_merges!(mod)
+    end
     if DumpPreEnzyme[]
         API.EnzymeDumpModuleRef(mod.ref)
     end

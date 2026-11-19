@@ -1,0 +1,2 @@
+summary = "Reverse routes pointer shadows and floating-point adjoints separately when a branch carries an inline record"
+tests = ["test/record_merges.jl"]

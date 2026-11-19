@@ -11,6 +11,8 @@
 - Accumulate gradients from ordinary indexing of boxed arrays and memory
   back into their elements on Julia 1.11 and later. Repeated reads of an
   immutable record now add to its existing shadow, including in batched Reverse.
+- Differentiate conditionally updated records containing both array references
+  and floating-point fields in ordinary Reverse, including across loop iterations.
 - Preserve concrete inline field types when copying a persistent vector of
   mixed integer and floating-point records. The dogfood libEnzyme build also
   keeps the types of distinct boxed tree nodes separate across dispatch,
