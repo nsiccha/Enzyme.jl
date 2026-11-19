@@ -6,9 +6,8 @@
 #   <O>/<sha>/llvm20/  libEnzyme-20.so + libEnzymeBCLoad-20.so against LLVM_full_jll 20.1.8+2 (Julia 1.13;
 #                      the build Julia 1.13.1's own libLLVM_jll 20.1.8+2 comes from)
 # and run the libEnzyme lit tests on an LLVM 16 opt plugin (upstream's lit CI configuration):
-#   <O>/<sha>/lit16-summary.txt           the gate a repair is judged by: test/Enzyme. Expected:
-#                                         0 failed. A reader of this file takes its "Passed" and
-#                                         "Failed" counts.
+#   <O>/<sha>/lit16-summary.txt           the combined gate for test/Enzyme, test/TypeAnalysis and
+#                                         test/ActivityAnalysis. A repair needs 0 failed.
 #   <O>/<sha>/lit16-broad-summary.txt     the whole test tree, informational: about 303 tests fail on
 #                                         a host without the MLIR, clang and Fortran tools.
 #   <O>/<sha>/lit16-broad-failed.txt      the broad run's failed and unresolved tests, sorted
@@ -66,7 +65,7 @@ for w in $WHAT; do
     lib18) LL=$LLVM18; FLAGS="-DENZYME_EXTERNAL_SHARED_LIB=ON"; T="Enzyme-18 EnzymeBCLoad-18"; V=18; H=;;
     lib20) LL=$LLVM20; FLAGS="-DENZYME_EXTERNAL_SHARED_LIB=ON"; T="Enzyme-20 EnzymeBCLoad-20"; V=20; H=;;
     # H: test helpers. test/Enzyme loads the call handler plugin (%loadTestCallHandler);
-    # test/ActivityAnalysis, which only the broad lit16 run reaches, runs the re-evaluation program.
+    # test/ActivityAnalysis runs the re-evaluation program.
     lit16) LL=$LLVM16; FLAGS="-DENZYME_CLANG=OFF -DENZYME_EXTERNAL_SHARED_LIB=OFF -DLLVM_EXTERNAL_LIT=$LLVM16/tools/lit"; T="LLVMEnzyme-16"; V=16; H="EnzymeTestCallHandler-16 EnzymeActivityReEvaluationTest";;
     lit20) LL=$LLVM20; FLAGS="-DENZYME_CLANG=OFF -DENZYME_EXTERNAL_SHARED_LIB=OFF -DLLVM_EXTERNAL_LIT=$LLVM20/tools/lit"; T="LLVMEnzyme-20"; V=20; H="EnzymeTestCallHandler-20";;
     *) echo "unknown target $w"; fail=1; continue;;
@@ -85,13 +84,12 @@ for w in $WHAT; do
   LIT="python3 $LL/tools/lit/lit.py -s -j $J --no-progress-bar"
   case $w in
     lit16)
-      # The gate: test/Enzyme. Its counts are what lit16-summary.txt reports.
-      timeout 3600 $LIT $B/test/Enzyme > $B.lit.log 2>&1; rc=$?
-      { echo "lit16 gate: test/Enzyme on the LLVM 16 plugin, commit $SHA, lit exit $rc"; lit_report $B.lit.log; } | tee $OUT/lit16-summary.txt
+      gate=(test/Enzyme test/TypeAnalysis test/ActivityAnalysis)
+      (cd "$B" && timeout 3600 $LIT "${gate[@]}") > $B.lit.log 2>&1; rc=$?
+      { echo "lit16 gate: ${gate[*]} on the LLVM 16 plugin, commit $SHA, lit exit $rc"; lit_report $B.lit.log; } | tee $OUT/lit16-summary.txt
       [ $rc -eq 0 ] || { echo "lit16 gate FAILED (lit exit $rc), log $B.lit.log"; fail=1; }
-      # The whole test tree, informational: besides test/Enzyme it holds the TypeAnalysis,
-      # ActivityAnalysis and BCLoader tests, and the MLIR, clang Integration and Fortran tests
-      # that fail on a host without those tools. It does not change the exit status.
+      # The whole tree also exercises BCLoader, MLIR, clang Integration and Fortran.
+      # Missing tools can cause failures here; the broad run is informational.
       timeout 3600 $LIT $B/test > $B.lit-broad.log 2>&1; rc=$?
       { echo "lit16 broad suite: the whole test tree, informational, commit $SHA, lit exit $rc"; lit_counts $B.lit-broad.log; } | tee $OUT/lit16-broad-summary.txt
       lit_failed $B.lit-broad.log > $OUT/lit16-broad-failed.txt
