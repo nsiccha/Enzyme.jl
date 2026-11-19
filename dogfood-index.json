@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "c9fc29483fe6cf1dd2b3de23f0d4b1df5a4d434d"
+    "sha": "a64ab862e365b24666a0e8ba10792efadd33d263"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-19T00:22:39Z",
+  "prepared_at": "2026-11-19T05:39:02Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -1443,8 +1443,8 @@
       "validation": [],
       "draft": {
         "title": "Constant folding can select the wrong element of a global",
-        "body": "When a constant address does not identify an element of the global’s declared type, Enzyme’s constant folder can stop compilation or select an unrelated element. It should leave that address for ordinary evaluation and continue folding valid typed paths.\n\nOriginal fork commits in historical order: [f35a4991](https://github.com/nsiccha/Enzyme.jl/commit/f35a4991cb7532522bc3bf1455dfa6d626e28589), [05337e5d](https://github.com/nsiccha/Enzyme.jl/commit/05337e5dc9b2f6ecddf6c71824024a87ed7666fa).\n\nRegression coverage on the fork: [test/constant_global_gep.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/constant_global_gep.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "body": "When a constant address does not identify an element of the global’s declared type, Enzyme’s constant folder can stop compilation or select an unrelated element. It should leave that address for ordinary evaluation and continue folding valid typed paths.\n\nOriginal fork commits in historical order: [f35a4991](https://github.com/nsiccha/Enzyme.jl/commit/f35a4991cb7532522bc3bf1455dfa6d626e28589), [05337e5d](https://github.com/nsiccha/Enzyme.jl/commit/05337e5dc9b2f6ecddf6c71824024a87ed7666fa).\n\nRegression coverage on the fork: [test/constant_global_gep.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/constant_global_gep.jl).\n\nThe LLVM.jl 10 port uses vector element extraction when folding a constant global load. Its regression file passed 26 assertions on Julia 1.10.12 and 33 each on Julia 1.12.7 and 1.13.1. These runs used the integrated fork at `962fc64c` with default bounds. [LLVM.jl 10 change](https://github.com/nsiccha/Enzyme.jl/commit/3f490c2b3de6841dce37c54b9fe34924044b9cd9)",
+        "prepared_at": "2026-11-19T05:39:02Z"
       }
     },
     {
@@ -2330,8 +2330,8 @@
       "validation": [],
       "draft": {
         "title": "A stack-slot reload can lose its type inside a custom-rule Hessian-vector product",
-        "body": "On Julia 1.12, a reload may lose its explicit type tag after native rewriting. A Hessian-vector product through a rule containing try/catch or try/finally can then raise an activity error. The slot’s known writes should still determine the type.\n\nOriginal fork commit: [d4c94819](https://github.com/nsiccha/Enzyme.jl/commit/d4c94819d1213fa052afabd5a19ae1169fb46e7d).\n\nRegression coverage on the fork: [test/rule_handler_slot_reloads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rule_handler_slot_reloads.jl), [test/const_slot_reloads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_slot_reloads.jl), [test/const_element_store.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_element_store.jl).",
-        "prepared_at": "2026-11-18T16:11:32Z"
+        "body": "On Julia 1.12, a reload may lose its explicit type tag after native rewriting. A Hessian-vector product through a rule containing try/catch or try/finally can then raise an activity error. The slot’s known writes should still determine the type.\n\nOriginal fork commit: [d4c94819](https://github.com/nsiccha/Enzyme.jl/commit/d4c94819d1213fa052afabd5a19ae1169fb46e7d).\n\nRegression coverage on the fork: [test/rule_handler_slot_reloads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/rule_handler_slot_reloads.jl), [test/const_slot_reloads.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_slot_reloads.jl), [test/const_element_store.jl](https://github.com/nsiccha/Enzyme.jl/blob/38e0256cd28bc52013dab9174c080d71c0429631/test/const_element_store.jl).\n\nThe LLVM.jl 10 port recognizes the noncapturing argument attribute during stack-slot analysis. All 27 reload and custom-rule Hessian-vector assertions passed on Julia 1.10.12, 1.12.7 and 1.13.1. These runs used the integrated fork at `962fc64c` with default bounds. [LLVM.jl 10 change](https://github.com/nsiccha/Enzyme.jl/commit/701f2a807169d8f4e0dd0330e09bc015e4011a62)",
+        "prepared_at": "2026-11-19T05:39:02Z"
       }
     },
     {
@@ -5256,8 +5256,8 @@
       "upstream_refs": [],
       "draft": {
         "title": "Reverse mode confuses field layouts across nodes of a persistent collection",
-        "body": "Gen 0.4.9 stores observations in a persistent tree. A static `Gen.Map` with four observations fits in one leaf. Forty observations exercise a second leaf. When reverse mode copies inline records or follows boxed nodes of different types, it must keep the integer counts and floating-point rates distinct.\n\nFor a normal prior on `a` and Poisson observations with log rates `a*t[i]`, the expected score derivative is `-a + sum(t .* (counts .- exp.(a .* t)))`. The linked fixture fixes all observations and checks both tree sizes. It separately checks that updating a normal-model trace preserves the original trace.\n\nOn fork commit `c9fc2948` with libEnzyme `c423e860`, all seven assertions passed on Julia 1.12.7 and 1.13.1 with both default and forced bounds checks. On Julia 1.10.12 the dynamic trace errors while allocating an array shadow, and the static Map errors in type analysis at a persistent-vector leaf. Both errors occur with either bounds setting.\n\n[Regression test](https://github.com/nsiccha/Enzyme.jl/blob/c9fc29483fe6cf1dd2b3de23f0d4b1df5a4d434d/test/integration/Gen/runtests.jl) · [Original fork change](https://github.com/nsiccha/Enzyme.jl/commit/0e64c92ce595d219f3e3eb7e279d88c1d4509f36)",
-        "prepared_at": "2026-11-18T22:26:41Z"
+        "body": "Gen 0.4.9 stores observations in a persistent tree. A static `Gen.Map` with four observations fits in one leaf. Forty observations exercise a second leaf. When reverse mode copies inline records or follows boxed nodes of different types, it must keep the integer counts and floating-point rates distinct.\n\nFor a normal prior on `a` and Poisson observations with log rates `a*t[i]`, the expected score derivative is `-a + sum(t .* (counts .- exp.(a .* t)))`. The linked fixture fixes all observations and checks both tree sizes. It separately checks that updating a normal-model trace preserves the original trace.\n\nWith Enzyme.jl `962fc64c`, LLVM.jl 10.4.3 and libEnzyme `c423e860`, all seven Gen 0.4.9 assertions passed on Julia 1.12.7 and 1.13.1 under default and forced bounds. On Julia 1.10.12, the dynamic update raised a runtime activity error and static Map raised a type analysis error. The same exceptions arose at the same locations on the LLVM.jl 9 control after correcting its array-length calculation.\n\n[Regression test](https://github.com/nsiccha/Enzyme.jl/blob/962fc64cd49008a6665ee95204395d41f63ef3dc/test/integration/Gen/runtests.jl) · [Original fork change](https://github.com/nsiccha/Enzyme.jl/commit/0e64c92ce595d219f3e3eb7e279d88c1d4509f36)",
+        "prepared_at": "2026-11-19T05:39:02Z"
       },
       "fix": {
         "originals": [
