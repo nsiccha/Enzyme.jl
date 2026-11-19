@@ -5,6 +5,9 @@
 - Preserve the activity of constant data copied into a fresh trace or passed
   through dynamic dispatch. This fixes plain Reverse through Gen's dynamic
   `update` and through static updates reached via a type-unstable caller.
+- Remove native tape buffers that the optimized reverse sweep never reads.
+  A guarded reduction on Julia 1.13 could allocate two such buffers, each
+  as long as the input, when it took its fallback path.
 - Accumulate gradients from ordinary indexing of boxed arrays and memory
   back into their elements on Julia 1.11 and later. Repeated reads of an
   immutable record now add to its existing shadow, including in batched Reverse.

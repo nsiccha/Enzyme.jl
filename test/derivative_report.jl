@@ -574,6 +574,55 @@ end
     @test isempty(returning(d, :gc_allocation))
 end
 
+@testset "post-AD optimization drops only the unread native tape" begin
+    # Enzyme emits bare malloc/free declarations. After optimization, the
+    # reverse sweep can use a scalar directly and leave a tape with only stores.
+    tm = Compiler.JIT.get_tm()
+    ptr = pointer_type("i8")
+    size_ty = "i$(Sys.WORD_SIZE)"
+    ir = """
+    target triple = "$(LLVM.triple(tm))"
+    declare $ptr @malloc($size_ty)
+    declare void @free($ptr)
+    declare void @read_tape($ptr)
+
+    define void @sweeps($size_ty %n, i8 %value) {
+    entry:
+      %dead = call noalias nonnull $ptr @malloc($size_ty %n)
+      %live = call noalias nonnull $ptr @malloc($size_ty %n)
+      %empty = icmp eq $size_ty %n, 0
+      br i1 %empty, label %reverse, label %loop
+    loop:
+      %i = phi $size_ty [ 0, %entry ], [ %next, %loop ]
+      %a = getelementptr i8, $ptr %dead, $size_ty %i
+      %b = getelementptr i8, $ptr %live, $size_ty %i
+      store i8 %value, $ptr %a
+      store i8 %value, $ptr %b
+      %next = add $size_ty %i, 1
+      %done = icmp eq $size_ty %next, %n
+      br i1 %done, label %reverse, label %loop
+    reverse:
+      call void @read_tape($ptr %live)
+      call void @free($ptr %live)
+      call void @free($ptr %dead)
+      ret void
+    }
+    """
+    LLVM.Context() do _
+        mod = parse(LLVM.Module, ir)
+        try
+            Compiler.post_optimize!(mod, tm, false; callconv = false)
+            @test LLVM.verify(mod) === nothing
+            calls = [inst.called_operand for bb in mod.functions["sweeps"].blocks for inst in bb.instructions if inst isa LLVM.CallInst]
+            @test count(==(mod.functions["malloc"]), calls) == 1
+            @test count(==(mod.functions["free"]), calls) == 1
+            @test mod.functions["read_tape"] in calls
+        finally
+            LLVM.dispose(mod)
+        end
+    end
+end
+
 checked_square(x, i) = x[i] * x[i]
 
 @testset "a call that is only reached on the way to an error" begin
