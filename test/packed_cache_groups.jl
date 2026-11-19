@@ -293,3 +293,51 @@ if GROUPED
         @test grouped <= ungrouped - 4
     end
 end
+
+# Each middle and inner trip count is read inside its enclosing loop. The
+# loop-carried state makes the order of saved branch decisions observable.
+function nested_ragged_walk(x, lengths, ::Val{Tag}) where {Tag}
+    state = x[1]
+    total = zero(state)
+    @inbounds for rows in lengths
+        for n in rows
+            for k in 1:n
+                t = sin(state + x[2] * k)
+                state = ifelse(t > x[3], t * x[1], t + x[3])
+                total += state * t
+            end
+        end
+    end
+    return total
+end
+
+function nested_ragged_gradient(x, lengths, tag, split)
+    dx = zero(x)
+    args = (Duplicated(copy(x), dx), Const(lengths), Const(tag))
+    if split
+        fwd, rev = autodiff_thunk(ReverseSplitWithPrimal, Const{typeof(nested_ragged_walk)}, Active, map(typeof, args)...)
+        tape, value, _ = fwd(Const(nested_ragged_walk), args...)
+        rev(Const(nested_ragged_walk), args..., one(eltype(x)), tape)
+    else
+        _, value = autodiff(ReverseWithPrimal, nested_ragged_walk, Active, args...)
+    end
+    return value, dx
+end
+
+@testset "Reverse caches across three ragged chunks" begin
+    x = [0.41, -0.23, 0.12]
+    for lengths in (Vector{Int}[], [Int[], [0]], [[4], Int[], [0, 17, 0], [65, 2], [1]])
+        grouped = nested_ragged_gradient(x, lengths, Val(:grouped), false)
+        @test grouped == nested_ragged_gradient(x, lengths, Val(:split), true)
+        if GROUPED
+            ungrouped = with_ungrouped(() -> nested_ragged_gradient(x, lengths, Val(:ungrouped), false))
+            @test grouped == ungrouped
+        end
+        @test grouped[1] == nested_ragged_walk(x, lengths, Val(:primal))
+        for i in eachindex(x)
+            step = [j == i ? 1.0e-6 : 0.0 for j in eachindex(x)]
+            fd = (nested_ragged_walk(x + step, lengths, Val(:primal)) - nested_ragged_walk(x - step, lengths, Val(:primal))) / 2.0e-6
+            @test grouped[2][i] ≈ fd atol = 1.0e-7 rtol = 1.0e-6
+        end
+    end
+end
