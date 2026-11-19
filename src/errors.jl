@@ -1381,11 +1381,23 @@ shadow_if_taken(taken::Bool, f, prim, rest...) = taken ? f(prim, rest...) : prim
 # same shape, cast to `ty`.
 function emit_zero_shadow!(
         B::LLVM.IRBuilder,
+        callee::Union{LLVM.Function, Nothing},
         args::Vector{LLVM.Value},
         @nospecialize(ty::LLVM.LLVMType),
         created::Vector{LLVM.Instruction},
     )::LLVM.Value
-    res = emit_apply_generic!(B, args)
+    res = if callee === nothing
+        emit_apply_generic!(B, args)
+    else
+        call = LLVM.call!(B, callee.function_type, callee, args)
+        call.callconv = callee.callconv
+        copy_abi_attrs!(call, callee)
+        if call.debug_location === nothing
+            sp = B.insert_block.parent.subprogram
+            sp === nothing || (call.debug_location = DILocation(0, 0, sp))
+        end
+        call
+    end
     push!(created, res)
     if res.value_type != ty
         res = bitcast!(B, res, ty)
@@ -1402,26 +1414,51 @@ end
 # only under that condition (`shadow_if_taken`).
 function emit_zero_shadows!(
         B::LLVM.IRBuilder,
-        args::Vector{LLVM.Value},
+        mode::API.CDerivativeMode,
+        @nospecialize(TT),
+        @nospecialize(prim::LLVM.Value),
+        err::Union{Nothing, EnzymeRuntimeActivityError},
         @nospecialize(ty::LLVM.LLVMType),
         width::Integer,
         created::Vector{LLVM.Instruction},
         @nospecialize(taken::Union{Nothing, LLVM.Value}) = nothing,
     )::Union{Nothing, LLVM.Value}
     start = length(created) + 1
-    if taken !== nothing
-        flag = select!(B, taken, unsafe_to_llvm(B, true), unsafe_to_llvm(B, false))
-        if flag isa LLVM.Instruction
-            push!(created, flag)
+    f = err === nothing ? make_zero : empty_array_shadow
+    callee = nothing
+    if is_array_type(TT) && isconcretetype(TT)
+        # Arrays are passed and returned as tracked objects. Keep the error boxed:
+        # its concrete struct layout varies with the diagnostic's contents.
+        tt = err === nothing ? Tuple{Bool, typeof(f), TT} :
+            Tuple{Bool, typeof(f), TT, EnzymeRuntimeActivityError}
+        mod = B.insert_block.parent.parent
+        callee = nested_codegen!(mode, mod, shadow_if_taken, tt)
+        flag = taken === nothing ? LLVM.ConstantInt(LLVM.Int8Type(), 1) :
+            zext!(B, taken, LLVM.Int8Type())
+        flag isa LLVM.Instruction && push!(created, flag)
+        # On LLVM with typed pointers the primal may be a pointer to the
+        # array header, while Julia passes the same object as a boxed value.
+        paramty = callee.parameters[2].value_type
+        if prim.value_type != paramty
+            prim = bitcast!(B, prim, paramty)
+            prim isa LLVM.Instruction && push!(created, prim)
         end
-        args = LLVM.Value[unsafe_to_llvm(B, shadow_if_taken), flag, args...]
+        args = LLVM.Value[flag, prim]
+    else
+        args = LLVM.Value[unsafe_to_llvm(B, f), prim]
+        if taken !== nothing
+            flag = select!(B, taken, unsafe_to_llvm(B, true), unsafe_to_llvm(B, false))
+            flag isa LLVM.Instruction && push!(created, flag)
+            args = LLVM.Value[unsafe_to_llvm(B, shadow_if_taken), flag, args...]
+        end
     end
+    err === nothing || push!(args, unsafe_to_llvm(B, err))
     sres = if width == 1
-        emit_zero_shadow!(B, args, ty, created)
+        emit_zero_shadow!(B, callee, args, ty, created)
     else
         agg = UndefValue(LLVM.LLVMType(API.EnzymeGetShadowType(width, ty)))
         for idx in 1:width
-            res = emit_zero_shadow!(B, args, ty, created)
+            res = emit_zero_shadow!(B, callee, args, ty, created)
             agg = insert_value!(B, agg, res, idx - 1)
             if agg isa LLVM.Instruction
                 push!(created, agg)
@@ -2332,8 +2369,8 @@ function julia_error(
                 alloc = fresh_array_allocation(cur, TT, enzyme_ctx)
                 if alloc !== nothing
                     nalloc = new_from_original(gutils, alloc)
-                    shadowargs = if isbitstype(eltype(TT))
-                        LLVM.Value[unsafe_to_llvm(prevbb, make_zero), nalloc]
+                    rterr = if isbitstype(eltype(TT))
+                        nothing
                     else
                         rttext = mixed_activity_message(
                             msg,
@@ -2344,19 +2381,14 @@ function julia_error(
                             bt,
                         )
                         rtmi, rtworld = mixed_activity_method(val)
-                        rterr = if rtmi === nothing
+                        if rtmi === nothing
                             EnzymeRuntimeActivityError(rttext, nothing, nothing)
                         else
                             EnzymeRuntimeActivityError(rttext, rtmi, rtworld)
                         end
-                        LLVM.Value[
-                            unsafe_to_llvm(prevbb, empty_array_shadow),
-                            nalloc,
-                            unsafe_to_llvm(prevbb, rterr),
-                        ]
                     end
                     shadowres = emit_zero_shadows!(
-                        prevbb, shadowargs, cur.value_type, width, created,
+                        prevbb, mode, TT, nalloc, rterr, cur.value_type, width, created,
                         zero_shadow_condition(prevbb, b, gutils, val),
                     )
                     if shadowres !== nothing
@@ -2384,9 +2416,8 @@ function julia_error(
                     seen[cur] = shadowres
                     return shadowres
                 end
-                shadowargs = LLVM.Value[unsafe_to_llvm(prevbb, make_zero), ncur]
                 shadowres = emit_zero_shadows!(
-                    prevbb, shadowargs, cur.value_type, width, created,
+                    prevbb, mode, TT, ncur, nothing, cur.value_type, width, created,
                     zero_shadow_condition(prevbb, b, gutils, val),
                 )
                 if shadowres !== nothing

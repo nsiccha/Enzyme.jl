@@ -1,0 +1,2 @@
+summary = "Mixed-activity branches with a known concrete array type call the zero-shadow helper directly"
+tests = ["test/derivative_report.jl", "test/constant_array_branch.jl"]
