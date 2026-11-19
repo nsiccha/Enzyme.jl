@@ -275,6 +275,10 @@ const aggressiveSimplifyCFGOptions = (
 )
 
 function addOptimizationPasses!(mpm::LLVM.PassManager)
+    # Enzyme can introduce bare malloc/free declarations for reverse-mode tapes.
+    # Infer their target-library attributes so InstCombine can remove a tape
+    # whose reads have all been optimized away.
+    add!(mpm, InferFunctionAttrsPass())
     add!(mpm, FunctionPassManager()) do fpm
         add!(fpm, ReinsertGCMarkerPass())
     end
