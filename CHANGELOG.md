@@ -180,12 +180,16 @@
   ijl_lazy_load_and_lookup". A library read from a module global is now
   resolved when the derivative is compiled. Behind any other expression the
   call is named for its symbol, so a derivative rule for a math function
-  applies; a BLAS or LAPACK routine there, and a native function without a
-  rule, raise `EnzymeNoDerivativeError`.
+  applies. A native function without a rule raises `EnzymeNoDerivativeError`.
   `Enzyme.has_dogfood_repair(:ccall_runtime_library)` reports the repair;
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
+- Differentiate BLAS and LAPACK calls such as `ccall((:dlacpy_64_, lbt()), ...)`
+  on Julia 1.10–1.12. The derivative evaluates the library expression the
+  first time the call site runs and uses that library for the original routine
+  and its rule's companion routines. Check
+  `Enzyme.has_dogfood_repair(:ccall_computed_blas_library)`.
 - Add `Enzyme.derivative_report(f)`, which runs `f()` and reports the
   derivatives Enzyme used for it: each one compiled, linked from a package
   image or asked for again meanwhile, with the calls its compiled code makes

@@ -1469,6 +1469,7 @@ slots ([`resolve_slots!`](@ref)) and the values the compilation inserted
 ([`bake_inserted_values!`](@ref)).
 """
 function link_julia_values!(mod::LLVM.Module, meta)
+    materialize_runtime_blas!(mod)
     @static if HAS_GPUCOMPILER_2
         relocs = meta.relocations
         if !isempty(relocs)
@@ -6720,6 +6721,7 @@ function GPUCompiler.compile_unhooked(output::Symbol, job::CompilerJob{<:EnzymeT
         if isassigned(ENZYME_CONTEXT)
             Base.merge!(ENZYME_CONTEXT[].inserted_values, inserted)
         else
+            materialize_runtime_blas!(mod)
             bake_inserted_values!(mod, inserted)
         end
     end

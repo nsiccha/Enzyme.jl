@@ -989,7 +989,7 @@ function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname
 end
 
 """
-    outline_runtime_lookup_calls!(mod, inst, fname)
+    outline_runtime_lookup_calls!(mod, inst, fname, enzyme_ctx)
 
 The lazy lookup `inst` of the symbol `fname` keeps a library that is a run-time value: an
 expression Julia 1.12 and earlier evaluate the first time the call runs. The code stores the
@@ -1003,10 +1003,10 @@ holds the address of native code and no derivative data (`enzyme_inactive`), so 
 stays indirect is reported as one without a derivative (`EnzymeNoDerivativeError`) if it
 carries derivative data.
 
-A BLAS or LAPACK routine stays such an indirect call: its rules name the further routines they
-call after the function they differentiate, which has to be a routine of a known library.
+BLAS rules can introduce other routines from the same library. Keep their native ABI opaque
+until the rule has run, then bind those declarations to the handle chosen by the call site.
 """
-function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fname::String)
+function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fname::String, enzyme_ctx::EnzymeContext)
     slot = nothing
     for u in inst.uses
         st = u.user
@@ -1020,7 +1020,11 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
     end
     slot === nothing && return nothing
     slot.metadata["enzyme_inactive"] = LLVM.MDNode(LLVM.Metadata[])
-    FFI.BLASSupport.lookup_blas_symbol(fname) === nothing || return nothing
+    blas = API.supports_blas_library_call(fname)
+    # Older builds leave a computed BLAS call behind its inactive pointer.
+    if blas === nothing && FFI.BLASSupport.lookup_blas_symbol(fname) !== nothing
+        return nothing
+    end
 
     # The calls through the address: of the lookup's result or of a load of the slot, which
     # reach the call through phis and casts. The slot may already have its function, from
@@ -1049,9 +1053,134 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
             end
         end
     end
-    for call in through
-        stub = runtime_lookup_stub!(mod, slot, fname, call.called_type, call.callconv)
-        call.called_operand = stub
+    if blas !== true
+        for call in through
+            stub = runtime_lookup_stub!(mod, slot, fname, call.called_type, call.callconv)
+            call.called_operand = stub
+        end
+        return nothing
+    end
+    @dispose B = IRBuilder() begin
+        position!(B, LLVM.before(inst))
+        # A second copy of the lookup (e.g. after inlining) uses the same library.
+        key = "enzymejl_blas_library"
+        site = if haskey(slot.metadata, key)
+            mod.globals[convert(String, only(slot.metadata[key].operands))]
+        else
+            value = RuntimeBLASLibrary(Symbol(fname), C_NULL, nothing)
+            gv = unsafe_to_llvm(B, value; insert_name_if_not_exists = "blas_library", enzyme_ctx)
+            slot.metadata[key] = MDNode(LLVM.Metadata[MDString(gv.name)])
+            gv
+        end
+        binder = unsafe_to_llvm(B, bind_runtime_blas!; insert_name_if_not_exists = "bind_library", enzyme_ctx)
+        boxed = emit_apply_generic!(B, LLVM.Value[binder, site, inst.arguments[1]])
+        push!(boxed.function_attributes, StringAttribute("enzyme_inactive"))
+        replacement = load!(B, inst.value_type, bitcast!(B, boxed, LLVM.PointerType(inst.value_type, Tracked)))
+        replace_uses!(inst, replacement)
+        erase!(inst)
+        name = "ejlblas\$$fname\$" * site.name
+        for call in through
+            target, _ = get_function!(mod, name, call.called_type, LLVM.Attribute[StringAttribute("enzyme_math", fname)])
+            mod.functions[name].callconv = call.callconv
+            call.called_operand = target
+        end
+    end
+    return nothing
+end
+
+# Both entries of a split derivative must share the chosen library, even if Julia
+# inlines them into separate modules. The compilation's Julia value table roots the site.
+mutable struct RuntimeBLASLibrary
+    const primal::Symbol
+    @atomic handle::Ptr{Cvoid}
+    owner::Any
+end
+
+function open_runtime_blas(lib::Union{String, Symbol}, primal::Symbol)
+    # Borrow the handle from Julia's ccall library map.
+    handle = Ref{Ptr{Cvoid}}(C_NULL)
+    address = ccall(:jl_load_and_lookup, Ptr{Cvoid}, (Cstring, Cstring, Ref{Ptr{Cvoid}}), lib, primal, handle)
+    return handle[], address
+end
+
+function open_runtime_blas(lib, primal::Symbol)
+    @static if isdefined(Base.Libc.Libdl, :LazyLibrary)
+        handle = Libdl.dlopen(lib)
+        return handle, Libdl.dlsym(handle, primal)
+    else
+        throw(TypeError(:ccall, "", Symbol, lib))
+    end
+end
+
+(site::RuntimeBLASLibrary)(symbol::Symbol) = Libdl.dlsym(@atomic(:acquire, site.handle), symbol)
+
+function bind_runtime_blas!(site::RuntimeBLASLibrary, lib)
+    cached = @atomic :acquire site.handle
+    cached == C_NULL || return Libdl.dlsym(cached, site.primal)
+    handle, address = open_runtime_blas(lib, site.primal)
+    # Publish only a successful lookup. Concurrent initializers must use the winner's
+    # handle for the primal and all derivative calls.
+    previous = @atomicreplace :acquire_release :acquire site.handle Ptr{Cvoid}(C_NULL) => handle
+    if previous.success
+        # A library object may own the handle returned by its dlopen method.
+        site.owner = lib
+    end
+    return previous.success || previous.old == handle ? address : Libdl.dlsym(previous.old, site.primal)
+end
+
+# Keep the native calls as external declarations (with the exact foreigncall signature)
+# through every AD pass, including an outer pass over an imported derivative. Once
+# linking executable code, resolve each symbol on first use from its Julia call site.
+function materialize_runtime_blas!(mod::LLVM.Module)
+    for fn in collect(mod.functions)
+        startswith(fn.name, "ejlblas\$") && isempty(fn.blocks) && !isempty(fn.uses) || continue
+        # Native symbols may themselves contain a dollar. The last field names the
+        # inserted Julia global, which always starts with ejl_.
+        symbol, key = rsplit(chopprefix(fn.name, "ejlblas\$"), "\$ejl_"; limit = 2)
+        site = mod.globals["ejl_" * key]
+        ptr = LLVM.PointerType(LLVM.Int8Type())
+        cache = LLVM.GlobalVariable(mod, ptr, "ccall_address")
+        cache.initializer = LLVM.PointerNull(ptr)
+        cache.linkage = LLVM.Linkage.Internal
+        ty = LLVM.FunctionType(ptr)
+        resolve = LLVM.Function(mod, "lookup_" * fn.name, ty)
+        resolve.linkage = LLVM.Linkage.Internal
+        @dispose B = IRBuilder() begin
+            position!(B, LLVM.at_end(BasicBlock(resolve, "entry")))
+            hit = BasicBlock(resolve, "cached")
+            miss = BasicBlock(resolve, "lookup")
+            cached = load!(B, ptr, cache)
+            cached.ordering = LLVM.AtomicOrdering.Acquire
+            br!(B, icmp!(B, LLVM.IntPredicate.EQ, cached, LLVM.PointerNull(ptr)), miss, hit)
+            position!(B, LLVM.at_end(hit))
+            ret!(B, cached)
+            position!(B, LLVM.at_end(miss))
+            intern, intern_ty = get_function!(mod, "ijl_symbol", LLVM.FunctionType(site.value_type, [ptr]))
+            sym = call!(B, intern_ty, intern, LLVM.Value[globalstring_ptr!(B, String(symbol))])
+            boxed = emit_apply_generic!(B, LLVM.Value[site, sym])
+            resolved = load!(B, ptr, bitcast!(B, boxed, LLVM.PointerType(ptr, Tracked)))
+            store!(B, resolved, cache).ordering = LLVM.AtomicOrdering.Release
+            ret!(B, resolved)
+            # Replace only the called address. Keep the rule's argument types, ABI
+            # attributes, calling convention and Julia's GC-root operand bundles.
+            work = LLVM.Value[fn]
+            while !isempty(work)
+                value = pop!(work)
+                for use in collect(value.uses)
+                    user = use.user
+                    if isa(user, LLVM.ConstantExpr) && user.opcode in (LLVM.Opcode.BitCast, LLVM.Opcode.AddrSpaceCast)
+                        push!(work, user)
+                    else
+                        @assert isa(user, LLVM.CallBase) && user.called_operand == value
+                        position!(B, LLVM.before(user))
+                        user.called_operand = bitcast!(B, call!(B, ty, resolve), value.value_type)
+                    end
+                end
+            end
+        end
+        reinsert_gcmarker!(resolve)
+        replace_uses!(fn, LLVM.UndefValue(fn.value_type)) # discard unused constant casts
+        erase!(fn)
     end
     return nothing
 end
@@ -1631,7 +1760,7 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
                 else
                     # The library stays a run-time value: an expression Julia 1.12 and earlier
                     # evaluate the first time the call runs.
-                    outline_runtime_lookup_calls!(mod, inst, fname)
+                    outline_runtime_lookup_calls!(mod, inst, fname, enzyme_ctx)
                 end
             end
         elseif fn == "julia.call" || fn == "julia.call2"

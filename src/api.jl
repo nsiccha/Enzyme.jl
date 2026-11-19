@@ -799,6 +799,19 @@ has_augmented_primal_return_used() =
     Libdl.dlopen(libEnzyme), :EnzymeGradientUtilsGetAugmentedPrimalReturnUsed; throw_error = false
 ) !== nothing
 
+# This entry point recognizes the BLAS spellings handled by the loaded libEnzyme.
+# Older builds can generate unqualified BLAS calls when caching overwritten inputs.
+function supports_blas_library_call(symbol::String)
+    handle = Libdl.dlopen(libEnzyme)
+    try
+        fn = Libdl.dlsym_e(handle, :EnzymeSupportsBLASLibraryCall)
+        fn == C_NULL && return nothing
+        return ccall(fn, UInt8, (Cstring,), symbol) != 0
+    finally
+        Libdl.dlclose(handle)
+    end
+end
+
 EnzymeGradientUtilsSubTransferHelper(
     gutils,
     mode,
