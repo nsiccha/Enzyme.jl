@@ -1,0 +1,3 @@
+summary = "Pack Boolean, vector, and pointer-free aggregate reverse caches across nested ragged chunks"
+libenzyme_build = "7d2c43fdac651cb746f21e99b6d3b5cfb958c47a"
+tests = ["test/packed_cache_groups.jl"]

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Pack reverse caches of Booleans, fixed-size vectors and pointer-free numeric
+  records across ragged loops. A three-level nest now grows one shared buffer
+  per level, avoiding one allocation per inner invocation. The repair is
+  available when `Enzyme.has_dogfood_repair(:ragged_cache_levels)` is true.
+
 - Preserve the activity of constant data copied into a fresh trace or passed
   through dynamic dispatch. This fixes plain Reverse through Gen's dynamic
   `update` and through static updates reached via a type-unstable caller.
