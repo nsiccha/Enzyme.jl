@@ -17,6 +17,10 @@
   mixed integer and floating-point records. The dogfood libEnzyme build also
   keeps the types of distinct boxed tree nodes separate across dispatch,
   branches, and heterogeneous storage. Gen's static `Map` uses both layouts.
+- Differentiate array reads whose byte offset combines an index with the
+  distance between an interior data pointer and its backing Memory. LLVM can
+  reorder these terms or split them across two pointer calculations. Reverse
+  and Reverse over Forward now recognize the displacement in both forms.
 
 - Resolve the zero-shadow call at compile time when a branch merges a fresh
   constant array with an active array and the compiler knows the array type.

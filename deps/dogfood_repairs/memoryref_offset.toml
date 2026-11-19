@@ -1,0 +1,2 @@
+summary = "Recognize the byte displacement between MemoryRef pointers in reverse and nested derivatives"
+tests = ["test/memoryref_offset.jl"]
