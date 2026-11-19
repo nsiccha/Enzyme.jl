@@ -93,7 +93,7 @@ function merge_order_ir(typed::Bool)
 end
 
 function merge_order_split!(mod, name)
-    f = functions(mod)[name]
+    f = mod.functions[name]
     Enzyme.Compiler.split_constant_merges!(mod, Enzyme.Compiler.ConstantFields(f, Set{LLVM.Value}()))
     return f
 end
@@ -105,13 +105,13 @@ end
         @testset "$name" for name in ("select_into_phi", "phi_before_select", "two_selects_two_phis")
             f = merge_order_split!(mod, name)
             @test LLVM.verify(mod) === nothing
-            insts = [inst for bb in blocks(f) for inst in instructions(bb)]
+            insts = [inst for bb in f.blocks for inst in bb.instructions]
             # Every merge of the two arrays is gone: each load reads one of them.
             @test !any(isa(inst, LLVM.SelectInst) for inst in insts)
-            @test !any(isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType) for inst in insts)
+            @test !any(isa(inst, LLVM.PHIInst) && isa(inst.value_type, LLVM.PointerType) for inst in insts)
             for inst in insts
-                isa(inst, LLVM.LoadInst) && value_type(inst) == LLVM.DoubleType() || continue
-                @test !isa(operands(inst)[1], LLVM.PHIInst)
+                isa(inst, LLVM.LoadInst) && inst.value_type == LLVM.DoubleType() || continue
+                @test !isa(inst.operands[1], LLVM.PHIInst)
             end
         end
     end

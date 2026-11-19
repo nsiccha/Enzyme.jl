@@ -265,15 +265,15 @@ end
     folded = String[]
     LLVM.Context() do _
         mod = parse(LLVM.Module, Vector{UInt8}(codeunits(kept.bitcode)))
-        for fn in LLVM.functions(mod)
+        for fn in mod.functions
             attrs = Dict{String, String}()
-            for attr in collect(LLVM.function_attributes(fn))
+            for attr in collect(fn.function_attributes)
                 attr isa LLVM.StringAttribute || continue
-                attrs[LLVM.kind(attr)] = LLVM.value(attr)
+                attrs[attr.kind] = attr.value
             end
             get(attrs, "enzyme_math", "") in Enzyme.Compiler.parallel_enzyme_math || continue
             push!(ruled, attrs["enzyme_math"])
-            haskey(attrs, "enzyme_parmremove") && push!(folded, LLVM.name(fn))
+            haskey(attrs, "enzyme_parmremove") && push!(folded, fn.name)
         end
         LLVM.dispose(mod)
     end
@@ -294,8 +294,8 @@ end
         marked = String[]
         LLVM.Context() do _
             mod = parse(LLVM.Module, Vector{UInt8}(codeunits(kept.bitcode)))
-            for fn in LLVM.functions(mod), bb in LLVM.blocks(fn), inst in LLVM.instructions(bb)
-                md = LLVM.metadata(inst)
+            for fn in mod.functions, bb in fn.blocks, inst in bb.instructions
+                md = inst.metadata
                 for marker in Enzyme.Compiler.STACK_SLOT_MARKERS
                     haskey(md, marker) && push!(marked, marker)
                 end
@@ -376,7 +376,7 @@ end
         table = LLVM.PointerType(LLVM.PointerType(LLVM.DoubleType()))
         buffer = LLVM.PointerType(LLVM.DoubleType())
         @test Compiler.tape_type(LLVM.StructType([LLVM.Int64Type(), table])) == Tuple{UInt64, Memory}
-        if LLVM.is_opaque(buffer)
+        if LLVM.isopaque(buffer)
             @test Compiler.tape_type(LLVM.StructType([LLVM.Int64Type(), buffer])) == Tuple{UInt64, Memory}
         else
             @test Compiler.tape_type(LLVM.StructType([LLVM.Int64Type(), buffer])) == Tuple{UInt64, Core.LLVMPtr{Float64, 0}}

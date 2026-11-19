@@ -1,4 +1,3 @@
-
 """
     EmitTypeNames[] = true
 
@@ -8,14 +7,15 @@ Also write the printed Julia type next to each type Enzyme records in the IR (th
 """
 const EmitTypeNames = Ref(false)
 
-@enum(AllocFnKindEnum,
-      AFKE_Unknown = 0,
-      AFKE_Alloc = 1,
-      AFKE_Realloc = 2,
-      AFKE_Free = 4,
-      AFKE_Uninitialized = 8,
-      AFKE_Zeroed = 16,
-      AFKE_Aligned = 32,
+@enum(
+    AllocFnKindEnum,
+    AFKE_Unknown = 0,
+    AFKE_Alloc = 1,
+    AFKE_Realloc = 2,
+    AFKE_Free = 4,
+    AFKE_Uninitialized = 8,
+    AFKE_Zeroed = 16,
+    AFKE_Aligned = 32,
 )
 
 struct AllocFnKind
@@ -26,159 +26,22 @@ struct AllocFnKind
 end
 
 function Base.:|(lhs::AllocFnKind, rhs::AllocFnKind)
-    AllocFnKind(UInt32(lhs.data) | UInt32(rhs.data))
+    return AllocFnKind(UInt32(lhs.data) | UInt32(rhs.data))
 end
 
-struct MemoryEffect
-    data::UInt32
-end
+# Memory effects, as encoded in the `memory` attribute on LLVM 16+, are handled with
+# LLVM.jl's `MemoryEffects`, which knows the memory locations of each LLVM version.
+set_readonly(effects::LLVM.MemoryEffects) = effects & LLVM.MemoryEffects(:read)
 
+is_readonly(effects::LLVM.MemoryEffects) = effects.access in (:none, :read)
+is_readnone(effects::LLVM.MemoryEffects) = effects.access == :none
+is_writeonly(effects::LLVM.MemoryEffects) = effects.access in (:none, :write)
 
-@enum(ModRefInfo, MRI_NoModRef = 0, MRI_Ref = 1, MRI_Mod = 2, MRI_ModRef = 3)
+Base.@assume_effects :removable :foldable :nothrow is_noreturn(f::LLVM.Function)::Bool =
+    haskey(f.function_attributes, :noreturn)
 
-@enum(IRMemLocation, ArgMem = 0, InaccessibleMem = 1, Other = 2)
-
-const BitsPerLoc = UInt32(2)
-const LocMask = UInt32((1 << BitsPerLoc) - 1)
-function getLocationPos(Loc::IRMemLocation)
-    return UInt32(Loc) * BitsPerLoc
-end
-function Base.:<<(mr::ModRefInfo, rhs::UInt32)
-    UInt32(mr) << rhs
-end
-function Base.:|(lhs::ModRefInfo, rhs::ModRefInfo)
-    ModRefInfo(UInt32(lhs) | UInt32(rhs))
-end
-function Base.:&(lhs::ModRefInfo, rhs::ModRefInfo)
-    ModRefInfo(UInt32(lhs) & UInt32(rhs))
-end
-const AllEffects = MemoryEffect(
-    (MRI_ModRef << getLocationPos(ArgMem)) |
-    (MRI_ModRef << getLocationPos(InaccessibleMem)) |
-    (MRI_ModRef << getLocationPos(Other)),
-)
-const ReadOnlyEffects = MemoryEffect(
-    (MRI_Ref << getLocationPos(ArgMem)) |
-    (MRI_Ref << getLocationPos(InaccessibleMem)) |
-    (MRI_Ref << getLocationPos(Other)),
-)
-const ReadOnlyArgMemEffects = MemoryEffect(
-    (MRI_Ref << getLocationPos(ArgMem)) |
-    (MRI_NoModRef << getLocationPos(InaccessibleMem)) |
-    (MRI_NoModRef << getLocationPos(Other)),
-)
-const WriteOnlyArgMemEffects = MemoryEffect(
-    (MRI_Mod << getLocationPos(ArgMem)) |
-    (MRI_NoModRef << getLocationPos(InaccessibleMem)) |
-    (MRI_NoModRef << getLocationPos(Other)),
-)
-const NoEffects = MemoryEffect(
-    (MRI_NoModRef << getLocationPos(ArgMem)) |
-    (MRI_NoModRef << getLocationPos(InaccessibleMem)) |
-    (MRI_NoModRef << getLocationPos(Other)),
-)
-const InaccessibleMemOnlyEffects = MemoryEffect(
-    (MRI_NoModRef << getLocationPos(ArgMem)) |
-        (MRI_ModRef << getLocationPos(InaccessibleMem)) |
-        (MRI_NoModRef << getLocationPos(Other)),
-)
-const ReadArgMemReadWriteInaccessibleEffects = MemoryEffect(
-    (MRI_Ref << getLocationPos(ArgMem)) |
-        (MRI_ModRef << getLocationPos(InaccessibleMem)) |
-        (MRI_NoModRef << getLocationPos(Other)),
-)
-
-const ReadArgMemWriteInaccessibleEffects = MemoryEffect(
-    (MRI_Ref << getLocationPos(ArgMem)) |
-    (MRI_Mod << getLocationPos(InaccessibleMem)) |
-    (MRI_NoModRef << getLocationPos(Other)),
-)
-
-# Get ModRefInfo for any location.
-function getModRef(effect::MemoryEffect, loc::IRMemLocation)::ModRefInfo
-    ModRefInfo((effect.data >> getLocationPos(loc)) & LocMask)
-end
-
-function getModRef(effect::MemoryEffect)::ModRefInfo
-    cur = MRI_NoModRef
-    for loc in (ArgMem, InaccessibleMem, Other)
-        cur |= getModRef(effect, loc)
-    end
-    return cur
-end
-
-function setModRef(effect::MemoryEffect, Loc::IRMemLocation, MR::ModRefInfo)::MemoryEffect
-    data = effect.data
-    Data &= ~(LocMask << getLocationPos(Loc))
-    Data |= MR << getLocationPos(Loc)
-    return MemoryEffect(data)
-end
-
-function setModRef(effect::MemoryEffect)::MemoryEffect
-    for loc in (ArgMem, InaccessibleMem, Other)
-        effect = setModRef(effect, mri) = getModRef(effect, loc)
-    end
-    return effect
-end
-
-function set_readonly(mri::ModRefInfo)
-    return mri & MRI_Ref
-end
-function set_writeonly(mri::ModRefInfo)
-    return mri & MRI_Mod
-end
-function set_reading(mri::ModRefInfo)
-    return mri | MRI_Ref
-end
-function set_writing(mri::ModRefInfo)
-    return mri | MRI_Mod
-end
-
-function set_readonly(effect::MemoryEffect)::MemoryEffect
-    data = UInt32(0)
-    for loc in (ArgMem, InaccessibleMem, Other)
-        data |= UInt32(set_readonly(getModRef(effect, loc))) << getLocationPos(loc)
-    end
-    return MemoryEffect(data)
-end
-
-function is_readonly(mri::ModRefInfo)::Bool
-    return mri == MRI_NoModRef || mri == MRI_Ref
-end
-
-function is_readnone(mri::ModRefInfo)::Bool
-    return mri == MRI_NoModRef
-end
-
-function is_writeonly(mri::ModRefInfo)::Bool
-    return mri == MRI_NoModRef || mri == MRI_Mod
-end
-
-for n in (:is_readonly, :is_readnone, :is_writeonly)
-    @eval begin
-        function $n(memeffect::MemoryEffect)
-            return $n(getModRef(memeffect))
-        end
-    end
-end
-
-Base.@assume_effects :removable :foldable :nothrow function is_noreturn(f::LLVM.Function)::Bool
-    for attr in collect(function_attributes(f))
-        if kind(attr) == kind(EnumAttribute("noreturn"))
-            return true
-        end
-    end
-    return false
-end
-
-Base.@assume_effects :removable :foldable :nothrow function is_nounwind(f::LLVM.Function)::Bool
-    for attr in collect(function_attributes(f))
-        if kind(attr) == kind(EnumAttribute("nounwind"))
-            return true
-        end
-    end
-    return false
-end
+Base.@assume_effects :removable :foldable :nothrow is_nounwind(f::LLVM.Function)::Bool =
+    haskey(f.function_attributes, :nounwind)
 
 """
     clear_nounwind!(f::LLVM.Function)
@@ -194,8 +57,6 @@ unwind nor run forever, so LLVM treats it as unreachable and deletes it,
 together with every path that leads to it.
 """
 function clear_nounwind!(f::LLVM.Function)
-    idx = reinterpret(LLVM.API.LLVMAttributeIndex, LLVM.API.LLVMAttributeFunctionIndex)
-    nounwind = kind(EnumAttribute("nounwind"))
     todo = LLVM.Function[f]
     done = Set{LLVM.Function}()
     while !isempty(todo)
@@ -204,14 +65,14 @@ function clear_nounwind!(f::LLVM.Function)
             continue
         end
         push!(done, cur)
-        LLVM.API.LLVMRemoveEnumAttributeAtIndex(cur, idx, nounwind)
-        for u in LLVM.uses(cur)
-            call = LLVM.user(u)
-            if !isa(call, LLVM.CallBase) || LLVM.called_operand(call) != cur
+        delete!(cur.function_attributes, :nounwind)
+        for u in cur.uses
+            call = u.user
+            if !isa(call, LLVM.CallBase) || call.called_operand != cur
                 continue
             end
-            LLVM.API.LLVMRemoveCallSiteEnumAttribute(call, idx, nounwind)
-            push!(todo, LLVM.parent(LLVM.parent(call)))
+            delete!(call.function_attributes, :nounwind)
+            push!(todo, call.parent.parent)
         end
     end
     return nothing
@@ -225,7 +86,7 @@ floats), which cannot refer to memory.
 """
 is_float_data(::LLVM.LLVMType) = false
 is_float_data(::LLVM.FloatingPointType) = true
-is_float_data(ty::LLVM.VectorType) = is_float_data(eltype(ty))
+is_float_data(ty::LLVM.VectorType) = is_float_data(ty.element_type)
 
 """
     is_inactive_operand(call, fn, val, world)::Bool
@@ -238,8 +99,8 @@ derivative data, whether or not its body can be inspected.
 """
 function is_inactive_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospecialize(val::LLVM.Value), world::UInt)::Bool
     found = false
-    nparms = length(LLVM.parameters(fn))
-    for (i, op) in enumerate(arg_operands_view(call))
+    nparms = length(fn.parameters)
+    for (i, op) in enumerate(call.arguments)
         op == val || continue
         i <= nparms || return false
         typ, byref = enzyme_extract_parm_type(fn, i, false)
@@ -263,30 +124,23 @@ alone does not prevent writing through the data pointer loaded from it.
 For pointer offsets and merges, every possible base must satisfy that proof.
 """
 function is_readonly_call_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospecialize(val::LLVM.Value), world::UInt, enzyme_ctx::EnzymeContext)::Bool
-    LLVM.called_operand(call) == val && return false
+    call.called_operand == val && return false
     rooted = false
-    for bundle in LLVM.operand_bundles(call)
-        val in LLVM.inputs(bundle) || continue
-        LLVM.tag(bundle) == "jl_roots" || return false
+    for bundle in call.operand_bundles
+        val in bundle.inputs || continue
+        bundle.tag == "jl_roots" || return false
         rooted = true
     end
     found = false
-    nparms = length(LLVM.parameters(fn))
-    readonly_kind = kind(EnumAttribute("readonly"))
-    readnone_kind = kind(EnumAttribute("readnone"))
-    nocapture_kind = kind(EnumAttribute("nocapture"))
-    for (i, op) in enumerate(arg_operands_view(call))
+    nparms = length(fn.parameters)
+    for (i, op) in enumerate(call.arguments)
         op == val || continue
         i <= nparms || return false
         reads_only = false
         captures_nothing = false
-        for attrs in (parameter_attributes(fn, i), LLVM.argument_attributes(call, i))
-            for attr in collect(attrs)
-                attr isa LLVM.EnumAttribute || continue
-                k = kind(attr)
-                reads_only |= k == readonly_kind || k == readnone_kind
-                captures_nothing |= k == nocapture_kind
-            end
+        for attrs in (fn.parameter_attributes[i], call.argument_attributes[i])
+            reads_only |= haskey(attrs, :readonly) || haskey(attrs, :readnone)
+            captures_nothing |= any(is_nocapture_attr, attrs)
         end
         reads_only && captures_nothing || return false
         found = true
@@ -306,15 +160,15 @@ function is_readonly_call_operand(call::LLVM.CallInst, fn::LLVM.Function, @nospe
         if cur isa LLVM.GetElementPtrInst || cur isa LLVM.BitCastInst ||
                 cur isa LLVM.AddrSpaceCastInst || cur isa LLVM.IntToPtrInst ||
                 cur isa LLVM.PtrToIntInst
-            push!(todo, operands(cur)[1])
+            push!(todo, cur.operands[1])
             continue
         elseif cur isa LLVM.PHIInst
-            for (value, _) in LLVM.incoming(cur)
+            for (value, _) in cur.incoming
                 push!(todo, value)
             end
             continue
         elseif cur isa LLVM.SelectInst
-            push!(todo, operands(cur)[2], operands(cur)[3])
+            push!(todo, cur.operands[2], cur.operands[3])
             continue
         end
         base, _ = get_base_and_offset(cur)
@@ -339,7 +193,7 @@ hold derivative data (`DupState` / `MixedState`) are followed.
 """
 function readonly_checked_params(primalf::LLVM.Function, @nospecialize(TT::Type), err_if_written::Union{Bool, Tuple}, world::UInt)::Vector{LLVM.Value}
     checked = LLVM.Value[]
-    parms = collect(LLVM.parameters(primalf))
+    parms = collect(primalf.parameters)
     # Lowered parameters: `swiftself`, then one per argument that is not a ghost.
     idx = Int(has_swiftself(primalf))
     for (i, T) in enumerate(TT.parameters)
@@ -366,8 +220,8 @@ the box Julia makes of a value it passes to a dynamic call.
 """
 function is_fresh_object(@nospecialize(val::LLVM.Value))::Bool
     isa(val, LLVM.CallInst) || return false
-    fn = LLVM.called_operand(val)
-    return isa(fn, LLVM.Function) && LLVM.name(fn) == "julia.gc_alloc_obj"
+    fn = val.called_operand
+    return isa(fn, LLVM.Function) && fn.name == "julia.gc_alloc_obj"
 end
 
 """
@@ -379,14 +233,14 @@ no memory they refer to: a `julia.call` of a Julia builtin such as `tuple`,
 dynamic call does), or `jl_array_copy` (`copy` of an `Array` before Julia 1.11).
 """
 function is_nonwriting_runtime_call(call::LLVM.CallInst)::Bool
-    fn = LLVM.called_operand(call)
+    fn = call.called_operand
     isa(fn, LLVM.Function) || return false
-    builtin = LLVM.name(fn) == "julia.call"
+    builtin = fn.name == "julia.call"
     if builtin
-        fn = operands(call)[1]
+        fn = call.operands[1]
         isa(fn, LLVM.Function) || return false
     end
-    nm = LLVM.name(fn)
+    nm = fn.name
     if startswith(nm, "ijl_")
         nm = nm[2:end]
     end
@@ -418,7 +272,7 @@ function local_memory_base(@nospecialize(ptr::LLVM.Value))
     while isa(base, LLVM.BitCastInst) ||
             isa(base, LLVM.AddrSpaceCastInst) ||
             isa(base, LLVM.GetElementPtrInst)
-        base = operands(base)[1]
+        base = base.operands[1]
     end
     return (isa(base, LLVM.AllocaInst) || is_fresh_object(base)) ? base : nothing
 end
@@ -431,7 +285,7 @@ references, known from the type either pointer points to. Such bytes cannot
 refer to memory.
 """
 function is_pointerfree_copy(call::LLVM.CallInst, enzyme_ctx::EnzymeContext)::Bool
-    for ptr in (operands(call)[1], operands(call)[2])
+    for ptr in (call.operands[1], call.operands[2])
         base, _ = get_base_and_offset(ptr)
         legal, jTy, byref = abs_typeof(base, enzyme_ctx)
         legal || continue
@@ -459,9 +313,9 @@ memory, so nothing that writes the copy, or passes it on, reaches memory of the
 argument; `is_pointerfree_copy` says the same of a `memcpy` / `memmove`.
 """
 function is_pointerfree_runtime_copy(call::LLVM.CallInst, @nospecialize(val::LLVM.Value), enzyme_ctx::EnzymeContext)::Bool
-    fn = LLVM.called_operand(call)
+    fn = call.called_operand
     isa(fn, LLVM.Function) || return false
-    nm = LLVM.name(fn)
+    nm = fn.name
     if startswith(nm, "ijl_")
         nm = nm[2:end]
     end
@@ -470,7 +324,7 @@ function is_pointerfree_runtime_copy(call::LLVM.CallInst, @nospecialize(val::LLV
         (legal && isa(jTy, DataType) && jTy <: Array) || return false
     elseif nm == "jl_genericmemory_copyto"
         # (dest memory, dest data, src memory, src data, length)
-        ops = arg_operands_view(call)
+        ops = call.arguments
         length(ops) == 5 || return false
         (val == ops[1] || val == ops[2]) && return false
         (val == ops[3] || val == ops[4]) || return false
@@ -495,9 +349,9 @@ Whether `call` is a Julia runtime function that throws what it receives (`jl_thr
 writes nothing it receives, but a `catch` can read what it throws.
 """
 function is_throw_runtime_call(call::LLVM.CallInst)::Bool
-    fn = LLVM.called_operand(call)
+    fn = call.called_operand
     isa(fn, LLVM.Function) || return false
-    nm = LLVM.name(fn)
+    nm = fn.name
     if startswith(nm, "ijl_")
         nm = nm[2:end]
     end
@@ -521,11 +375,11 @@ and `jl_get_excstack` (`current_exceptions()`).
 """
 function caught_exception_reads(mod::LLVM.Module)::Vector{LLVM.Value}
     reads = LLVM.Value[]
-    fns = functions(mod)
+    fns = mod.functions
     for nm in ("jl_current_exception", "ijl_current_exception", "jl_get_excstack", "ijl_get_excstack")
         haskey(fns, nm) || continue
-        for u in LLVM.uses(fns[nm])
-            call = LLVM.user(u)
+        for u in (fns[nm]).uses
+            call = u.user
             if isa(call, LLVM.CallInst)
                 push!(reads, call)
             end
@@ -568,13 +422,13 @@ the arguments after it are splatted (`_apply_iterate`). `nothing` for any other
 call. The indices follow the handlers in `src/rules/llvmrules.jl`.
 """
 function dynamic_call_operands(call::LLVM.CallInst)
-    jlcall = LLVM.called_operand(call)
+    jlcall = call.called_operand
     isa(jlcall, LLVM.Function) || return nothing
-    jlname = LLVM.name(jlcall)
+    jlname = jlcall.name
     (jlname == "julia.call" || jlname == "julia.call2") || return nothing
-    fn = operands(call)[1]
+    fn = call.operands[1]
     isa(fn, LLVM.Function) || return nothing
-    nm = LLVM.name(fn)
+    nm = fn.name
     if jlname == "julia.call2"
         return nm in ("ijl_invoke", "jl_invoke") ? (3, false) : nothing
     end
@@ -605,8 +459,8 @@ the call reaches (`defer_readonly_operand!`), numbered as the dynamic-call rules
 see them: 1 is the called function, 2 its first argument.
 """
 function readonly_operands(call::LLVM.Instruction)::Vector{Int}
-    haskey(metadata(call), READONLY_OPERANDS_MD) || return Int[]
-    mds = operands(metadata(call)[READONLY_OPERANDS_MD])[1]::MDString
+    haskey(call.metadata, READONLY_OPERANDS_MD) || return Int[]
+    mds = (call.metadata[READONLY_OPERANDS_MD]).operands[1]::MDString
     return Int[parse(Int, s) for s in split(Base.convert(String, mds), ",")]
 end
 
@@ -625,12 +479,12 @@ function defer_readonly_operand!(call::LLVM.CallInst, @nospecialize(val::LLVM.Va
     dyn === nothing && return false
     first, splat = dyn
     positions = readonly_operands(call)
-    for (i, op) in enumerate(arg_operands_view(call))
+    for (i, op) in enumerate(call.arguments)
         op == val || continue
         (i < first || (splat && i != first)) && return false
         push!(positions, i - first + 1)
     end
-    metadata(call)[READONLY_OPERANDS_MD] =
+    call.metadata[READONLY_OPERANDS_MD] =
         MDNode(LLVM.Metadata[MDString(join(sort!(unique!(positions)), ","))])
     return true
 end
@@ -643,38 +497,36 @@ is attached to is only read from. That is `readonly` / `readnone`, and on LLVM
 16+ a `memory` effect whose modref is read-only.
 """
 Base.@assume_effects :removable :foldable :nothrow function is_readonly(attr::LLVM.Attribute)::Bool
-    if kind(attr) == kind(EnumAttribute("readonly"))
+    if attr.kind == :readonly
         return true
     end
-    if kind(attr) == kind(EnumAttribute("readnone"))
+    if attr.kind == :readnone
         return true
     end
-    if LLVM.version().major > 15 && isa(attr, LLVM.EnumAttribute)
-        if kind(attr) == kind(EnumAttribute("memory"))
-            if is_readonly(MemoryEffect(value(attr)))
-                return true
-            end
+    if attr.kind == :memory
+        if is_readonly(LLVM.MemoryEffects(attr))
+            return true
         end
     end
     return false
 end
 
 Base.@assume_effects :removable :foldable :nothrow function is_readonly(f::LLVM.Function)::Bool
-    intr = LLVM.API.LLVMGetIntrinsicID(f)
-    if intr == LLVM.Intrinsic("llvm.lifetime.start").id
+    intr = f.intrinsic
+    if intr == LLVM.Intrinsic("llvm.lifetime.start")
         return true
     end
-    if intr == LLVM.Intrinsic("llvm.lifetime.end").id
+    if intr == LLVM.Intrinsic("llvm.lifetime.end")
         return true
     end
-    if intr == LLVM.Intrinsic("llvm.assume").id
+    if intr == LLVM.Intrinsic("llvm.assume")
         return true
     end
-    if LLVM.name(f) == "llvm.julia.gc_preserve_begin" ||
-       LLVM.name(f) == "llvm.julia.gc_preserve_end"
+    if f.name == "llvm.julia.gc_preserve_begin" ||
+            f.name == "llvm.julia.gc_preserve_end"
         return true
     end
-    for attr in collect(function_attributes(f))
+    for attr in collect(f.function_attributes)
         if is_readonly(attr)
             return true
         end
@@ -683,134 +535,93 @@ Base.@assume_effects :removable :foldable :nothrow function is_readonly(f::LLVM.
 end
 
 Base.@assume_effects :removable :foldable :nothrow function is_readnone(f::LLVM.Function)::Bool
-    intr = LLVM.API.LLVMGetIntrinsicID(f)
-    if intr == LLVM.Intrinsic("llvm.lifetime.start").id
+    intr = f.intrinsic
+    if intr == LLVM.Intrinsic("llvm.lifetime.start")
         return true
     end
-    if intr == LLVM.Intrinsic("llvm.lifetime.end").id
+    if intr == LLVM.Intrinsic("llvm.lifetime.end")
         return true
     end
-    if intr == LLVM.Intrinsic("llvm.assume").id
+    if intr == LLVM.Intrinsic("llvm.assume")
         return true
     end
-    if LLVM.name(f) == "llvm.julia.gc_preserve_begin" ||
-       LLVM.name(f) == "llvm.julia.gc_preserve_end"
+    if f.name == "llvm.julia.gc_preserve_begin" ||
+            f.name == "llvm.julia.gc_preserve_end"
         return true
     end
-    for attr in collect(function_attributes(cur))
-        if kind(attr) == kind(EnumAttribute("readnone"))
-            return true
-        end
-        if LLVM.version().major > 15
-            if kind(attr) == kind(EnumAttribute("memory"))
-                if is_readnone(MemoryEffect(value(attr)))
-                    return true
-                end
-            end
-        end
-    end
-    return false
+    return is_readnone(LLVM.MemoryEffects(f.memory_effects))
 end
 
 Base.@assume_effects :removable :foldable :nothrow function is_writeonly(f::LLVM.Function)::Bool
-    intr = LLVM.API.LLVMGetIntrinsicID(f)
-    if intr == LLVM.Intrinsic("llvm.lifetime.start").id
+    intr = f.intrinsic
+    if intr == LLVM.Intrinsic("llvm.lifetime.start")
         return true
     end
-    if intr == LLVM.Intrinsic("llvm.lifetime.end").id
+    if intr == LLVM.Intrinsic("llvm.lifetime.end")
         return true
     end
-    if intr == LLVM.Intrinsic("llvm.assume").id
+    if intr == LLVM.Intrinsic("llvm.assume")
         return true
     end
-    if LLVM.name(f) == "llvm.julia.gc_preserve_begin" ||
-       LLVM.name(f) == "llvm.julia.gc_preserve_end"
+    if f.name == "llvm.julia.gc_preserve_begin" ||
+            f.name == "llvm.julia.gc_preserve_end"
         return true
     end
-    for attr in collect(function_attributes(cur))
-        if kind(attr) == kind(EnumAttribute("readnone"))
-            return true
-        end
-        if kind(attr) == kind(EnumAttribute("writeonly"))
-            return true
-        end
-        if LLVM.version().major > 15
-            if kind(attr) == kind(EnumAttribute("memory"))
-                if is_writeonly(MemoryEffect(value(attr)))
-                    return true
-                end
-            end
-        end
-    end
-    return false
+    return is_writeonly(LLVM.MemoryEffects(f.memory_effects))
 end
 
 function set_readonly!(fn::LLVM.Function)
-    attrs = collect(function_attributes(fn))
-    if LLVM.version().major <= 15
-        if !any(kind(attr) == kind(EnumAttribute("readonly")) for attr in attrs) &&
-           !any(kind(attr) == kind(EnumAttribute("readnone")) for attr in attrs)
-            if any(kind(attr) == kind(EnumAttribute("writeonly")) for attr in attrs)
-                delete!(function_attributes(fn), EnumAttribute("writeonly"))
-                push!(function_attributes(fn), EnumAttribute("readnone"))
-            else
-                push!(function_attributes(fn), EnumAttribute("readonly"))
-            end
-            return true
-        end
-        return false
-    else
-        for attr in attrs
-            if kind(attr) == kind(EnumAttribute("memory"))
-                old = MemoryEffect(value(attr))
-                eff = set_readonly(old)
-                push!(function_attributes(fn), EnumAttribute("memory", eff.data))
-                return old != eff
-            end
-        end
-        push!(
-            function_attributes(fn),
-            EnumAttribute("memory", set_readonly(AllEffects).data),
-        )
-        return true
+    # without a `memory` attribute (or on LLVM 15, one of the attributes it replaced),
+    # a function may access any memory
+    old = LLVM.MemoryEffects(fn.memory_effects)
+    eff = set_readonly(old)
+    fn.memory_effects = eff
+    return old != eff
+end
+
+# declares a function for `get_function!`
+struct FunctionDeclaration <: Function
+    mod::LLVM.Module
+    name::String
+    FT::LLVM.FunctionType
+    attrs::Vector{LLVM.Attribute}
+    memory_effects::Union{Nothing, LLVM.MemoryEffects}
+end
+
+function (decl::FunctionDeclaration)()
+    F = LLVM.Function(decl.mod, decl.name, decl.FT)
+    append!(F.function_attributes, decl.attrs)
+    if decl.memory_effects !== nothing
+        F.memory_effects = decl.memory_effects
     end
+    return F
 end
 
 function get_function!(
-    mod::LLVM.Module,
-    name::String,
-    FT::LLVM.FunctionType,
-    attrs::Vector{LLVM.Attribute} = LLVM.Attribute[],
-)
-    if haskey(functions(mod), name)
-        F = functions(mod)[name]
-        PT = LLVM.PointerType(FT)
-        if value_type(F) != PT
-            F = LLVM.const_pointercast(F, PT)
-        end
-    else
-        F = LLVM.Function(mod, name, FT)
-        if LLVM.name(F) != name
-            # another kind of global value uses the name, so LLVM gave the function a
-            # different one that nothing would define
-            LLVM.erase!(F)
-            throw(ArgumentError("Module already contains a global value called \"$name\" that is not a function"))
-        end
-        for attr in attrs
-            push!(function_attributes(F), attr)
-        end
+        mod::LLVM.Module,
+        name::String,
+        FT::LLVM.FunctionType,
+        attrs::Vector{LLVM.Attribute} = LLVM.Attribute[];
+        memory_effects::Union{Nothing, LLVM.MemoryEffects} = nothing,
+    )
+    # `get!` throws if another kind of global value already uses the name, where creating
+    # the function would give it a different name
+    F = get!(FunctionDeclaration(mod, name, FT, attrs, memory_effects), mod.functions, name)
+    PT = LLVM.PointerType(FT)
+    if F.value_type != PT
+        F = LLVM.const_pointercast(F, PT)
     end
     return F, FT
 end
 
-function get_function!(@nospecialize(builderF), mod::LLVM.Module, name::String, attrs::Vector{LLVM.Attribute} = LLVM.Attribute[])
-    get_function!(mod, name, builderF(), attrs)
+function get_function!(@nospecialize(builderF), mod::LLVM.Module, name::String, attrs::Vector{LLVM.Attribute} = LLVM.Attribute[]; memory_effects::Union{Nothing, LLVM.MemoryEffects} = nothing)
+    return get_function!(mod, name, builderF(), attrs; memory_effects)
 end
 
 T_ppjlvalue() = LLVM.PointerType(LLVM.PointerType(LLVM.StructType(LLVMType[])))
 
 function declare_pgcstack!(mod::LLVM.Module)
-    get_function!(
+    return get_function!(
         mod,
         "julia.get_pgcstack",
         LLVM.FunctionType(LLVM.PointerType(T_ppjlvalue())),
@@ -818,17 +629,17 @@ function declare_pgcstack!(mod::LLVM.Module)
     )
 end
 
-function emit_pgcstack(B::LLVM.IRBuilder, name::String="")
-    curent_bb = position(B)
-    fn = LLVM.parent(curent_bb)
-    mod = LLVM.parent(fn)
+function emit_pgcstack(B::LLVM.IRBuilder, name::String = "")
+    curent_bb = B.insert_block
+    fn = curent_bb.parent
+    mod = fn.parent
     func, fty = declare_pgcstack!(mod)
     return call!(B, fty, func, LLVM.Value[], name)
 end
 
 function get_pgcstack(func::LLVM.Function)
-    entry_bb = first(blocks(func))
-    mod = LLVM.parent(func)
+    entry_bb = first(func.blocks)
+    mod = func.parent
     pgcstack_func, _ = declare_pgcstack!(mod)
 
     # A @cfunction wrapper fetches its pgcstack with julia.get_pgcstack_or_new,
@@ -836,17 +647,17 @@ function get_pgcstack(func::LLVM.Function)
     # to stay the first getter of the entry block: FinalLowerGC roots the GC
     # frame in whichever getter comes first, and a plain getter placed ahead of
     # the adopting one dereferences a NULL pgcstack on a foreign thread.
-    if haskey(functions(mod), "julia.get_pgcstack_or_new")
-        or_new = functions(mod)["julia.get_pgcstack_or_new"]
-        for I in instructions(entry_bb)
-            if I isa LLVM.CallInst && called_operand(I) == or_new
+    if haskey(mod.functions, "julia.get_pgcstack_or_new")
+        or_new = mod.functions["julia.get_pgcstack_or_new"]
+        for I in entry_bb.instructions
+            if I isa LLVM.CallInst && I.called_operand == or_new
                 return I
             end
         end
     end
 
-    for I in instructions(entry_bb)
-        if I isa LLVM.CallInst && called_operand(I) == pgcstack_func
+    for I in entry_bb.instructions
+        if I isa LLVM.CallInst && I.called_operand == pgcstack_func
             return I
         end
     end
@@ -854,11 +665,11 @@ function get_pgcstack(func::LLVM.Function)
 end
 
 function reinsert_gcmarker!(func::LLVM.Function, @nospecialize(PB::Union{Nothing, LLVM.IRBuilder}) = nothing)
-    for i in 1:length(LLVM.parameters(func))
-        for attr in collect(LLVM.parameter_attributes(func, i))
+    for i in 1:length(func.parameters)
+        for attr in collect(func.parameter_attributes[i])
             if attr isa LLVM.EnumAttribute
-                if kind(attr) == swiftself_kind
-                    return parameters(func)[i]
+                if attr.kind == swiftself_kind
+                    return func.parameters[i]
                 end
             end
         end
@@ -866,24 +677,20 @@ function reinsert_gcmarker!(func::LLVM.Function, @nospecialize(PB::Union{Nothing
 
     pgs = get_pgcstack(func)
     return if pgs isa Nothing
-        entry_bb = first(blocks(func))
+        entry_bb = first(func.blocks)
         if PB !== nothing &&
-                (LLVM.name(Base.position(PB)) == "allocsForInversion" || Base.position(PB) == entry_bb)
+                (PB.insert_block.name == "allocsForInversion" || PB.insert_block == entry_bb)
             # emit it with the caller's builder, which we don't own
             emit_pgcstack(PB, "newly_emitted_pgc_stack")
         else
             @dispose B = IRBuilder() begin
-                if isempty(instructions(entry_bb))
-                    position!(B, entry_bb)
-                else
-                    position!(B, first(instructions(entry_bb)))
-                end
+                position!(B, LLVM.at_begin(entry_bb))
                 emit_pgcstack(B, "newly_emitted_pgc_stack")
             end
         end
     else
-        entry_bb = first(blocks(func))
-        fst = first(instructions(entry_bb))
+        entry_bb = first(func.blocks)
+        fst = first(entry_bb.instructions)
         if fst != pgs
             API.moveBefore(pgs, fst, PB isa Nothing ? C_NULL : PB.ref)
         end
@@ -926,27 +733,27 @@ Thus inline the `alwaysinline` functions into `f` here, and replace every
 its pgcstack as an argument.
 """
 function use_gcstack_arg!(f::LLVM.Function, arg::LLVM.Argument)
-    mod = LLVM.parent(f)
+    mod = f.parent
     run!(AlwaysInlinerPass(), mod)
-    if !haskey(functions(mod), "julia.get_pgcstack")
+    if !haskey(mod.functions, "julia.get_pgcstack")
         return
     end
-    getter = functions(mod)["julia.get_pgcstack"]
+    getter = mod.functions["julia.get_pgcstack"]
     calls = LLVM.CallInst[]
-    for use in uses(getter)
-        call = user(use)
-        if call isa LLVM.CallInst && LLVM.parent(LLVM.parent(call)) == f
+    for use in getter.uses
+        call = use.user
+        if call isa LLVM.CallInst && call.parent.parent == f
             push!(calls, call)
         end
     end
     if isempty(calls)
         return
     end
-    T_pgcstack = LLVM.return_type(LLVM.function_type(getter))
+    T_pgcstack = getter.function_type.return_type
     pgcstack = @dispose B = IRBuilder() begin
-        position!(B, first(instructions(first(blocks(f)))))
+        position!(B, LLVM.at_begin(f.entry))
         # Before 1.12, a `Ptr{Cvoid}` is an integer in Julia's IR.
-        if value_type(arg) isa LLVM.IntegerType
+        if arg.value_type isa LLVM.IntegerType
             inttoptr!(B, arg, T_pgcstack)
         else
             bitcast!(B, arg, T_pgcstack)
@@ -954,20 +761,18 @@ function use_gcstack_arg!(f::LLVM.Function, arg::LLVM.Argument)
     end
     for call in calls
         replace_uses!(call, pgcstack)
-        LLVM.API.LLVMInstructionEraseFromParent(call)
+        erase!(call)
     end
     return
 end
 
-@inline enum_attr_kind(kind::String) = LLVM.API.LLVMGetEnumAttributeKindForName(kind, Csize_t(length(kind)))
-
-const swiftself_kind = enum_attr_kind("swiftself")
+const swiftself_kind = :swiftself
 
 Base.@assume_effects :removable :foldable :nothrow function has_swiftself(fn::LLVM.Function)::Bool
-    for i in 1:length(LLVM.parameters(fn))
-        for attr in collect(LLVM.parameter_attributes(fn, i))
+    for i in 1:length(fn.parameters)
+        for attr in collect(fn.parameter_attributes[i])
             if attr isa LLVM.EnumAttribute
-                if kind(attr) == swiftself_kind
+                if attr.kind == swiftself_kind
                     return true
                 end
             end
@@ -988,14 +793,14 @@ the parameter a `gcstack` string attribute, which `specsig` writes on every
 version. Hence recognize either mark.
 """
 Base.@assume_effects :removable :foldable :nothrow function gcstack_arg_index(fn::LLVM.Function)::Int
-    for i in 1:length(LLVM.parameters(fn))
-        for attr in collect(LLVM.parameter_attributes(fn, i))
+    for i in 1:length(fn.parameters)
+        for attr in collect(fn.parameter_attributes[i])
             if attr isa LLVM.EnumAttribute
-                if kind(attr) == swiftself_kind
+                if attr.kind == swiftself_kind
                     return i
                 end
             elseif attr isa LLVM.StringAttribute
-                if kind(attr) == "gcstack"
+                if attr.kind == "gcstack"
                     return i
                 end
             end
@@ -1011,56 +816,6 @@ Say if `fn` takes `pgcstack` as a parameter (see [`gcstack_arg_index`](@ref)).
 """
 Base.@assume_effects :removable :foldable :nothrow has_gcstack_arg(fn::LLVM.Function)::Bool = gcstack_arg_index(fn) != 0
 
-Base.@assume_effects :removable :foldable :nothrow function has_fn_attr(fn::LLVM.Function, attr::LLVM.EnumAttribute)::Bool
-    ekind = LLVM.kind(attr)
-    for attr in collect(function_attributes(fn))
-        if attr isa LLVM.EnumAttribute
-            if kind(attr) == ekind
-                return true
-            end
-        end
-    end
-    return false
-end
-
-Base.@assume_effects :removable :foldable :nothrow function has_fn_attr(fn::LLVM.Function, attr::LLVM.StringAttribute)::Bool
-    ekind = LLVM.kind(attr)
-    for attr in collect(function_attributes(fn))
-        if attr isa LLVM.StringAttribute
-            if kind(attr) == ekind
-                return true
-            end
-        end
-    end
-    return false
-end
-
-Base.@assume_effects :removable :foldable :nothrow function has_arg_attr(fn::LLVM.Function, i::Int, attr::LLVM.StringAttribute)::Bool
-    ekind = LLVM.kind(attr)
-    for attr in collect(parameter_attributes(fn, i))
-        if attr isa LLVM.StringAttribute
-            if kind(attr) == ekind
-                return true
-            end
-        end
-    end
-    return false
-end
-
-"""
-    precedes(a, b)
-
-Whether instruction `a` comes before `b` in their common basic block.
-"""
-function precedes(a::LLVM.Instruction, b::LLVM.Instruction)::Bool
-    @assert LLVM.parent(a) == LLVM.parent(b)
-    for inst in instructions(LLVM.parent(a))
-        inst == a && return true
-        inst == b && return false
-    end
-    return false
-end
-
 """
     copy_metadata!(dst, src)
 
@@ -1068,52 +823,29 @@ Attach every metadata node of the instruction `src`, except its debug location,
 to `dst`.
 """
 function copy_metadata!(dst::LLVM.Instruction, src::LLVM.Instruction)
-    num = Ref{Csize_t}()
-    entries = LLVM.API.LLVMInstructionGetAllMetadataOtherThanDebugLoc(src, num)
-    ctx = LLVM.context(src)
-    for i in 1:num[]
-        kind = LLVM.API.LLVMValueMetadataEntriesGetKind(entries, i - 1)
-        md = LLVM.API.LLVMValueMetadataEntriesGetMetadata(entries, i - 1)
-        LLVM.API.LLVMSetMetadata(dst, kind, LLVM.API.LLVMMetadataAsValue(ctx, md))
+    for (kind, md) in src.metadata
+        kind == LLVM.MD_dbg && continue
+        dst.metadata[kind] = md
     end
-    num[] > 0 && LLVM.API.LLVMDisposeValueMetadataEntries(entries)
     return nothing
 end
 
-function eraseInst(bb::LLVM.BasicBlock, @nospecialize(inst::LLVM.Instruction))
-    @static if isdefined(LLVM, Symbol("erase!"))
-        LLVM.erase!(inst)
-    else
-        unsafe_delete!(bb, inst)
-    end
-end
-function eraseInst(bb::LLVM.Module, inst::LLVM.Function)
-    @static if isdefined(LLVM, Symbol("erase!"))
-        LLVM.erase!(inst)
-    else
-        unsafe_delete!(bb, inst)
-    end
-end
-function eraseInst(bb::LLVM.Module, inst::LLVM.GlobalVariable)
-    @static if isdefined(LLVM, Symbol("erase!"))
-        LLVM.erase!(inst)
-    else
-        unsafe_delete!(bb, inst)
-    end
-end
+eraseInst(bb::LLVM.BasicBlock, @nospecialize(inst::LLVM.Instruction)) = erase!(inst)
+eraseInst(bb::LLVM.Module, inst::LLVM.Function) = erase!(inst)
+eraseInst(bb::LLVM.Module, inst::LLVM.GlobalVariable) = erase!(inst)
 
 function unique_gcmarker!(func::LLVM.Function)
-    entry_bb = first(blocks(func))
-    pgcstack_func, _ = declare_pgcstack!(LLVM.parent(func))
+    entry_bb = first(func.blocks)
+    pgcstack_func, _ = declare_pgcstack!(func.parent)
 
     found = LLVM.CallInst[]
-    for I in instructions(entry_bb)
-        if I isa LLVM.CallInst && called_operand(I) == pgcstack_func
+    for I in entry_bb.instructions
+        if I isa LLVM.CallInst && I.called_operand == pgcstack_func
             push!(found, I)
         end
     end
     if length(found) > 1
-        for i = 2:length(found)
+        for i in 2:length(found)
             LLVM.replace_uses!(found[i], found[1])
             eraseInst(entry_bb, found[i])
         end
@@ -1121,18 +853,18 @@ function unique_gcmarker!(func::LLVM.Function)
     return nothing
 end
 
-@inline AnonymousStruct(::Type{U}) where {U<:Tuple} =
-    NamedTuple{ntuple(Symbol, Val(length(U.parameters))),U}
+@inline AnonymousStruct(::Type{U}) where {U <: Tuple} =
+    NamedTuple{ntuple(Symbol, Val(length(U.parameters))), U}
 
 # recursively compute the eltype type indexed by idx[0], idx[1], ...
 Base.@assume_effects :removable :foldable :nothrow function recursive_eltype(@nospecialize(val::LLVM.Value), idxs::Vector{Cuint})::LLVM.LLVMType
-    ty = LLVM.value_type(val)::LLVM.LLVMType
+    ty = val.value_type::LLVM.LLVMType
     for i in idxs
         if isa(ty, LLVM.ArrayType)
-            ty = eltype(ty)::LLVM.LLVMType
+            ty = ty.element_type::LLVM.LLVMType
         else
             @assert isa(ty, LLVM.StructType)
-            ty = elements(ty)[i+1]::LLVM.LLVMType
+            ty = ty.elements[i + 1]::LLVM.LLVMType
         end
     end
     return ty
@@ -1141,30 +873,30 @@ end
 # Fix calling convention within julia that Tuple{Float,Float} ->[2 x float] rather than {float, float}
 # and that Bool -> i8, not i1
 function calling_conv_fixup(
-    builder::LLVM.IRBuilder,
-    @nospecialize(val::LLVM.Value),
-    @nospecialize(tape::LLVM.LLVMType),
-    @nospecialize(prev::LLVM.Value) = LLVM.UndefValue(tape),
-    lidxs::Vector{Cuint} = Cuint[],
-    ridxs::Vector{Cuint} = Cuint[],
-    emesg = nothing,
-)::LLVM.Value
+        builder::LLVM.IRBuilder,
+        @nospecialize(val::LLVM.Value),
+        @nospecialize(tape::LLVM.LLVMType),
+        @nospecialize(prev::LLVM.Value) = LLVM.UndefValue(tape),
+        lidxs::Vector{Cuint} = Cuint[],
+        ridxs::Vector{Cuint} = Cuint[],
+        emesg = nothing,
+    )::LLVM.Value
     ctype = recursive_eltype(val, lidxs)
     if ctype == tape
         if length(lidxs) != 0
-            val = API.e_extract_value!(builder, val, lidxs)
+            val = extract_value!(builder, val, lidxs)
         end
         if length(ridxs) == 0
             return val
         else
-            return API.e_insert_value!(builder, prev, val, ridxs)
+            return insert_value!(builder, prev, val, ridxs)
         end
     end
 
     if isa(tape, LLVM.StructType)
         if isa(ctype, LLVM.ArrayType)
-            @assert length(ctype) == length(elements(tape))
-            for (i, ty) in enumerate(elements(tape))
+            @assert ctype.length == length(tape.elements)
+            for (i, ty) in enumerate(tape.elements)
                 ln = copy(lidxs)
                 push!(ln, i - 1)
                 rn = copy(ridxs)
@@ -1174,8 +906,8 @@ function calling_conv_fixup(
             return prev
         end
         if isa(ctype, LLVM.StructType)
-            @assert length(elements(ctype)) == length(elements(tape))
-            for (i, ty) in enumerate(elements(tape))
+            @assert length(ctype.elements) == length(tape.elements)
+            for (i, ty) in enumerate(tape.elements)
                 ln = copy(lidxs)
                 push!(ln, i - 1)
                 rn = copy(ridxs)
@@ -1186,56 +918,56 @@ function calling_conv_fixup(
         end
     elseif isa(tape, LLVM.ArrayType)
         if isa(ctype, LLVM.ArrayType)
-            @assert length(ctype) == length(tape)
-            for i = 1:length(tape)
+            @assert ctype.length == tape.length
+            for i in 1:tape.length
                 ln = copy(lidxs)
                 push!(ln, i - 1)
                 rn = copy(ridxs)
                 push!(rn, i - 1)
-                prev = calling_conv_fixup(builder, val, eltype(tape), prev, ln, rn, emesg)
+                prev = calling_conv_fixup(builder, val, tape.element_type, prev, ln, rn, emesg)
             end
             return prev
         end
         if isa(ctype, LLVM.StructType)
-            @assert length(elements(ctype)) == length(tape)
-            for i = 1:length(tape)
+            @assert length(ctype.elements) == tape.length
+            for i in 1:tape.length
                 ln = copy(lidxs)
                 push!(ln, i - 1)
                 rn = copy(ridxs)
                 push!(rn, i - 1)
-                prev = calling_conv_fixup(builder, val, eltype(tape), prev, ln, rn, emesg)
+                prev = calling_conv_fixup(builder, val, tape.element_type, prev, ln, rn, emesg)
             end
             return prev
         end
     end
 
     if isa(tape, LLVM.IntegerType) &&
-       LLVM.width(tape) == 1 &&
-       LLVM.width(ctype) != LLVM.width(tape)
+            tape.width == 1 &&
+            ctype.width != tape.width
         if length(lidxs) != 0
-            val = API.e_extract_value!(builder, val, lidxs)
+            val = extract_value!(builder, val, lidxs)
         end
         val = trunc!(builder, val, tape)
         return if length(ridxs) != 0
-            API.e_insert_value!(builder, prev, val, ridxs)
+            insert_value!(builder, prev, val, ridxs)
         else
             val
         end
     end
     if isa(tape, LLVM.PointerType) &&
-       isa(ctype, LLVM.PointerType) &&
-       LLVM.addrspace(tape) == LLVM.addrspace(ctype)
+            isa(ctype, LLVM.PointerType) &&
+            tape.addrspace == ctype.addrspace
         if length(lidxs) != 0
-            val = API.e_extract_value!(builder, val, lidxs)
+            val = extract_value!(builder, val, lidxs)
         end
         val = pointercast!(builder, val, tape)
         return if length(ridxs) != 0
-            API.e_insert_value!(builder, prev, val, ridxs)
+            insert_value!(builder, prev, val, ridxs)
         else
             val
         end
     end
-    if isa(ctype, LLVM.ArrayType) && length(ctype) == 1 && eltype(ctype) == tape
+    if isa(ctype, LLVM.ArrayType) && ctype.length == 1 && ctype.element_type == tape
         lhs_n = copy(lidxs)
         push!(lhs_n, 0)
         return calling_conv_fixup(builder, val, tape, prev, lhs_n, ridxs, emesg)

@@ -111,17 +111,17 @@ mhi_tangent(x, v) = autodiff(Forward, Const(mhi_filled), Duplicated(x, v))[1]
 end
 
 function mhi_callee_name(call)
-    callee = LLVM.called_operand(call)
-    return callee isa LLVM.Function ? LLVM.name(callee) : ""
+    callee = call.called_operand
+    return callee isa LLVM.Function ? callee.name : ""
 end
 
 # The calls of `allocator` in `mod`, of `bytes` bytes where that is given.
 function mhi_allocations(mod, allocator, bytes = nothing)
     allocs = LLVM.CallInst[]
-    for f in LLVM.functions(mod), bb in LLVM.blocks(f), inst in LLVM.instructions(bb)
+    for f in mod.functions, bb in f.blocks, inst in bb.instructions
         inst isa LLVM.CallInst && mhi_callee_name(inst) == allocator || continue
         if bytes !== nothing
-            size = LLVM.operands(inst)[2]
+            size = inst.operands[2]
             size isa LLVM.ConstantInt && convert(Int, size) == bytes || continue
         end
         push!(allocs, inst)
@@ -131,7 +131,7 @@ end
 
 function mhi_base(@nospecialize(v))
     while v isa LLVM.GetElementPtrInst || v isa LLVM.AddrSpaceCastInst || v isa LLVM.BitCastInst
-        v = LLVM.operands(v)[1]
+        v = v.operands[1]
     end
     return v
 end
@@ -145,7 +145,7 @@ function mhi_stores_before_safepoint(alloc)
         if inst isa LLVM.CallInst
             name = mhi_callee_name(inst)
             startswith(name, "llvm.") || name == "julia.pointer_from_objref" || break
-        elseif inst isa LLVM.StoreInst && mhi_base(LLVM.operands(inst)[2]) == alloc
+        elseif inst isa LLVM.StoreInst && mhi_base(inst.operands[2]) == alloc
             stores += 1
         end
         ref = LLVM.API.LLVMGetNextInstruction(inst)

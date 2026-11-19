@@ -190,10 +190,10 @@ const NTA_OTHER_TAPE_TYPE = NTA_READS_NESTED * """
 function nta_second_nested_member_unread(reverse_passes::String; function_name = nothing)
     return NTA_LLVM.Context() do ctx
         mod = parse(NTA_LLVM.Module, nta_tape_module(reverse_passes))
-        fn = NTA_LLVM.functions(mod)["augmented_f"]
-        function_name === nothing || NTA_LLVM.name!(fn, function_name)
-        for inst in NTA_LLVM.instructions(first(NTA_LLVM.blocks(fn)))
-            NTA_LLVM.name(inst) == "member" && return Enzyme.Compiler.tape_member_never_read(inst)
+        fn = mod.functions["augmented_f"]
+        function_name === nothing || (fn.name = function_name)
+        for inst in (first(fn.blocks)).instructions
+            inst.name == "member" && return Enzyme.Compiler.tape_member_never_read(inst)
         end
         error("no such insertvalue")
     end

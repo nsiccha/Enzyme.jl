@@ -27,12 +27,12 @@ function memory_length_stored_first(alloc::LLVM.Instruction)::Bool
     while ref != C_NULL
         inst = LLVM.Instruction(ref)
         if inst isa LLVM.StoreInst
-            base, offset = constant_field_pointer(operands(inst)[2])
+            base, offset = constant_field_pointer(inst.operands[2])
             base == alloc && offset == 0 && return true
         elseif inst isa LLVM.CallBase
-            callee = called_operand(inst)
+            callee = inst.called_operand
             callee isa LLVM.Function || return false
-            fname = LLVM.name(callee)
+            fname = callee.name
             startswith(fname, "llvm.") || fname == "julia.pointer_from_objref" || return false
         end
         ref = LLVM.API.LLVMGetNextInstruction(inst)
@@ -43,21 +43,21 @@ end
 function store_empty_memory_lengths!(mod::LLVM.Module)::Bool
     changed = false
     for fname in UNCHECKED_MEMORY_ALLOCATORS
-        haskey(functions(mod), fname) || continue
-        allocator = functions(mod)[fname]
-        for use in collect(LLVM.uses(allocator))
-            alloc = LLVM.user(use)
-            alloc isa LLVM.CallInst && called_operand(alloc) == allocator || continue
+        haskey(mod.functions, fname) || continue
+        allocator = mod.functions[fname]
+        for use in collect(allocator.uses)
+            alloc = use.user
+            alloc isa LLVM.CallInst && alloc.called_operand == allocator || continue
             memory_length_stored_first(alloc) && continue
             B = LLVM.IRBuilder()
-            position!(B, LLVM.Instruction(LLVM.API.LLVMGetNextInstruction(alloc)))
+            position!(B, LLVM.after(alloc))
             ST = get_memory_struct()
             lenptr = inbounds_gep!(
                 B, ST, struct_ptr!(B, alloc, ST),
                 LLVM.Value[LLVM.ConstantInt(Int32(0)), LLVM.ConstantInt(Int32(0))],
             )
             st = store!(B, LLVM.ConstantInt(LLVM.IntType(8 * sizeof(Csize_t)), 0), lenptr)
-            LLVM.API.LLVMSetVolatile(st, true)
+            st.volatile = true
             dispose(B)
             changed = true
         end

@@ -226,10 +226,14 @@ end
         )
         buf = convert(LLVM.MemoryBuffer, blob)
         bitcode = String(convert(Vector{UInt8}, buf))
-        dispose(buf)
+        LLVM.dispose(buf)
 
         ptr = reinterpret(Ptr{Cvoid}, UInt(0x2788))
-        Enzyme.Compiler.autodiff_cache[ptr] = Enzyme.Compiler.CachedThunk("thunk", bitcode, Enzyme.Compiler.JuliaValueTable())
+        # The synthetic thunk has the same body for every thread count.
+        job = Enzyme.Compiler.get_job(identity, Const, Tuple{Const{Int64}})
+        Enzyme.Compiler.autodiff_cache[ptr] = Enzyme.Compiler.CachedThunk(
+            "thunk", bitcode, Enzyme.Compiler.JuliaValueTable(), job, false, Nothing, false, Ref{Any}(nothing),
+        )
         try
             Enzyme.@with Enzyme.Compiler.ENZYME_CONTEXT =>
                 Enzyme.Compiler.EnzymeContext(GPUCompiler.tls_world_age()) begin
@@ -240,20 +244,20 @@ end
                 @test !LLVM.isdeclaration(imported)
                 # Externally visible, so the modules that only declare the entry
                 # bind to this definition when everything is linked together.
-                @test LLVM.linkage(imported) == LLVM.API.LLVMExternalLinkage
-                @test haskey(LLVM.functions(first_mod), "julia_shared")
+                @test imported.linkage == LLVM.Linkage.External
+                @test haskey(first_mod.functions, "julia_shared")
 
                 second_mod = LLVM.Module("second")
                 declared = Enzyme.Compiler.import_cached_autodiff!(second_mod, ptr, FT)
                 @test LLVM.isdeclaration(declared)
                 # The blob is not imported a second time, so nothing it carries
                 # is defined twice.
-                @test !haskey(LLVM.functions(second_mod), "julia_shared")
+                @test !haskey(second_mod.functions, "julia_shared")
 
                 LLVM.link!(first_mod, second_mod)
                 Enzyme.Compiler.internalize_imported_thunks!(first_mod)
-                @test LLVM.linkage(LLVM.functions(first_mod)["thunk"]) ==
-                    LLVM.API.LLVMInternalLinkage
+                @test first_mod.functions["thunk"].linkage ==
+                    LLVM.Linkage.Internal
             end
         finally
             delete!(Enzyme.Compiler.autodiff_cache, ptr)
@@ -292,21 +296,21 @@ end
 
         Enzyme.Compiler.link_split_existing!(dst, src)
 
-        fns = LLVM.functions(dst)
+        fns = dst.functions
         @test haskey(fns, "julia___dup")
         @test !LLVM.isdeclaration(fns["julia___dup"])
-        @test LLVM.linkage(fns["julia___dup"]) == LLVM.API.LLVMExternalLinkage
+        @test fns["julia___dup"].linkage == LLVM.Linkage.External
         @test haskey(fns, "only_in_dst")
         @test haskey(fns, "uses_dup")
         usesfn = fns["uses_dup"]
         callinst = first(
             filter(
                 Base.Fix2(isa, LLVM.CallInst),
-                collect(instructions(first(blocks(usesfn)))),
+                collect(first(usesfn.blocks).instructions),
             ),
         )
-        called_fn = last(collect(operands(callinst)))
-        @test LLVM.linkage(called_fn) == LLVM.API.LLVMInternalLinkage
+        called_fn = last(collect(callinst.operands))
+        @test called_fn.linkage == LLVM.Linkage.Internal
 
         # Test 2: Identical definitions are folded by MergeFunctionsPass
         dst2 = parse(
@@ -332,17 +336,17 @@ end
             """,
         )
         Enzyme.Compiler.link_split_existing!(dst2, src2)
-        fns2 = LLVM.functions(dst2)
+        fns2 = dst2.functions
         @test haskey(fns2, "julia___dup")
         @test haskey(fns2, "uses_dup2")
         usesfn2 = fns2["uses_dup2"]
         callinst2 = first(
             filter(
                 Base.Fix2(isa, LLVM.CallInst),
-                collect(instructions(first(blocks(usesfn2)))),
+                collect(first(usesfn2.blocks).instructions),
             ),
         )
-        @test LLVM.name(last(collect(operands(callinst2)))) == "julia___dup"
+        @test last(collect(callinst2.operands)).name == "julia___dup"
     end
 end
 
@@ -380,8 +384,8 @@ end
             attributes #0 = { "enzymejl_needs_restoration"="12345" }
             """,
         )
-        @test Enzyme.Compiler.restoration_ptr(functions(mod)["foo"]) == UInt(12345)
-        @test Enzyme.Compiler.restoration_ptr(functions(mod)["bar"]) === nothing
+        @test Enzyme.Compiler.restoration_ptr(mod.functions["foo"]) == UInt(12345)
+        @test Enzyme.Compiler.restoration_ptr(mod.functions["bar"]) === nothing
     end
 end
 
@@ -746,11 +750,11 @@ end
 
 "The `memcmp` / `bcmp` call in `mod`, or `nothing` if there is none."
 function find_bits_compare(mod::LLVM.Module)
-    for f in functions(mod), bb in blocks(f), inst in instructions(bb)
+    for f in mod.functions, bb in f.blocks, inst in bb.instructions
         isa(inst, LLVM.CallInst) || continue
-        callee = LLVM.called_operand(inst)
+        callee = inst.called_operand
         isa(callee, LLVM.Function) || continue
-        if LLVM.name(callee) in ("bcmp", "memcmp")
+        if callee.name in ("bcmp", "memcmp")
             return inst
         end
     end
@@ -768,27 +772,25 @@ behind, and it is the input `fix_decayaddr!` has to repair.
 """
 function collapse_decay!(call::LLVM.CallInst)
     n = 0
-    for (i, arg) in enumerate(Enzyme.Compiler.arg_operands_view(call))
+    for (i, arg) in enumerate(call.arguments)
         # With typed pointers the `{}*` result is bitcast to `i8*` first; look
         # through that to the derivation underneath.
-        pfo = isa(arg, LLVM.BitCastInst) ? operands(arg)[1] : arg
+        pfo = isa(arg, LLVM.BitCastInst) ? arg.operands[1] : arg
         isa(pfo, LLVM.CallInst) || continue
-        callee = LLVM.called_operand(pfo)
-        (isa(callee, LLVM.Function) && LLVM.name(callee) == "julia.pointer_from_objref") ||
+        callee = pfo.called_operand
+        (isa(callee, LLVM.Function) && callee.name == "julia.pointer_from_objref") ||
             continue
-        src = operands(pfo)[1]
+        src = pfo.operands[1]
         isa(src, LLVM.AddrSpaceCastInst) || continue
-        obj = operands(src)[1]
-        LLVM.addrspace(value_type(obj)) == 10 || continue
+        obj = src.operands[1]
+        obj.value_type.addrspace == 10 || continue
         b = LLVM.IRBuilder()
-        LLVM.position!(b, call)
-        LLVM.API.LLVMSetOperand(
-            call, i - 1, LLVM.addrspacecast!(b, obj, value_type(arg))
-        )
-        if arg != pfo && isempty(LLVM.uses(arg))
+        LLVM.position!(b, LLVM.before(call))
+        call.operands[i] = LLVM.addrspacecast!(b, obj, arg.value_type)
+        if arg != pfo && isempty(arg.uses)
             LLVM.erase!(arg)
         end
-        isempty(LLVM.uses(pfo)) && LLVM.erase!(pfo)
+        isempty(pfo.uses) && LLVM.erase!(pfo)
         n += 1
     end
     return n
@@ -796,8 +798,8 @@ end
 
 "Strip every read-only marker from `call` and from the function it calls."
 function drop_readonly!(call::LLVM.CallInst)
-    callee = LLVM.called_operand(call)::LLVM.Function
-    for attrs in (LLVM.function_attributes(callee), LLVM.function_attributes(call))
+    callee = call.called_operand::LLVM.Function
+    for attrs in (callee.function_attributes, call.function_attributes)
         for attr in collect(attrs)
             if Enzyme.Compiler.is_readonly(attr)
                 delete!(attrs, attr)
@@ -814,7 +816,7 @@ end
         @test cmp !== nothing
         # The callee has to be read-only for the rewrite below to apply at all;
         # that is how Julia and LLVM annotate `memcmp` / `bcmp`.
-        @test Enzyme.Compiler.is_readonly(LLVM.called_operand(cmp)::LLVM.Function)
+        @test Enzyme.Compiler.is_readonly(cmp.called_operand::LLVM.Function)
         @test collapse_decay!(cmp) == 2
 
         @test @filecheck begin
@@ -836,11 +838,11 @@ end
         end
 
         # Nothing decays straight out of the tracked address space any more.
-        for f in functions(mod), bb in blocks(f), inst in instructions(bb)
+        for f in mod.functions, bb in f.blocks, inst in bb.instructions
             if isa(inst, LLVM.AddrSpaceCastInst)
                 @test !(
-                    LLVM.addrspace(value_type(operands(inst)[1])) == 10 &&
-                        LLVM.addrspace(value_type(inst)) == 0
+                    inst.operands[1].value_type.addrspace == 10 &&
+                        inst.value_type.addrspace == 0
                 )
             end
         end
@@ -856,7 +858,7 @@ end
         @test cmp !== nothing
         @test collapse_decay!(cmp) == 2
         drop_readonly!(cmp)
-        @test !Enzyme.Compiler.is_readonly(LLVM.called_operand(cmp)::LLVM.Function)
+        @test !Enzyme.Compiler.is_readonly(cmp.called_operand::LLVM.Function)
 
         @test_throws AssertionError Enzyme.Compiler.fix_decayaddr!(mod)
     end
@@ -906,7 +908,8 @@ end
             @check "%[[SLOT:.+]] = getelementptr i8, ptr addrspace(11)"
             @check "load [1 x ptr addrspace(10)], ptr addrspace(11) %[[SLOT]]"
             @check "store [1 x ptr addrspace(10)] {{.*}}, ptr %[[TMP]]"
-            @check "call void @use_roots(ptr nocapture readonly %[[TMP]])"
+            # LLVM 21+ prints `nocapture` as `captures(none)`.
+            @check "call void @use_roots(ptr {{nocapture|captures\\(none\\)}} readonly %[[TMP]])"
             # A derived pointer that does not trace back to a tracked object
             # is left alone.
             @check_label "@untracked"
@@ -921,9 +924,9 @@ end
 
 function root_phi_addrspaces(f::LLVM.Function)
     spaces = Int[]
-    for bb in blocks(f), inst in instructions(bb)
+    for bb in f.blocks, inst in bb.instructions
         if isa(inst, LLVM.PHIInst)
-            push!(spaces, Int(LLVM.addrspace(value_type(inst))))
+            push!(spaces, Int(inst.value_type.addrspace))
         end
     end
     return spaces
@@ -995,19 +998,19 @@ end
         )
 
         # The pass replaces the phi of root-array pointers with a phi of loads.
-        diamond = functions(mod)["diamond"]
+        diamond = mod.functions["diamond"]
         @test root_phi_addrspaces(diamond) == [0]
         @test Enzyme.Compiler.unfold_root_phi_loads!(diamond)
         @test root_phi_addrspaces(diamond) == [10]
 
         # The phi gets a value from its own block, and that value is the phi.
         # The pass must not change this function.
-        selfref = functions(mod)["selfref"]
+        selfref = mod.functions["selfref"]
         @test !Enzyme.Compiler.unfold_root_phi_loads!(selfref)
         @test root_phi_addrspaces(selfref) == [0]
 
         # The same, but the value from its own block is a GEP of the phi.
-        selfref_gep = functions(mod)["selfref_gep"]
+        selfref_gep = mod.functions["selfref_gep"]
         @test !Enzyme.Compiler.unfold_root_phi_loads!(selfref_gep)
         @test root_phi_addrspaces(selfref_gep) == [0]
 
@@ -1133,24 +1136,24 @@ end
 
         # A read-only intrinsic between the phi and the load does not block the
         # rewrite, and both incoming pointers may be loaded speculatively.
-        preheader = functions(mod)["preheader"]
+        preheader = mod.functions["preheader"]
         @test Enzyme.Compiler.unfold_root_phi_loads!(preheader)
         @test root_phi_addrspaces(preheader) == [10]
 
         # A store before the load could change what it reads.
-        store_between = functions(mod)["store_between"]
+        store_between = mod.functions["store_between"]
         @test !Enzyme.Compiler.unfold_root_phi_loads!(store_between)
         @test root_phi_addrspaces(store_between) == [0]
 
         # Loading the argument where the program did not is only safe when it is
         # known to be dereferenceable.
-        not_dereferenceable = functions(mod)["not_dereferenceable"]
+        not_dereferenceable = mod.functions["not_dereferenceable"]
         @test !Enzyme.Compiler.unfold_root_phi_loads!(not_dereferenceable)
         @test root_phi_addrspaces(not_dereferenceable) == [0]
 
         # The load's block has two predecessors, so the phi's block does not
         # lead straight to it.
-        two_preds = functions(mod)["two_preds"]
+        two_preds = mod.functions["two_preds"]
         @test !Enzyme.Compiler.unfold_root_phi_loads!(two_preds)
         @test root_phi_addrspaces(two_preds) == [0]
 
@@ -1234,8 +1237,8 @@ end
 # The address spaces of the pointer phis in `f`.
 pointer_phi_addrspaces(f) = sort!(
     [
-        LLVM.addrspace(value_type(inst)) for bb in blocks(f) for inst in instructions(bb)
-            if isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType)
+        (inst.value_type).addrspace for bb in f.blocks for inst in bb.instructions
+            if isa(inst, LLVM.PHIInst) && isa(inst.value_type, LLVM.PointerType)
     ]
 )
 
@@ -1367,16 +1370,16 @@ merge:
     # (test/nested_unalias_view.jl).
     LLVM.Context() do ctx
         mod = parse(LLVM.Module, ARGUMENT_PHI_HEADER * ARGUMENT_PHI_UNFOLDED * ARGUMENT_PHI_KEPT * ARGUMENT_PHI_ATTRIBUTES)
-        field = functions(mod)["field"]
-        fields = functions(mod)["fields"]
+        field = mod.functions["field"]
+        fields = mod.functions["fields"]
         @test pointer_phi_addrspaces(field) == [11]
         @test pointer_phi_addrspaces(fields) == [11]
 
         # Not rewritten: a write before the load, a phi that reaches a call, and a
         # phi of arguments only (which `nodecayed_phis!` leaves alone).
         for name in ("written", "escapes", "args")
-            @test !Enzyme.Compiler.unfold_argument_phi_loads!(functions(mod)[name])
-            @test pointer_phi_addrspaces(functions(mod)[name]) == [11]
+            @test !Enzyme.Compiler.unfold_argument_phi_loads!(mod.functions[name])
+            @test pointer_phi_addrspaces(mod.functions[name]) == [11]
         end
 
         @test Enzyme.Compiler.unfold_argument_phi_loads!(field)
@@ -1387,28 +1390,28 @@ merge:
         # merge block takes a phi of each loaded value.
         T_prjlvalue = LLVM.PointerType(LLVM.StructType(LLVM.LLVMType[]), 10)
         for (f, merged) in ((field, [LLVM.IntType(64)]), (fields, [LLVM.ArrayType(LLVM.IntType(64), 1), T_prjlvalue]))
-            merge = only(bb for bb in blocks(f) if LLVM.name(bb) == "merge")
-            phis = [inst for inst in instructions(merge) if isa(inst, LLVM.PHIInst)]
-            @test sort!(string.(value_type.(phis))) == sort!(string.(merged))
-            for phi in phis, (v, pred) in LLVM.incoming(phi)
+            merge = only(bb for bb in f.blocks if bb.name == "merge")
+            phis = [inst for inst in merge.instructions if isa(inst, LLVM.PHIInst)]
+            @test sort!(string.([phi.value_type for phi in phis])) == sort!(string.(merged))
+            for phi in phis, (v, pred) in phi.incoming
                 # Each value is loaded at the end of its own predecessor, which
                 # branches only to the merge block.
                 @test isa(v, LLVM.LoadInst)
-                @test LLVM.parent(v) == pred
-                @test collect(successors(terminator(pred))) == [merge]
+                @test v.parent == pred
+                @test collect((pred.terminator).successors) == [merge]
             end
-            @test !any(isa(inst, LLVM.LoadInst) for inst in instructions(merge))
+            @test !any(isa(inst, LLVM.LoadInst) for inst in merge.instructions)
         end
         @test pointer_phi_addrspaces(field) == Int[]
         @test pointer_phi_addrspaces(fields) == [10]
         # The tracked field stays an atomic unordered load.
-        fields_merge = only(bb for bb in blocks(fields) if LLVM.name(bb) == "merge")
-        tracked = only(inst for inst in instructions(fields_merge) if isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType))
-        for (v, _) in LLVM.incoming(tracked)
+        fields_merge = only(bb for bb in fields.blocks if bb.name == "merge")
+        tracked = only(inst for inst in fields_merge.instructions if isa(inst, LLVM.PHIInst) && isa(inst.value_type, LLVM.PointerType))
+        for (v, _) in tracked.incoming
             @test LLVM.API.LLVMGetOrdering(v) == LLVM.API.LLVMAtomicOrderingUnordered
         end
         # `field`'s argument came straight from `top`, so that edge got a block.
-        @test count(bb -> LLVM.name(bb) == "unsink.edge", blocks(field)) == 1
+        @test count(bb -> bb.name == "unsink.edge", field.blocks) == 1
     end
 
     # `nodecayed_phis!` itself does this before it looks for parents. The phis it
@@ -1417,18 +1420,18 @@ merge:
         mod = parse(LLVM.Module, ARGUMENT_PHI_HEADER * ARGUMENT_PHI_UNFOLDED * ARGUMENT_PHI_KEPT * ARGUMENT_PHI_ATTRIBUTES)
         Enzyme.Compiler.nodecayed_phis!(mod)
         @test LLVM.verify(mod) === nothing
-        @test pointer_phi_addrspaces(functions(mod)["field"]) == Int[]
-        @test pointer_phi_addrspaces(functions(mod)["fields"]) == [10]
-        @test pointer_phi_addrspaces(functions(mod)["args"]) == [11]
+        @test pointer_phi_addrspaces(mod.functions["field"]) == Int[]
+        @test pointer_phi_addrspaces(mod.functions["fields"]) == [10]
+        @test pointer_phi_addrspaces(mod.functions["args"]) == [11]
         for name in ("field", "fields", "args")
-            @test !occursin("nodecayed.", string(functions(mod)[name]))
-            @test !occursin("jl_throw", string(functions(mod)[name]))
+            @test !occursin("nodecayed.", string(mod.functions[name]))
+            @test !occursin("jl_throw", string(mod.functions[name]))
         end
         for name in ("written", "escapes")
-            f = functions(mod)[name]
-            merge = only(bb for bb in blocks(f) if LLVM.name(bb) == "merge")
-            @test isa(terminator(merge), LLVM.UnreachableInst)
-            @test any(inst -> isa(inst, LLVM.CallInst) && occursin("jl_throw", LLVM.name(LLVM.called_operand(inst))), instructions(merge))
+            f = mod.functions[name]
+            merge = only(bb for bb in f.blocks if bb.name == "merge")
+            @test isa(merge.terminator, LLVM.UnreachableInst)
+            @test any(inst -> isa(inst, LLVM.CallInst) && occursin("jl_throw", (inst.called_operand).name), merge.instructions)
             @test pointer_phi_addrspaces(f) == Int[]
         end
     end
@@ -1445,14 +1448,14 @@ end
         )
         FT = LLVM.FunctionType(LLVM.VoidType())
         @test_throws ArgumentError Enzyme.Compiler.get_function!(mod, "abort", FT)
-        @test !haskey(LLVM.functions(mod), "abort.1")
+        @test !haskey(mod.functions, "abort.1")
 
-        existing = LLVM.functions(mod)["existing"]
+        existing = mod.functions["existing"]
         F, _ = Enzyme.Compiler.get_function!(mod, "existing", LLVM.FunctionType(LLVM.VoidType(), [LLVM.Int64Type()]))
         @test F == existing
 
         F, _ = Enzyme.Compiler.get_function!(mod, "fresh", FT)
-        @test LLVM.name(F) == "fresh"
+        @test F.name == "fresh"
     end
 end
 
@@ -1718,7 +1721,7 @@ function merge_tail_ir(typed::Bool)
 end
 
 function merge_tail_split!(mod, name)
-    f = functions(mod)[name]
+    f = mod.functions[name]
     Enzyme.Compiler.split_constant_merges!(mod, Enzyme.Compiler.ConstantFields(f, Set{LLVM.Value}()))
     return f
 end
@@ -1730,54 +1733,54 @@ end
         behind = merge_tail_split!(mod, "behind")
         @test LLVM.verify(mod) === nothing
         @test pointer_phi_addrspaces(behind) == Int[]
-        in_block = only(bb for bb in blocks(behind) if LLVM.name(bb) == "in")
-        loaded = only(inst for inst in instructions(in_block) if isa(inst, LLVM.PHIInst) && value_type(inst) == LLVM.DoubleType())
-        for (v, pred) in LLVM.incoming(loaded)
+        in_block = only(bb for bb in behind.blocks if bb.name == "in")
+        loaded = only(inst for inst in in_block.instructions if isa(inst, LLVM.PHIInst) && inst.value_type == LLVM.DoubleType())
+        for (v, pred) in loaded.incoming
             # Each load runs on its own edge into `in`, behind its copy of the check.
             @test isa(v, LLVM.LoadInst)
-            @test LLVM.parent(v) == pred
-            @test collect(successors(terminator(pred))) == [in_block]
+            @test v.parent == pred
+            @test collect((pred.terminator).successors) == [in_block]
             check = only(LLVM.predecessors(pred))
-            @test any(isa(inst, LLVM.ICmpInst) for inst in instructions(check))
+            @test any(isa(inst, LLVM.ICmpInst) for inst in check.instructions)
         end
         # `%len`, used behind the check, is a phi on both sides of it.
-        oob = only(bb for bb in blocks(behind) if LLVM.name(bb) == "oob")
-        @test count(inst -> isa(inst, LLVM.PHIInst) && value_type(inst) == LLVM.IntType(64), collect(instructions(oob))) == 1
-        @test count(inst -> isa(inst, LLVM.PHIInst) && value_type(inst) == LLVM.IntType(64), collect(instructions(in_block))) == 1
+        oob = only(bb for bb in behind.blocks if bb.name == "oob")
+        @test count(inst -> isa(inst, LLVM.PHIInst) && inst.value_type == LLVM.IntType(64), collect(oob.instructions)) == 1
+        @test count(inst -> isa(inst, LLVM.PHIInst) && inst.value_type == LLVM.IntType(64), collect(in_block.instructions)) == 1
         @test length(LLVM.predecessors(oob)) == 2
 
         twice = merge_tail_split!(mod, "twice")
         @test LLVM.verify(mod) === nothing
         @test pointer_phi_addrspaces(twice) == Int[]
-        in_block = only(bb for bb in blocks(twice) if LLVM.name(bb) == "in")
-        @test count(inst -> isa(inst, LLVM.PHIInst) && value_type(inst) == LLVM.DoubleType(), collect(instructions(in_block))) == 1
-        @test !any(isa(inst, LLVM.LoadInst) for inst in instructions(in_block))
+        in_block = only(bb for bb in twice.blocks if bb.name == "in")
+        @test count(inst -> isa(inst, LLVM.PHIInst) && inst.value_type == LLVM.DoubleType(), collect(in_block.instructions)) == 1
+        @test !any(isa(inst, LLVM.LoadInst) for inst in in_block.instructions)
 
         picked = merge_tail_split!(mod, "picked")
         @test LLVM.verify(mod) === nothing
-        @test !any(isa(inst, LLVM.SelectInst) for bb in blocks(picked) for inst in instructions(bb))
-        in_block = only(bb for bb in blocks(picked) if LLVM.name(bb) == "in")
+        @test !any(isa(inst, LLVM.SelectInst) for bb in picked.blocks for inst in bb.instructions)
+        in_block = only(bb for bb in picked.blocks if bb.name == "in")
         @test pointer_phi_addrspaces(picked) == [10]
-        oob = only(bb for bb in blocks(picked) if LLVM.name(bb) == "oob")
-        @test isa(first(instructions(oob)), LLVM.PHIInst)
-        @test !any(isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType) for inst in instructions(in_block))
+        oob = only(bb for bb in picked.blocks if bb.name == "oob")
+        @test isa(first(oob.instructions), LLVM.PHIInst)
+        @test !any(isa(inst, LLVM.PHIInst) && isa(inst.value_type, LLVM.PointerType) for inst in in_block.instructions)
 
         written = merge_tail_split!(mod, "written")
         @test LLVM.verify(mod) === nothing
         @test pointer_phi_addrspaces(written) == Int[]
-        for bb in blocks(written)
-            insts = collect(instructions(bb))
-            at = findfirst(inst -> isa(inst, LLVM.LoadInst) && value_type(inst) == LLVM.DoubleType(), insts)
+        for bb in written.blocks
+            insts = collect(bb.instructions)
+            at = findfirst(inst -> isa(inst, LLVM.LoadInst) && inst.value_type == LLVM.DoubleType(), insts)
             at === nothing && continue
             @test any(isa(inst, LLVM.StoreInst) for inst in insts[1:at])
         end
 
         dead_behind = merge_tail_split!(mod, "dead_behind")
         @test LLVM.verify(mod) === nothing
-        @test !any(isa(inst, LLVM.SelectInst) for bb in blocks(dead_behind) for inst in instructions(bb))
+        @test !any(isa(inst, LLVM.SelectInst) for bb in dead_behind.blocks for inst in bb.instructions)
         live_phis = [
-            inst for bb in blocks(dead_behind) for inst in instructions(bb)
-                if isa(inst, LLVM.PHIInst) && isa(value_type(inst), LLVM.PointerType) && LLVM.name(bb) != "oob2" && LLVM.name(bb) != "oob"
+            inst for bb in dead_behind.blocks for inst in bb.instructions
+                if isa(inst, LLVM.PHIInst) && isa(inst.value_type, LLVM.PointerType) && bb.name != "oob2" && bb.name != "oob"
         ]
         @test isempty(live_phis)
 
@@ -1785,7 +1788,7 @@ end
             f = merge_tail_split!(mod, name)
             @test LLVM.verify(mod) === nothing
             @test pointer_phi_addrspaces(f) == [kept]
-            @test any(LLVM.name(bb) == "merge" for bb in blocks(f))
+            @test any(bb.name == "merge" for bb in f.blocks)
         end
     end
 end
@@ -1856,13 +1859,13 @@ end
     LLVM.Context() do ctx
         mod = parse(LLVM.Module, merge_edges_debug_ir(LLVM.supports_typed_pointers(ctx)))
         @test LLVM.verify(mod) === nothing
-        both = functions(mod)["both"]
+        both = mod.functions["both"]
         Enzyme.Compiler.split_constant_merges!(mod, Enzyme.Compiler.ConstantFields(both, Set{LLVM.Value}()))
         @test LLVM.verify(mod) === nothing
         for name in ("first", "second")
-            f = functions(mod)[name]
+            f = mod.functions[name]
             @test pointer_phi_addrspaces(f) == Int[]
-            @test count(bb -> startswith(LLVM.name(bb), "unsink.edge"), blocks(f)) == 2
+            @test count(bb -> startswith(bb.name, "unsink.edge"), f.blocks) == 2
         end
     end
 end
@@ -1901,10 +1904,10 @@ end
             mod = parse(LLVM.Module, fresh_length_ir(body))
             Enzyme.Compiler.fold_fresh_array_lengths!(mod)
             LLVM.verify(mod)
-            f = functions(mod)["f"]
-            for bb in blocks(f), inst in instructions(bb)
+            f = mod.functions["f"]
+            for bb in f.blocks, inst in bb.instructions
                 if isa(inst, LLVM.RetInst)
-                    return operands(inst)[1] == parameters(f)[2]
+                    return inst.operands[1] == f.parameters[2]
                 end
             end
             return false
@@ -1974,10 +1977,10 @@ end
         )
         Enzyme.Compiler.annotate!(mod)
         for gname in ("jl_true", "ijl_false", "jl_small_typeof", "jl_undefref_exception", "jl_float64_type")
-            gv = LLVM.globals(mod)[gname]
-            @test haskey(LLVM.metadata(gv), "enzyme_inactive")
+            gv = mod.globals[gname]
+            @test haskey(gv.metadata, "enzyme_inactive")
         end
-        @test haskey(LLVM.metadata(LLVM.globals(mod)["jl_float64_type"]), "enzyme_ta_norecur")
+        @test haskey(mod.globals["jl_float64_type"].metadata, "enzyme_ta_norecur")
     end
 
     # Boxed runtime Bool (@jl_true / @jl_false) merged into Any return across widths 1 and 2
@@ -2008,4 +2011,105 @@ end
     @test pres_b2 ≈ [2.0, 4.0]
     @test dres_b2[1] ≈ [1.0, -0.5]
     @test dres_b2[2] ≈ [-2.0, 1.0]
+end
+
+# With opaque pointers a constant GEP into a global need not use the global's type:
+# `prop_global!` must find the element the GEP addresses instead of reading its indices
+# as a path from the global's type. See https://github.com/EnzymeAD/Enzyme.jl/pull/3957
+@testset "prop_global! GEP with another source element type" begin
+    LLVM.Context(; opaque_pointers = true) do ctx
+        mod = parse(
+            LLVM.Module, """
+            @g = private unnamed_addr constant { [2 x i64] } { [2 x i64] [i64 1, i64 2] }
+            @h = private unnamed_addr constant { [2 x i64], i64 } { [2 x i64] [i64 1, i64 2], i64 3 }
+
+            define i64 @nested() {
+              %p = getelementptr inbounds [2 x i64], ptr @g, i64 0, i64 1
+              %v = load i64, ptr %p
+              ret i64 %v
+            }
+
+            define i64 @trailing() {
+              %p = getelementptr inbounds [2 x i64], ptr @h, i64 0, i64 1
+              %v = load i64, ptr %p
+              ret i64 %v
+            }
+
+            define i32 @unmatched() {
+              %p = getelementptr inbounds { i32, i32 }, ptr @g, i64 0, i32 1
+              %v = load i32, ptr %p
+              ret i32 %v
+            }
+            """
+        )
+        for g in mod.globals
+            Enzyme.Compiler.prop_global!(g)
+        end
+        @test LLVM.verify(mod) === nothing
+        retval(name) = only(only(mod.functions[name].blocks).terminator.operands)
+        # `[0, 1]` in `@g`, not the out-of-bounds field `[1]`
+        @test convert(Int, retval("nested")) == 2
+        # `[0, 1]` in `@h`, not the trailing field `[1]`
+        @test convert(Int, retval("trailing")) == 2
+        # no element of `@g` at offset zero has type `{ i32, i32 }`: left alone
+        @test retval("unmatched") isa LLVM.LoadInst
+    end
+end
+
+@testset "Constant-memory alias claims are dropped from functions to be inlined" begin
+    LLVM.Context(; opaque_pointers = true) do ctx
+        mod = parse(
+            LLVM.Module, """
+            source_filename = "start"
+            target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128-ni:10:11:12:13"
+            target triple = "x86_64-linux-gnu"
+
+            define double @rule(ptr addrspace(11) %n) alwaysinline {
+            top:
+              %c = load double, ptr addrspace(11) %n, align 8, !tbaa !6, !alias.scope !8, !noalias !9
+              %m = load double, ptr addrspace(11) %n, align 8, !tbaa !1, !alias.scope !10, !noalias !11
+              %r = fadd double %c, %m
+              ret double %r
+            }
+
+            define double @notinlined(ptr addrspace(11) %n) {
+            top:
+              %c = load double, ptr addrspace(11) %n, align 8, !tbaa !6, !alias.scope !8, !noalias !9
+              ret double %c
+            }
+
+            !0 = !{!"jtbaa"}
+            !1 = !{!2, !2, i64 0}
+            !2 = !{!"jtbaa_immut", !3, i64 0}
+            !3 = !{!"jtbaa_value", !4, i64 0}
+            !4 = !{!"jtbaa_data", !5, i64 0}
+            !5 = !{!"jtbaa", !0, i64 0}
+            !6 = !{!7, !7, i64 0, i64 0}
+            !7 = !{!"jtbaa_const", !5, i64 0}
+            !8 = !{!12}
+            !9 = !{!13}
+            !10 = !{!13}
+            !11 = !{!12}
+            !12 = !{!"jnoalias_const", !14}
+            !13 = !{!"jnoalias_data", !14}
+            !14 = !{!"jnoalias"}
+            """
+        )
+        Enzyme.Compiler.remove_alwaysinline_roots!(mod)
+
+        rule = [inst for bb in mod.functions["rule"].blocks for inst in bb.instructions if inst isa LLVM.LoadInst]
+        # The load of constant memory loses the claim once the function can be
+        # inlined into the one that initializes that memory...
+        for kind in ("tbaa", "alias.scope", "noalias")
+            @test !haskey(rule[1].metadata, kind)
+            # ...and a load that makes no such claim keeps its metadata.
+            @test haskey(rule[2].metadata, kind)
+        end
+
+        # A function that is not inlined keeps the claim, which holds there.
+        kept = first(inst for bb in mod.functions["notinlined"].blocks for inst in bb.instructions if inst isa LLVM.LoadInst)
+        for kind in ("tbaa", "alias.scope", "noalias")
+            @test haskey(kept.metadata, kind)
+        end
+    end
 end

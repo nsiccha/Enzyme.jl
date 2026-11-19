@@ -1,7 +1,6 @@
-
 module JIT
 
-using LLVM
+using LLVM, LLVM.IR, LLVM.ORC
 using Libdl
 import LLVM: TargetMachine
 
@@ -15,8 +14,8 @@ struct CompilerInstance
     jit::LLVM.JuliaOJIT
     # the dylib everything is added to, which also defines Enzyme's globals
     jd::LLVM.JITDylib
-    lctm::Union{LLVM.LazyCallThroughManager,Nothing}
-    ism::Union{LLVM.IndirectStubsManager,Nothing}
+    lctm::Union{LLVM.LazyCallThroughManager, Nothing}
+    ism::Union{LLVM.IndirectStubsManager, Nothing}
 end
 
 function LLVM.dispose(ci::CompilerInstance)
@@ -35,18 +34,6 @@ const tm = Ref{TargetMachine}() # for opt pipeline
 
 get_tm() = tm[]
 get_jit() = jit[].jit
-
-symbol_pair_type() =
-    LLVM.version() >= v"15" ? LLVM.API.LLVMOrcCSymbolMapPair : LLVM.API.LLVMJITCSymbolMapPair
-
-function absolute_symbol_pair(name, ptr)
-    address = LLVM.API.LLVMOrcJITTargetAddress(reinterpret(UInt, ptr))
-    flags = LLVM.API.LLVMJITSymbolFlags(LLVM.API.LLVMJITSymbolGenericFlagsExported, 0)
-    symbol = LLVM.API.LLVMJITEvaluatedSymbol(address, flags)
-    return symbol_pair_type()(name, symbol)
-end
-
-absolute_symbol_materialization(name, ptr) = LLVM.absolute_symbols(Ref(absolute_symbol_pair(name, ptr)))
 
 const hnd_string_map = Dict{String, Ref{Ptr{Cvoid}}}()
 const hnd_int_map = Dict{Int, Ref{Ptr{Cvoid}}}()
@@ -74,7 +61,7 @@ function fix_ptr_lookup(name)
         if startswith(name, "ejlstr\$")
             hnd_cache = handle_cell!(hnd_string_map, String(arg1))
         else
-            arg1 =  parse(Int, arg1)
+            arg1 = parse(Int, arg1)
             hnd_cache = handle_cell!(hnd_int_map, arg1)
             arg1 = reinterpret(Ptr{Cchar}, arg1)
         end
@@ -83,10 +70,11 @@ function fix_ptr_lookup(name)
     return nothing
 end
 
-function define_absolute_symbol(jd, name)
+# Define `name` in the JIT as the address of the symbol with that name in the process.
+function define_absolute_symbol(jd, lljit, name::String)
     ptr = LLVM.find_symbol(name)
     if ptr !== C_NULL
-        LLVM.define(jd, absolute_symbol_materialization(name, ptr))
+        define!(jd, absolute_symbols(mangle(lljit, name) => ptr))
         return true
     end
     return false
@@ -95,38 +83,41 @@ end
 function setup_globals()
     opt_level = Base.JLOptions().opt_level
     if opt_level < 2
-        optlevel = LLVM.API.LLVMCodeGenLevelNone
+        optlevel = LLVM.CodeGenOptLevel.None
     elseif opt_level == 2
-        optlevel = LLVM.API.LLVMCodeGenLevelDefault
+        optlevel = LLVM.CodeGenOptLevel.Default
     else
-        optlevel = LLVM.API.LLVMCodeGenLevelAggressive
+        optlevel = LLVM.CodeGenOptLevel.Aggressive
     end
 
     lljit = JuliaOJIT()
 
-    tempTM = LLVM.JITTargetMachine(LLVM.triple(lljit), cpu_name(), cpu_features(); optlevel)
+    tempTM = LLVM.JITTargetMachine(;
+        triple = lljit.triple, cpu = cpu_name(), features = cpu_features(), opt_level = optlevel
+    )
     LLVM.asm_verbosity!(tempTM, true)
     tm[] = tempTM
 
-    # On Julia >= 1.14.0-DEV.2171 this creates a new dylib, so only do it once. Before that,
-    # it is the external dylib of Julia's JIT (and the name is ignored).
-    jd_main = JITDylib(lljit, "enzyme")
+    # before Julia 1.14, Julia's JIT has a single JITDylib that is shared by all its users
+    jd_main = @static if VERSION >= v"1.14.0-DEV.2171"
+        JITDylib(lljit, "enzyme")
+    else
+        lljit.external_dylib
+    end
 
-    prefix = LLVM.get_prefix(lljit)
-    dg = LLVM.CreateDynamicLibrarySearchGeneratorForProcess(prefix)
-    LLVM.add!(jd_main, dg)
+    LLVM.add!(jd_main, DynamicLibrarySearchGenerator(lljit))
 
-    es = ExecutionSession(lljit)
+    es = lljit.execution_session
     try
-        lctm = LLVM.LocalLazyCallThroughManager(triple(lljit), es)
-        ism = LLVM.LocalIndirectStubsManager(triple(lljit))
+        lctm = LLVM.LocalLazyCallThroughManager(lljit.triple, es)
+        ism = LLVM.LocalIndirectStubsManager(lljit.triple)
         jit[] = CompilerInstance(lljit, jd_main, lctm, ism)
     catch err
         @warn "OrcV2 initialization failed with" err
         jit[] = CompilerInstance(lljit, jd_main, nothing, nothing)
     end
 
-    jd_main, lljit
+    return jd_main, lljit
 end
 
 function __init__()
@@ -134,23 +125,23 @@ function __init__()
 
     if Sys.iswindows() && Int === Int64
         # TODO can we check isGNU?
-        define_absolute_symbol(jd_main, mangle(lljit, "___chkstk_ms"))
+        define_absolute_symbol(jd_main, lljit, "___chkstk_ms")
     end
 
     # The well-known Julia values, defined in one go.
     hnd = unsafe_load(cglobal(:jl_libjulia_handle, Ptr{Cvoid}))
-    pairs = symbol_pair_type()[]
+    pairs = Pair{LLVMSymbol, Ptr{Cvoid}}[]
     for k in keys(Compiler.JuliaGlobalNameMap)
         ptr = unsafe_load(Base.reinterpret(Ptr{Ptr{Cvoid}}, Libdl.dlsym(hnd, k)))
-        push!(pairs, absolute_symbol_pair(mangle(lljit, "ejl_" * k), ptr))
+        push!(pairs, mangle(lljit, "ejl_" * k) => ptr)
     end
     for (k, v) in Compiler.JuliaEnzymeNameMap
         ptr = Compiler.unsafe_to_ptr(Compiler.unbind(v))
-        push!(pairs, absolute_symbol_pair(mangle(lljit, "ejl_" * k), ptr))
+        push!(pairs, mangle(lljit, "ejl_" * k) => ptr)
     end
-    LLVM.define(jd_main, LLVM.absolute_symbols(pairs))
+    define!(jd_main, absolute_symbols(pairs))
 
-    atexit() do
+    return atexit() do
         dispose(tm[])
     end
 end
@@ -166,24 +157,15 @@ function move_to_threadsafe(ir)
 end
 
 function add_trampoline!(jd, (lljit, lctm, ism), entry, target)
-    flags = LLVM.API.LLVMJITSymbolFlags(
-        LLVM.API.LLVMJITSymbolGenericFlagsCallable |
-        LLVM.API.LLVMJITSymbolGenericFlagsExported,
-        0,
-    )
+    flags = SymbolFlags(callable = true, exported = true)
+    mu = lazy_reexports(lctm, ism, jd, [mangle(lljit, entry) => (mangle(lljit, target), flags)])
+    define!(jd, mu)
 
-    alias = LLVM.API.LLVMOrcCSymbolAliasMapPair(
-        mangle(lljit, entry),
-        LLVM.API.LLVMOrcCSymbolAliasMapEntry(mangle(lljit, target), flags),
-    )
-
-    mu = LLVM.reexports(lctm, ism, jd, [alias])
-    LLVM.define(jd, mu)
-
-    LLVM.lookup(lljit, jd, entry)
+    return LLVM.lookup(lljit, jd, entry)
 end
 
 function prepare!(mod)
+    Compiler.modern_write_barriers!(mod)
     # On Windows, LLVM's GlobalOpt demotes internal functions to `private` linkage,
     # which emits no object symbol. Julia's per-symbol Win64 JIT unwind registrar
     # (create_PRUNTIME_FUNCTION) then skips those functions, so their frames get no
@@ -192,23 +174,24 @@ function prepare!(mod)
     # step before JIT emission, after all optimization -- so they keep a local
     # symbol and get registered. See EnzymeAD/Enzyme.jl#3374.
     if Sys.iswindows()
-        for f in functions(mod)
-            if !LLVM.isdeclaration(f) && LLVM.linkage(f) == LLVM.API.LLVMPrivateLinkage
-                LLVM.linkage!(f, LLVM.API.LLVMInternalLinkage)
+        for f in mod.functions
+            if !LLVM.isdeclaration(f) && f.linkage == LLVM.Linkage.Private
+                f.linkage = LLVM.Linkage.Internal
             end
         end
     end
-    for f in collect(functions(mod))
-        ptr = fix_ptr_lookup(LLVM.name(f))
+    for f in collect(mod.functions)
+        ptr = fix_ptr_lookup(f.name)
         if ptr === nothing
             continue
         end
         ptr = reinterpret(UInt, ptr)
         ptr = LLVM.ConstantInt(ptr)
-        ptr = LLVM.const_inttoptr(ptr, LLVM.PointerType(LLVM.function_type(f)))
+        ptr = LLVM.const_inttoptr(ptr, LLVM.PointerType(f.function_type))
         replace_uses!(f, ptr)
         Compiler.eraseInst(mod, f)
     end
+    return
 end
 
 """
@@ -244,17 +227,17 @@ library is a run-time value (SpecialFunctions' `erfcx` reaches one), and they ar
 used inside the module.
 """
 function export_only!(mod::LLVM.Module, name::String)
-    for gv in LLVM.globals(mod)
+    for gv in mod.globals
         LLVM.isdeclaration(gv) && continue
-        startswith(LLVM.name(gv), "llvm.") && continue
-        exported_linkage(LLVM.linkage(gv)) || continue
-        LLVM.linkage!(gv, LLVM.API.LLVMInternalLinkage)
+        startswith(gv.name, "llvm.") && continue
+        exported_linkage(gv.linkage) || continue
+        gv.linkage = LLVM.Linkage.Internal
     end
-    for fn in LLVM.functions(mod)
+    for fn in mod.functions
         LLVM.isdeclaration(fn) && continue
-        LLVM.name(fn) == name && continue
-        exported_linkage(LLVM.linkage(fn)) || continue
-        LLVM.linkage!(fn, LLVM.API.LLVMInternalLinkage)
+        fn.name == name && continue
+        exported_linkage(fn.linkage) || continue
+        fn.linkage = LLVM.Linkage.Internal
     end
     alias = LLVM.API.LLVMGetFirstGlobalAlias(mod)
     while alias != C_NULL
@@ -303,14 +286,14 @@ function get_trampoline(job)
             func_name = use_primal ? primal_name : adjoint_name
             other_name = !use_primal ? primal_name : adjoint_name
 
-            func = functions(mod)[func_name]
-            LLVM.name!(func, sym)
+            func = mod.functions[func_name]
+            func.name = sym
 
             if other_name !== nothing
                 # Otherwise MR will complain -- we could claim responsibilty,
                 # but it would be nicer if _thunk just codegen'd the half
                 # we need.
-                other_func = functions(mod)[other_name]
+                other_func = mod.functions[other_name]
                 Compiler.eraseInst(mod, other_func)
             end
             # The materialization responsibility covers `sym` alone.
@@ -318,25 +301,20 @@ function get_trampoline(job)
 
             prepare!(mod)
             tsm = move_to_threadsafe(mod)
+            dispose(mod)
 
-            il = LLVM.IRCompileLayer(lljit)
-            LLVM.emit(il, mr, tsm)
+            emit!(lljit.ir_compile_layer, mr, tsm)
         end
         return nothing
     end
 
     function discard(jd, sym) end
 
-    flags = LLVM.API.LLVMJITSymbolFlags(
-        LLVM.API.LLVMJITSymbolGenericFlagsCallable |
-        LLVM.API.LLVMJITSymbolGenericFlagsExported,
-        0,
-    )
+    flags = SymbolFlags(callable = true, exported = true)
+    symbols = [mangle(lljit, sym) => flags]
 
-    symbols = [LLVM.API.LLVMOrcCSymbolFlagsMapPair(mangle(lljit, sym), flags)]
-
-    mu = LLVM.CustomMaterializationUnit(sym, symbols, materialize, discard)
-    LLVM.define(jd, mu)
+    mu = CustomMaterializationUnit(sym, symbols, materialize, discard)
+    define!(jd, mu)
     return addr
 end
 
@@ -354,7 +332,7 @@ function lookup(name)
 end
 
 function lookup(jd::JITDylib, name)
-    LLVM.lookup(jit[].jit, jd, name)
+    return LLVM.lookup(jit[].jit, jd, name)
 end
 
 end # module

@@ -3,12 +3,12 @@
 function type_test_operand(@nospecialize(v::LLVM.Value))
     for _ in 1:32
         if v isa LLVM.BitCastInst || v isa LLVM.AddrSpaceCastInst
-            v = operands(v)[1]
-        elseif v isa LLVM.PtrToIntInst && value_type(v) == LLVM.IntType(Sys.WORD_SIZE)
-            v = operands(v)[1]
-        elseif v isa LLVM.CallInst && called_operand(v) isa LLVM.Function &&
-                name(called_operand(v)) == "julia.pointer_from_objref"
-            v = first(arg_operands_view(v))
+            v = v.operands[1]
+        elseif v isa LLVM.PtrToIntInst && v.value_type == LLVM.IntType(Sys.WORD_SIZE)
+            v = v.operands[1]
+        elseif v isa LLVM.CallInst && v.called_operand isa LLVM.Function &&
+                v.called_operand.name == "julia.pointer_from_objref"
+            v = first(v.arguments)
         else
             return v
         end
@@ -21,20 +21,20 @@ end
 function type_test_constant(@nospecialize(v::LLVM.Value), enzyme_ctx::Union{EnzymeContext, Nothing})
     for _ in 1:32
         if v isa LLVM.ConstantInt
-            value_type(v) == LLVM.IntType(Sys.WORD_SIZE) || return nothing
+            v.value_type == LLVM.IntType(Sys.WORD_SIZE) || return nothing
             return convert(UInt, v)
         elseif v isa LLVM.PointerNull
             return UInt(0)
-        elseif v isa LLVM.ConstantExpr && opcode(v) in
-                (LLVM.API.LLVMBitCast, LLVM.API.LLVMAddrSpaceCast, LLVM.API.LLVMIntToPtr)
-            v = operands(v)[1]
+        elseif v isa LLVM.ConstantExpr && v.opcode in
+                (LLVM.Opcode.BitCast, LLVM.Opcode.AddrSpaceCast, LLVM.Opcode.IntToPtr)
+            v = v.operands[1]
         elseif v isa LLVM.GlobalVariable
             found = named_global(v, inserted_values(enzyme_ctx))
             found === nothing && return nothing
             T = something(found)
             return T isa Type ? UInt(unsafe_to_pointer(T)) : nothing
-        elseif v isa LLVM.LoadInst && operands(v)[1] isa LLVM.GlobalVariable
-            found = julia_value_of_slot(operands(v)[1], enzyme_ctx)
+        elseif v isa LLVM.LoadInst && v.operands[1] isa LLVM.GlobalVariable
+            found = julia_value_of_slot(v.operands[1], enzyme_ctx)
             found === nothing && return nothing
             T = something(found)
             return T isa Type ? UInt(unsafe_to_pointer(T)) : nothing
@@ -72,19 +72,19 @@ function constant_type_test(@nospecialize(root::LLVM.Value), target::UInt, enzym
         v in seen && continue
         push!(seen, v)
         if v isa LLVM.PHIInst
-            budget -= length(LLVM.incoming(v))
+            budget -= length(v.incoming)
             budget >= 0 || return nothing
-            for (value, _) in LLVM.incoming(v)
+            for (value, _) in v.incoming
                 push!(todo, value)
             end
         elseif v isa LLVM.SelectInst
             budget -= 2
             budget >= 0 || return nothing
-            push!(todo, operands(v)[2], operands(v)[3])
+            push!(todo, v.operands[2], v.operands[3])
         elseif v isa LLVM.BitCastInst || v isa LLVM.AddrSpaceCastInst
             budget -= 1
             budget >= 0 || return nothing
-            push!(todo, operands(v)[1])
+            push!(todo, v.operands[1])
         else
             legal, T, _ = abs_typeof(v, enzyme_ctx)
             legal && isconcretetype(T) || return nothing
@@ -100,21 +100,21 @@ end
 # combines their incompatible object layouts with the reachable ones.
 function fold_type_tests!(mod::LLVM.Module, enzyme_ctx::Union{EnzymeContext, Nothing})
     changed = 0
-    for f in functions(mod), bb in blocks(f), inst in instructions(bb)
+    for f in mod.functions, bb in f.blocks, inst in bb.instructions
         inst isa LLVM.ICmpInst || continue
         pred = LLVM.API.LLVMGetICmpPredicate(inst)
-        pred in (LLVM.API.LLVMIntEQ, LLVM.API.LLVMIntNE) || continue
-        lhs, rhs = operands(inst)
+        pred in (LLVM.IntPredicate.EQ, LLVM.IntPredicate.NE) || continue
+        lhs, rhs = inst.operands
         for (value, constant) in ((lhs, rhs), (rhs, lhs))
             value = type_test_operand(value)
             value isa LLVM.CallInst || continue
-            callee = called_operand(value)
-            callee isa LLVM.Function && name(callee) == "julia.typeof" || continue
+            callee = value.called_operand
+            callee isa LLVM.Function && callee.name == "julia.typeof" || continue
             target = type_test_constant(constant, enzyme_ctx)
             target === nothing && continue
-            answer = constant_type_test(first(arg_operands_view(value)), target, enzyme_ctx)
+            answer = constant_type_test(first(value.arguments), target, enzyme_ctx)
             answer === nothing && continue
-            replace_uses!(inst, LLVM.ConstantInt(pred == LLVM.API.LLVMIntEQ ? answer : !answer))
+            replace_uses!(inst, LLVM.ConstantInt(pred == LLVM.IntPredicate.EQ ? answer : !answer))
             changed += 1
             break
         end

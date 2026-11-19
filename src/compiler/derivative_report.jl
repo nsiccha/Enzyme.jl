@@ -120,24 +120,24 @@ end
 reference_key(ref::Ptr)::UInt = reinterpret(UInt, ref)
 
 is_constant_pointer_cast(v::LLVM.Value) =
-    v isa LLVM.ConstantExpr && opcode(v) in (LLVM.API.LLVMBitCast, LLVM.API.LLVMAddrSpaceCast)
+    v isa LLVM.ConstantExpr && v.opcode in (LLVM.Opcode.BitCast, LLVM.Opcode.AddrSpaceCast)
 
 # `v` without the constant casts around it.
 function strip_constant_casts(@nospecialize(v::LLVM.Value))::LLVM.Value
     while is_constant_pointer_cast(v)
-        v = operands(v)[1]
+        v = v.operands[1]
     end
     return v
 end
 
 # Can something call this function without a direct edge in our call graph?
 function has_indirect_callers(v::LLVM.Value)::Bool
-    for use in LLVM.uses(v)
-        user = LLVM.user(use)
+    for use in v.uses
+        user = use.user
         if user isa LLVM.CallBase
             # The callee is the last operand. Passing the same function as an argument
             # of that very call is a separate use of its address.
-            use.ref == LLVM.API.LLVMGetOperandUse(user, length(operands(user)) - 1) && continue
+            use.ref == LLVM.API.LLVMGetOperandUse(user, length(user.operands) - 1) && continue
         elseif is_constant_pointer_cast(user)
             has_indirect_callers(user) || continue
         end
@@ -148,7 +148,7 @@ end
 
 # The value of argument `i` of `call` when it is a constant integer.
 function constant_argument(call::LLVM.Instruction, i::Int)::Union{Nothing, Int}
-    ops = operands(call)
+    ops = call.operands
     # The callee is the last operand.
     i < length(ops) || return nothing
     arg = ops[i]
@@ -181,19 +181,19 @@ function called_function(
         global_names::Union{Nothing, Dict{String, String}},
         address_names::Dict{UInt, String},
     )::Tuple{Symbol, String, Int}
-    callee = LLVM.called_operand(call)
+    callee = call.called_operand
     callee isa LLVM.InlineAsm && return (:skip, "", 0)
     callee = strip_constant_casts(callee)
     if callee isa LLVM.Function
-        name = LLVM.name(callee)
+        name = callee.name
         idx = get(defined, name, 0)
         idx == 0 || return (:internal, name, idx)
         startswith(name, "llvm.") && return (:skip, "", 0)
         return (:named, foreign_function_name(name, global_names), 0)
     elseif callee isa LLVM.GlobalVariable
-        return (:named, foreign_function_name(LLVM.name(callee), global_names), 0)
-    elseif callee isa LLVM.ConstantExpr && opcode(callee) == LLVM.API.LLVMIntToPtr
-        addr = operands(callee)[1]
+        return (:named, foreign_function_name(callee.name, global_names), 0)
+    elseif callee isa LLVM.ConstantExpr && callee.opcode == LLVM.Opcode.IntToPtr
+        addr = callee.operands[1]
         addr isa LLVM.ConstantInt || return (:indirect, "", 0)
         address = convert(UInt, addr)
         name = get(address_names, address, nothing)
@@ -204,9 +204,9 @@ function called_function(
         return (:named, isempty(name) ? "(unknown address)" : name, 0)
     elseif callee isa LLVM.LoadInst
         # A foreign function called through a slot the linker or Julia fills in.
-        slot = strip_constant_casts(operands(callee)[1])
+        slot = strip_constant_casts(callee.operands[1])
         if slot isa LLVM.GlobalVariable
-            return (:named, foreign_function_name(LLVM.name(slot), global_names), 0)
+            return (:named, foreign_function_name(slot.name, global_names), 0)
         end
     end
     return (:indirect, "", 0)
@@ -235,11 +235,11 @@ function classify_callee(call::LLVM.Instruction, name::String)::Tuple{Symbol, St
     if runtime !== nothing
         if runtime in DISPATCH_RUNTIME_FUNCTIONS
             # Enzyme's run-time rules are Julia functions the code dispatches to.
-            ops = operands(call)
+            ops = call.operands
             if length(ops) >= 2
                 target = strip_constant_casts(ops[1])
                 if target isa LLVM.GlobalVariable
-                    tname = LLVM.name(target)
+                    tname = target.name
                     at = findfirst("ejl_enz_runtime_", tname)
                     if at !== nothing
                         return (:enzyme_runtime_fallback, String(SubString(tname, last(at) - 7)))
@@ -392,8 +392,8 @@ struct ScannedFunction
 end
 
 function scanned_function(fn::LLVM.Function, defined::Dict{String, Int})::ScannedFunction
-    name = LLVM.name(fn)
-    blks = collect(blocks(fn))
+    name = fn.name
+    blks = collect(fn.blocks)
     n = length(blks)
     position = Dict{UInt, Int}()
     for (i, bb) in enumerate(blks)
@@ -403,13 +403,13 @@ function scanned_function(fn::LLVM.Function, defined::Dict{String, Int})::Scanne
     returning = falses(n)
     inverted = falses(n)
     for (i, bb) in enumerate(blks)
-        inverted[i] = startswith(LLVM.name(bb), "invert")
-        term = LLVM.terminator(bb)
+        inverted[i] = startswith(bb.name, "invert")
+        term = bb.terminator
         term === nothing && continue
         if term isa LLVM.RetInst
             returning[i] = true
         end
-        for target in LLVM.successors(term)
+        for target in term.successors
             j = get(position, reference_key(target.ref), 0)
             j == 0 || push!(succ[i], j)
         end
@@ -491,8 +491,8 @@ stands for, where a module compiled for a package image names an address.
 The module is only read.
 """
 function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{String, String}} = nothing)::Vector{DerivativeFinding}
-    definitions = [fn for fn in functions(mod) if !isempty(blocks(fn))]
-    defined = Dict{String, Int}(LLVM.name(fn) => k for (k, fn) in enumerate(definitions))
+    definitions = [fn for fn in mod.functions if !isempty(fn.blocks)]
+    defined = Dict{String, Int}(fn.name => k for (k, fn) in enumerate(definitions))
     scanned = ScannedFunction[scanned_function(fn, defined) for fn in definitions]
     nf = length(scanned)
     callees = Vector{Int}[Int[] for _ in 1:nf]
@@ -504,10 +504,10 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
     for (k, sf) in enumerate(scanned)
         # A local definition with no callers can survive optimization. Only exported
         # or indirectly callable functions need to be treated as independent entries.
-        roots[k] = !(LLVM.linkage(sf.fn) in (LLVM.API.LLVMInternalLinkage, LLVM.API.LLVMPrivateLinkage)) || has_indirect_callers(sf.fn)
+        roots[k] = !(sf.fn.linkage in (LLVM.Linkage.Internal, LLVM.Linkage.Private)) || has_indirect_callers(sf.fn)
         for (b, bb) in enumerate(sf.blocks)
             sf.reachable[b] || continue
-            for inst in instructions(bb)
+            for inst in bb.instructions
                 inst isa LLVM.CallBase || continue
                 how, name, idx = called_function(inst, defined, global_names, address_names)
                 if how === :internal
@@ -545,7 +545,7 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
         else
             classify_callee(inst, name)
         end
-        loc = LLVM.debuglocation(inst)
+        loc = inst.debug_location
         key = (loc === nothing ? UInt(0) : reference_key(loc.ref), reference_key(sf.fn.ref))
         frames = get(frames_of, key, nothing)
         if frames === nothing

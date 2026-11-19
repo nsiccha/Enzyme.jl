@@ -37,9 +37,9 @@ function type_test_fixture(; first = "@jl_nothing", second = "@jl_true", target 
 end
 
 function folded_type_test_result(mod)
-    for bb in LLVM.blocks(LLVM.functions(mod)["test"]), inst in LLVM.instructions(bb)
+    for bb in (mod.functions["test"]).blocks, inst in bb.instructions
         inst isa LLVM.RetInst || continue
-        value = LLVM.operands(inst)[1]
+        value = inst.operands[1]
         return value isa LLVM.ConstantInt ? convert(Bool, value) : nothing
     end
     return nothing

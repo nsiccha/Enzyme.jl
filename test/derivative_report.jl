@@ -592,7 +592,7 @@ cube_sum(x) = sum(v -> v^3, x)
     names = LLVM.Context() do _
         mod = parse(LLVM.Module, d1.ir)
         try
-            [LLVM.name(fn) for fn in LLVM.functions(mod) if !isempty(LLVM.blocks(fn))]
+            [fn.name for fn in mod.functions if !isempty(fn.blocks)]
         finally
             LLVM.dispose(mod)
         end
@@ -763,7 +763,7 @@ end
     short = sprint(show, report)
     @test occursin("DerivativeReport", short)
     full = sprint(show, MIME"text/plain"(), report)
-    @test occursin("derivative of typeof(sum_dispatched)", full)
+    @test occursin("derivative of $(typeof(sum_dispatched)) with ", full)
     @test occursin("compiled earlier in this session", full)
     @test occursin("enzyme_runtime_fallback", full)
     @test occursin("on paths that return", full)

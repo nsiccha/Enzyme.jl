@@ -10,18 +10,18 @@ function stores_empty_array_memory(
     )
     value in seen && return false
     push!(seen, value)
-    for use in LLVM.uses(value)
-        user = LLVM.user(use)
+    for use in value.uses
+        user = use.user
         if user isa LLVM.AddrSpaceCastInst || user isa LLVM.BitCastInst
             stores_empty_array_memory(user, offset, memory_offset, enzyme_ctx, seen) && return true
-        elseif user isa LLVM.GetElementPtrInst && operands(user)[1] == value
+        elseif user isa LLVM.GetElementPtrInst && user.operands[1] == value
             field_offset = constant_gep_offset(user)
             field_offset === nothing && continue
             0 <= field_offset <= memory_offset - offset || continue
             next_offset = offset + field_offset
             stores_empty_array_memory(user, next_offset, memory_offset, enzyme_ctx, seen) && return true
-        elseif user isa LLVM.StoreInst && operands(user)[2] == value && offset == memory_offset
-            legal, object = absint(operands(user)[1], enzyme_ctx)
+        elseif user isa LLVM.StoreInst && user.operands[2] == value && offset == memory_offset
+            legal, object = absint(user.operands[1], enzyme_ctx)
             legal && is_memory_instance(unbind(object)) && return true
         end
     end
@@ -39,12 +39,12 @@ function relax_empty_array_types!(mod::LLVM.Module, enzyme_ctx::Union{EnzymeCont
         return 0
     else
         changed = 0
-        ctx = context(mod)
-        dl = string(LLVM.datalayout(mod))
-        for f in functions(mod), bb in blocks(f), inst in instructions(bb)
+        ctx = mod.context
+        dl = string(mod.datalayout)
+        for f in mod.functions, bb in f.blocks, inst in bb.instructions
             inst isa LLVM.CallInst || continue
-            callee = called_operand(inst)
-            callee isa LLVM.Function && name(callee) == "julia.gc_alloc_obj" || continue
+            callee = inst.called_operand
+            callee isa LLVM.Function && callee.name == "julia.gc_alloc_obj" || continue
             legal, array_type, _ = abs_typeof(inst, enzyme_ctx)
             legal && array_type <: Array && isconcretetype(array_type) || continue
             memory_offset = Int(fieldoffset(array_type, 1) + fieldoffset(fieldtype(array_type, 1), 2))

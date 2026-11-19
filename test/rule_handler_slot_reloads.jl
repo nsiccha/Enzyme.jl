@@ -116,6 +116,7 @@ function slot_reload_ir(typed::Bool)
     obj = typed ? "{} addrspace(10)*" : "ptr addrspace(10)"
     slot = typed ? "{} addrspace(10)**" : "ptr"
     int = typed ? "i64*" : "ptr"
+    nocapture = LLVM.version() >= v"21" ? "captures(none)" : "nocapture"
     # The zero store, through the cast that typed pointers need.
     clear(name) = typed ?
         "%$(name)z = bitcast $slot %$name to $int\n  store i64 0, $int %$(name)z, align 8" :
@@ -124,6 +125,7 @@ function slot_reload_ir(typed::Bool)
     declare $obj @ijl_box_int64(i64)
     declare $obj @ijl_box_float32(float)
     declare void @opaque($slot)
+    declare void @inspect($slot readonly $nocapture)
 
     define $obj @typed(i64 %x) {
     top:
@@ -131,6 +133,7 @@ function slot_reload_ir(typed::Bool)
       $(clear("a"))
       %box = call $obj @ijl_box_int64(i64 %x)
       store $obj %box, $slot %a, align 8
+      call void @inspect($slot %a)
       %reload = load $obj, $slot %a, align 8
       ret $obj %reload
     }
@@ -246,19 +249,19 @@ function slot_reload_types(typed::Bool)
         mod = parse(LLVM.Module, slot_reload_ir(LLVM.supports_typed_pointers(ctx)))
         # The slot of `declared` is declared to hold a `Ref{Any}`, as a slot that libEnzyme
         # moves to the heap is declared an array of `Any`.
-        declared = first(LLVM.instructions(first(LLVM.blocks(LLVM.functions(mod)["declared"]))))
+        declared = first((first((mod.functions["declared"]).blocks)).instructions)
         any_ref = string(convert(UInt, Enzyme.Compiler.unsafe_to_pointer(Base.RefValue{Any})))
-        LLVM.metadata(declared)["enzymejl_allocart"] = LLVM.MDNode(LLVM.Metadata[LLVM.MDString(any_ref)])
+        declared.metadata["enzymejl_allocart"] = LLVM.MDNode(LLVM.Metadata[LLVM.MDString(any_ref)])
         tagged = typed ? Enzyme.Compiler.type_slot_field_loads!(mod, nothing) : 0
-        for f in LLVM.functions(mod), bb in LLVM.blocks(f), inst in LLVM.instructions(bb)
+        for f in mod.functions, bb in f.blocks, inst in bb.instructions
             isa(inst, LLVM.LoadInst) || continue
-            delete!(LLVM.metadata(inst), Enzyme.Compiler.SLOT_FIELD_TYPE)
+            delete!(inst.metadata, Enzyme.Compiler.SLOT_FIELD_TYPE)
         end
         found = Dict{String, Any}()
-        for f in LLVM.functions(mod), bb in LLVM.blocks(f), inst in LLVM.instructions(bb)
-            LLVM.name(inst) == "reload" || continue
+        for f in mod.functions, bb in f.blocks, inst in bb.instructions
+            inst.name == "reload" || continue
             legal, T, byref = Enzyme.Compiler.abs_typeof(inst, nothing)
-            found[LLVM.name(f)] = legal ? (T, byref) : nothing
+            found[f.name] = legal ? (T, byref) : nothing
         end
         found, tagged
     end

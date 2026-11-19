@@ -438,12 +438,12 @@ end
 """
 
 const PRECOMPILED_COMPILER = PRECOMPILED_SPECIALIZATIONS * """
-C = Enzyme.Compiler
-for f in (C.handle_compiled, C.lower_convention, C.check_ir!, C.specialize_conditioned_select!)
-    print(precompiled_specializations(f), " ")
-end
-print(Enzyme.autodiff(Reverse, x -> x * x, Active(4.0))[1][1])
-"""
+    C = Enzyme.Compiler
+    for f in (C.handle_compiled, C.lower_convention, C.check_ir!, C.specialize_conditioned_select!)
+        print(precompiled_specializations(f), " ")
+    end
+    print(Enzyme.autodiff(Reverse, x -> x * x, Active(4.0))[1][1])
+    """
 
 @testset "StaticArrays leaves Enzyme's compiler precompiled" begin
     # StaticArrays' `Base.cconvert(::Type{Ptr{T}}, ...)` methods match the `cconvert` calls

@@ -204,29 +204,29 @@ end
 VERSION < v"1.11-" && @testset "Data address phis are unfolded into phis of loads" begin
     LLVM.Context() do ctx
         mod = data_phi_fixture()
-        fn = LLVM.functions(mod)["test"]
+        fn = mod.functions["test"]
         @test Enzyme.Compiler.unfold_field_phi_loads!(fn)
         LLVM.verify(mod)
-        merge = only(bb for bb in LLVM.blocks(fn) if LLVM.name(bb) == "merge")
-        v = only(LLVM.operands(LLVM.terminator(merge)))
+        merge = only(bb for bb in fn.blocks if bb.name == "merge")
+        v = only((merge.terminator).operands)
         @test v isa LLVM.PHIInst
-        @test all(x isa LLVM.LoadInst for (x, _) in LLVM.incoming(v))
+        @test all(x isa LLVM.LoadInst for (x, _) in v.incoming)
         # `right` also branches to `fail`, so its load sits on a new edge block.
-        @test all(length(LLVM.successors(LLVM.terminator(b))) == 1 for (_, b) in LLVM.incoming(v))
+        @test all(length((b.terminator).successors) == 1 for (_, b) in v.incoming)
         @test !any(
-            inst isa LLVM.PHIInst && LLVM.value_type(inst) isa LLVM.PointerType
-                for bb in LLVM.blocks(fn) for inst in LLVM.instructions(bb)
+            inst isa LLVM.PHIInst && inst.value_type isa LLVM.PointerType
+                for bb in fn.blocks for inst in bb.instructions
         )
         for options in ((; write_first = true), (; other_use = true), (; atomic = true))
             mod = data_phi_fixture(; options...)
-            fn = LLVM.functions(mod)["test"]
+            fn = mod.functions["test"]
             @test !Enzyme.Compiler.unfold_field_phi_loads!(fn)
             LLVM.verify(mod)
-            merge = only(bb for bb in LLVM.blocks(fn) if LLVM.name(bb) == "merge")
-            @test only(LLVM.operands(LLVM.terminator(merge))) isa LLVM.LoadInst
+            merge = only(bb for bb in fn.blocks if bb.name == "merge")
+            @test only((merge.terminator).operands) isa LLVM.LoadInst
         end
         mod = data_phi_fixture()
-        fn = LLVM.functions(mod)["test"]
+        fn = mod.functions["test"]
         @test !with_unfold(() -> Enzyme.Compiler.unfold_field_phi_loads!(fn), false)
     end
 end
