@@ -1,0 +1,2 @@
+summary = "Materializing a default rank-zero broadcast over a zero-dimensional array returns its scalar element during differentiation"
+tests = ["test/broadcast_materialize.jl"]

@@ -7,6 +7,8 @@
   per level, avoiding one allocation per inner invocation. The repair is
   available when `Enzyme.has_dogfood_repair(:ragged_cache_levels)` is true.
 
+- Preserve the scalar result of a fused broadcast over zero-dimensional arrays
+  during differentiation.
 - Preserve the activity of constant data copied into a fresh trace or passed
   through dynamic dispatch. This fixes plain Reverse through Gen's dynamic
   `update` and through static updates reached via a type-unstable caller.
