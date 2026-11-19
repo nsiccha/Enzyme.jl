@@ -3,7 +3,7 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "a64ab862e365b24666a0e8ba10792efadd33d263"
+    "sha": "87a43043428a80dc3edac592310ce77501378d65"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
