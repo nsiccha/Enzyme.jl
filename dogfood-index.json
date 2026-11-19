@@ -10,7 +10,7 @@
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-19T00:09:13Z",
+  "prepared_at": "2026-11-19T00:22:39Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -3966,8 +3966,8 @@
     {
       "id": "gamma-family",
       "role": "fix",
-      "title": "Real gamma derivatives through first and second order",
-      "summary": "The derivative of gamma(x) is gamma(x) * digamma(x). A grouped upstream check on Julia 1.12.7 stopped in JIT compilation with an unresolved digamma symbol before it returned a numerical result.",
+      "title": "Differentiating gamma at 2.5 fails to resolve digamma",
+      "summary": "On upstream, forward and reverse differentiation of gamma at 2.5 fail to resolve the digamma symbol during JIT compilation.",
       "repairs": [],
       "upstream_refs": [],
       "fix": {
@@ -4033,12 +4033,78 @@
           ],
           "result": "failed",
           "detail": "The third derivatives matched at −2.5, −0.5 and 2.5. All three fourth derivatives raised an assertion while setting up custom-rule arguments."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/ext/specialfunctions.jl on 83059b7b"
+          ],
+          "result": "passed",
+          "detail": "Standalone gamma patch. 46,815 passed."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Gamma plus loggamma at 2.5 and second derivative of gamma at −0.5"
+          ],
+          "result": "passed",
+          "detail": "4/4 analytical comparisons matched in forward and reverse mode on the standalone patch."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Both committed regression files in the combined tree at 13049423"
+          ],
+          "result": "failed",
+          "detail": "47,360 passed, 51 errored. Across both families, 10/10 independent analytical comparisons matched."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/ext/specialfunctions.jl on 83059b7b"
+          ],
+          "result": "passed",
+          "detail": "Standalone gamma patch. 46,815 passed."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Gamma plus loggamma at 2.5 and second derivative of gamma at −0.5"
+          ],
+          "result": "passed",
+          "detail": "4/4 analytical comparisons matched in forward and reverse mode on the standalone patch."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Both committed regression files in the combined tree at 13049423"
+          ],
+          "result": "failed",
+          "detail": "47,360 passed, 51 errored. Across both families, 10/10 independent analytical comparisons matched."
         }
       ],
       "draft": {
-        "title": "Real gamma derivatives through first and second order",
-        "body": "The derivative of gamma(x) is gamma(x) * digamma(x). A grouped upstream check on Julia 1.12.7 stopped in JIT compilation with an unresolved digamma symbol before it returned a numerical result. In fresh Julia 1.10.12 processes on upstream, differentiating `gamma(x) + loggamma(x)` at 2.5 gave the analytical value 1.6378911623 in both forward and reverse mode.\n\n[83059b7b](https://github.com/nsiccha/Enzyme.jl/commit/83059b7bdd0fa36f8f68ef1800e388b387fe2fdf) applies directly to upstream `1ee9a6f8`. With Julia 1.12.7 and the upstream release of Enzyme_jll 0.0.311+0, forward and reverse matched that value and the second derivative of gamma at −0.5 (−31.6777692440). All 46,815 assertions in [specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/83059b7bdd0fa36f8f68ef1800e388b387fe2fdf/test/ext/specialfunctions.jl) passed with default and forced bounds. The implementation and its original tests came from [74ace76d](https://github.com/nsiccha/Enzyme.jl/commit/74ace76d2740452b074dcf7e5b6e8422c6ece39e).\n\nTo apply both sets of rules, use [2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) first, then [13049423](https://github.com/nsiccha/Enzyme.jl/commit/13049423e6c18044c5482d4213b614e759ab6a18). The second commit adds the gamma rule and its tests and shares the digamma rule from the first commit. The fork merge [125b5c8d](https://github.com/nsiccha/Enzyme.jl/commit/125b5c8d5387c76fc6d0fcebc94e7446a3c47566) contributed six higher-order gamma checks. In the combined series, the third derivative passed at −2.5, −0.5 and 2.5. The fourth derivative errored in custom-rule argument setup at all three inputs in both bounds modes.",
-        "prepared_at": "2026-11-19T00:09:13Z"
+        "title": "Differentiating gamma at 2.5 fails to resolve digamma",
+        "body": "On upstream, forward and reverse differentiation of gamma at 2.5 fail to resolve the digamma symbol during JIT compilation. The reproducer is `Enzyme.gradient(Forward, Const(gamma), 2.5)` with Enzyme and SpecialFunctions loaded. Reverse mode fails at the same point. The analytical derivative is `gamma(2.5) * digamma(2.5)`. Each call ran in a fresh process on Julia 1.10.12 and 1.12.7 with upstream `1ee9a6f8` and released Enzyme_jll 0.0.311+0.\n\nFor comparison, the derivative of `gamma(x) + loggamma(x)` at 2.5 matched 1.6378911623 on both releases in both modes. The second derivative of gamma at −0.5 failed in thunk inference on Julia 1.10.12 and at `iterate(::Nothing)` on Julia 1.12.7.\n\nThe standalone patch [83059b7b](https://github.com/nsiccha/Enzyme.jl/commit/83059b7bdd0fa36f8f68ef1800e388b387fe2fdf) ports [74ace76d](https://github.com/nsiccha/Enzyme.jl/commit/74ace76d2740452b074dcf7e5b6e8422c6ece39e) directly to that upstream base. It recovers the analytical second derivative, −31.6777692440, in forward and reverse mode. All 46,815 assertions in [specialfunctions.jl](https://github.com/nsiccha/Enzyme.jl/blob/83059b7bdd0fa36f8f68ef1800e388b387fe2fdf/test/ext/specialfunctions.jl) passed on both Julia releases with default and forced bounds.\n\nTo apply both fixes, take [2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) first and [13049423](https://github.com/nsiccha/Enzyme.jl/commit/13049423e6c18044c5482d4213b614e759ab6a18) second. This order shares the digamma rule. The fork merge [125b5c8d](https://github.com/nsiccha/Enzyme.jl/commit/125b5c8d5387c76fc6d0fcebc94e7446a3c47566) contributed six further checks. The third derivative passed at −2.5, −0.5 and 2.5. The fourth derivative errored at all three inputs during custom-rule argument setup. The combined files recorded 47,360 passes and 51 errors on both releases in each bounds mode.",
+        "prepared_at": "2026-11-19T00:22:39Z"
       }
     },
     {
@@ -4110,12 +4176,56 @@
           ],
           "result": "failed",
           "detail": "542 of 590 assertions passed. The 24 third-derivative calls stopped at length(parmsRemoved) == 0, and the 24 fourth-derivative calls raised iterate(::Nothing). The combined tree retained all 48 errors."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Direct digamma, trigamma and polygamma derivatives on 2783a682"
+          ],
+          "result": "passed",
+          "detail": "494 passed. Independent analytical probes at −0.5 matched 6/6 values across forward and reverse mode."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "default",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/ext/digamma.jl on 2783a682"
+          ],
+          "result": "failed",
+          "detail": "542 passed, 48 errored. Nested tests accounted for 48 passed, 48 errored."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "Direct digamma, trigamma and polygamma derivatives on 2783a682"
+          ],
+          "result": "passed",
+          "detail": "494 passed. Independent analytical probes at −0.5 matched 6/6 values across forward and reverse mode."
+        },
+        {
+          "base": "1ee9a6f86e12601d4912fe45d73ec37ea745a880",
+          "julia": "1.10.12",
+          "bounds": "forced",
+          "native_build": "Enzyme_jll 0.0.311+0, artifact af19c1ea7b8ae3648cc71a84d502a4af823f0b44",
+          "tests": [
+            "test/ext/digamma.jl on 2783a682"
+          ],
+          "result": "failed",
+          "detail": "542 passed, 48 errored. Nested tests accounted for 48 passed, 48 errored."
         }
       ],
       "draft": {
         "title": "Real polygamma derivatives can return NaN at negative half-integers",
-        "body": "At x = −0.5 the derivative of digamma is finite, but upstream returns NaN in both forward and reverse mode. The forward derivative of polygamma(2, x) also returns NaN. The expected values are `trigamma(-0.5)` (8.9348022005) for the first example and `polygamma(3, -0.5)` (193.4090910340) for the second.\n\n[2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) applies directly to upstream `1ee9a6f8` and ports the rules from [bb949ab5](https://github.com/nsiccha/Enzyme.jl/commit/bb949ab5ef00f617a6655bb51e5751022122abbc). On Julia 1.12.7 with released Enzyme_jll 0.0.311+0, all 494 direct assertions in [digamma.jl](https://github.com/nsiccha/Enzyme.jl/blob/2783a682cb010230cde3434028f1c0fc25cd6495/test/ext/digamma.jl) passed under both bounds settings. The full file recorded 542 passes and 48 errors per run. First and second nested derivatives passed. All 24 third derivatives errored in custom-rule argument setup, and all 24 fourth derivatives errored at `iterate(::Nothing)`.\n\nTo apply both sets of rules, use [2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) first, then [13049423](https://github.com/nsiccha/Enzyme.jl/commit/13049423e6c18044c5482d4213b614e759ab6a18). The second commit adds the gamma rule and its tests and shares the digamma rule from the first commit. All ten joint analytical probes passed under both bounds settings. The combined test files recorded 47,360 passes and 51 errors per run, including the 48 nested digamma errors and three fourth derivatives of gamma.\n\nOn pristine upstream with Julia 1.10.12 and Enzyme_jll 0.0.311+0, each operation was repeated in a fresh process. Forward and reverse derivatives of digamma at −0.5 returned NaN (expected 8.9348022005). The forward derivative of polygamma(2, x) at −0.5 returned NaN (expected 193.4090910340). The reverse call stopped in LLVM verification before returning a value.",
-        "prepared_at": "2026-11-19T00:09:13Z"
+        "body": "At x = −0.5 the derivative of digamma is finite, but upstream returns NaN in both forward and reverse mode. The forward derivative of polygamma(2, x) also returns NaN. On pristine upstream `1ee9a6f8` at −0.5, the expected derivatives are 8.9348022005 for digamma and 193.4090910340 for polygamma of order two. On Julia 1.10.12 the reverse call for order two stopped in LLVM verification. Each operation ran in a fresh process.\n\nThe standalone patch [2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) ports [bb949ab5](https://github.com/nsiccha/Enzyme.jl/commit/bb949ab5ef00f617a6655bb51e5751022122abbc) directly to this base. With released Enzyme_jll 0.0.311+0 on Julia 1.10.12 and 1.12.7, all 494 direct assertions in [digamma.jl](https://github.com/nsiccha/Enzyme.jl/blob/2783a682cb010230cde3434028f1c0fc25cd6495/test/ext/digamma.jl) passed in both bounds modes. The 48 first- and second-derivative checks passed. All 24 third derivatives stopped at `length(parmsRemoved) == 0`. The 24 fourth derivatives failed in thunk inference on Julia 1.10.12 and at `iterate(::Nothing)` on 1.12.7. The full file had 542 passes and 48 errors per run.\n\nTo apply both fixes, take [2783a682](https://github.com/nsiccha/Enzyme.jl/commit/2783a682cb010230cde3434028f1c0fc25cd6495) first and [13049423](https://github.com/nsiccha/Enzyme.jl/commit/13049423e6c18044c5482d4213b614e759ab6a18) second. This order shares the digamma rule. All ten joint analytical comparisons matched on both releases with default and forced bounds. The combined files recorded 47,360 passes and 51 errors on both releases in each bounds mode.",
+        "prepared_at": "2026-11-19T00:22:39Z"
       }
     },
     {
