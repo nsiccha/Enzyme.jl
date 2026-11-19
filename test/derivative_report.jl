@@ -420,6 +420,21 @@ returning(d) = [f for f in d.findings if !f.throw_only]
 returning(d, kind::Symbol) = [f for f in d.findings if !f.throw_only && f.kind === kind]
 derivative_of(report, f) = only(d for d in report.derivatives if d.func === typeof(f))
 
+fixed_column_or_input(x) = sum(abs2, size(x, 2) == 0 ? ones(size(x, 1), 1) : x)
+
+@testset "Reverse resolves the shadow of a fresh matrix at a branch" begin
+    for x in (reshape(collect(1.0:6.0), 2, 3), zeros(2, 0))
+        dx = ones(size(x))
+        report = Enzyme.derivative_report() do
+            autodiff(Reverse, fixed_column_or_input, Active, Duplicated(x, dx))
+        end
+        @test dx == 1 .+ 2x
+        derivative = derivative_of(report, fixed_column_or_input)
+        @test isempty(returning(derivative, :dynamic_dispatch))
+        @test isempty(returning(derivative, :enzyme_runtime_fallback))
+    end
+end
+
 @noinline dispatched(v) = Base.inferencebarrier(sin)(v)
 function sum_dispatched(x)
     s = 0.0

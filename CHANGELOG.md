@@ -13,6 +13,11 @@
   keeps the types of distinct boxed tree nodes separate across dispatch,
   branches, and heterogeneous storage. Gen's static `Map` uses both layouts.
 
+- Resolve the zero-shadow call at compile time when a branch merges a fresh
+  constant array with an active array and the compiler knows the array type.
+  For example, Reverse can now differentiate
+  `sum(abs2, size(x, 2) == 0 ? ones(size(x, 1), 1) : x)` without dispatching
+  to `make_zero` at run time.
 - Keep strong zero (`Enzyme.set_strong_zero`) in every derivative rule of a
   math function. A zero derivative reaching `log` at 0, `exp` where it
   overflows, or any other function whose partial derivative is infinite there
