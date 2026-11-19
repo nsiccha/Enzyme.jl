@@ -28,30 +28,39 @@ c2=$(git_ -C "$D/src" rev-parse HEAD)
 
 # The LLVM_full_jll artifact directories the script names, each with a stub lit.
 cat > "$tmp/lit.py" <<'STUB_LIT'
-import os, sys
-root = sys.argv[-1]
-gate = root.endswith("/test/Enzyme")
-test_dir = os.path.dirname(root) if gate else root
+import argparse, os, sys
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-s", action="store_true")
+parser.add_argument("-j", type=int)
+parser.add_argument("--no-progress-bar", action="store_true")
+parser.add_argument("roots", nargs="+", type=Path)
+roots = [root.resolve() for root in parser.parse_args().roots]
+broad = len(roots) == 1 and roots[0].name == "test"
+test_dir = roots[0] if broad else roots[0].parent
+suites = [root.name for root in roots]
+suite_passes = {"Enzyme": 1195, "TypeAnalysis": 96, "ActivityAnalysis": 37}
+passes = 1402 if broad else sum(suite_passes[suite] for suite in suites)
 helpers_defined = os.environ.get("STUB_HELPERS", "1") == "1"
 handler_built = any(f.startswith("EnzymeTestCallHandler-") for f in os.listdir(test_dir))
 reeval_built = os.path.exists(os.path.join(test_dir, "ActivityAnalysis", "EnzymeActivityReEvaluationTest"))
-print("-- Testing: %d tests, 2 workers --" % (1205 if gate else 1748))
 if os.environ.get("STUB_LIT_NO_REPORT") == "1":
     print("stub lit: killed before its report")
     sys.exit(2)
-core = []
+regressions = []
 if helpers_defined and not handler_built:
-    core.append("Enzyme :: Enzyme/ReverseMode/cache_for_reverse_arg.ll")
-if os.environ.get("STUB_GATE_FAIL") == "1":
-    core.append("Enzyme :: Enzyme/ReverseMode/stub_regression.ll")
-failed, unresolved = list(core), []
-if not gate:
+    regressions.append("Enzyme/ReverseMode/cache_for_reverse_arg.ll")
+if helpers_defined and not reeval_built:
+    regressions.append("ActivityAnalysis/reevaluation.cpp")
+if os.environ.get("STUB_REGRESSION"):
+    regressions.append(os.environ["STUB_REGRESSION"])
+failed = ["Enzyme :: " + test for test in regressions if broad or test.split("/")[0] in suites]
+passes -= len(failed)
+unresolved = []
+if broad:
     failed += ["Enzyme :: MLIR/ReverseMode/square.mlir", "Enzyme :: Integration/ReverseMode/sum.c",
                "Enzyme :: Fortran/ForwardMode/square.f90"]
-    if helpers_defined and not reeval_built:
-        failed.append("Enzyme :: ActivityAnalysis/reevaluation.cpp")
-    extra = os.environ.get("STUB_BROAD_EXTRA", "")
-    failed += [extra] if extra else []
     unresolved = ["Enzyme :: test_find_package/main.c"]
 for t in failed:
     print("FAIL: %s (1 of 1)" % t)
@@ -60,10 +69,10 @@ for name, tests in (("Unresolved", unresolved), ("Failed", sorted(failed))):
         print("********************\n%s Tests (%d):" % (name, len(tests)))
         print("".join("  %s\n" % t for t in tests))
 print("\nTesting Time: 0.01s")
-if not gate:
+if broad:
     print("  Unsupported      :   23")
-print("  Passed           : %4d" % ((1195 if gate else 1402) - len(core)))
-print("  Expectedly Failed: %4d" % (10 if gate else 17))
+print("  Passed           : %4d" % passes)
+print("  Expectedly Failed: %4d" % (17 if broad else 10))
 if unresolved:
     print("  Unresolved       : %4d" % len(unresolved))
 if failed:
@@ -96,7 +105,7 @@ esac
 [ "$name" = "${STUB_FAIL_BUILD:-}" ] && { echo "stub.cpp:1:1: error: stub compile failure"; exit 1; }
 case $name in
   lib*) mkdir -p $B/Enzyme $B/BCLoad; echo "enzyme $V" > $B/Enzyme/libEnzyme-$V.so; echo "bcload $V" > $B/BCLoad/libEnzymeBCLoad-$V.so;;
-  lit*) mkdir -p $B/test/Enzyme $B/test/ActivityAnalysis
+  lit*) mkdir -p $B/test/{Enzyme,TypeAnalysis,ActivityAnalysis}
         case " $* " in *" EnzymeTestCallHandler-$V "*) : > $B/test/EnzymeTestCallHandler-$V.so;; esac
         case " $* " in *" EnzymeActivityReEvaluationTest "*) : > $B/test/ActivityAnalysis/EnzymeActivityReEvaluationTest;; esac;;
 esac
@@ -111,8 +120,8 @@ run() {
   while [ "$1" != -- ]; do settings+=("$1"); shift; done
   shift
   : > "$STUB_LOG"
-  out=$(env -u BASH_ENV -u KB_DOGFOOD_ROOT -u KB_DOGFOOD_SRC -u KB_DOGFOOD_OUT -u STUB_HELPERS -u STUB_GATE_FAIL \
-        -u STUB_BROAD_EXTRA -u STUB_FAIL_BUILD -u STUB_LIT_NO_REPORT HOME="$home" PATH="$tmp/bin:$PATH" \
+  out=$(env -u BASH_ENV -u KB_DOGFOOD_ROOT -u KB_DOGFOOD_SRC -u KB_DOGFOOD_OUT -u STUB_HELPERS \
+        -u STUB_REGRESSION -u STUB_FAIL_BUILD -u STUB_LIT_NO_REPORT HOME="$home" PATH="$tmp/bin:$PATH" \
         KB_DOGFOOD_JOBS=2 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "${settings[@]}" bash "$D/build.sh" "$@" 2>&1)
   rc=$?
 }
@@ -135,8 +144,8 @@ O=$D/$c1
 ok "default targets: exit status 0" [ $rc -eq 0 ]
 ok "default targets: ends with BUILD_OK" last_line_is BUILD_OK
 ok "lit16 builds both test helpers beside the plugin" built_with $c1 lit16 "LLVMEnzyme-16 EnzymeTestCallHandler-16 EnzymeActivityReEvaluationTest"
-ok "lit16-summary.txt opens by naming the gate" grep -q '^lit16 gate: test/Enzyme' <(head -1 $O/lit16-summary.txt)
-ok "lit16-summary.txt reports the gate's passes" [ "$(passed $O/lit16-summary.txt)" = 1195 ]
+ok "lit16-summary.txt opens by naming all gated directories" grep -Fxq "lit16 gate: test/Enzyme test/TypeAnalysis test/ActivityAnalysis on the LLVM 16 plugin, commit $c1, lit exit 0" <(head -1 $O/lit16-summary.txt)
+ok "lit16-summary.txt reports the gate's combined passes" [ "$(passed $O/lit16-summary.txt)" = 1328 ]
 ok "lit16-summary.txt reports no failure" [ "$(failed $O/lit16-summary.txt)" = 0 ]
 ok "lit16-broad-summary.txt reports the broad passes" [ "$(passed $O/lit16-broad-summary.txt)" = 1402 ]
 ok "lit16-broad-summary.txt reports the broad failures" [ "$(failed $O/lit16-broad-summary.txt)" = 3 ]
@@ -149,22 +158,24 @@ for v in 15 18 20; do
 done
 ok "BUILD_INFO records the commit" grep -q "sha=$c1" $O/BUILD_INFO
 
-# 2. The next commit, with one more broad failure outside test/Enzyme: reported, not gating.
+# 2. The next commit adds a failure in a directory outside the gate.
 git_ -C "$D/src" checkout -q --detach "$c2"
-run STUB_BROAD_EXTRA="Enzyme :: TypeAnalysis/stub_new.ll" -- lit16
+run STUB_REGRESSION=BCLoader/stub_new.ll -- lit16
 O=$D/$c2
 ok "new broad failure: exit status stays 0" [ $rc -eq 0 ]
-ok "new broad failure: listed against the built ancestor" [ "$(cat $O/lit16-broad-new-failures.txt 2> /dev/null)" = "Enzyme :: TypeAnalysis/stub_new.ll" ]
+ok "new broad failure: listed against the built ancestor" [ "$(cat $O/lit16-broad-new-failures.txt 2> /dev/null)" = "Enzyme :: BCLoader/stub_new.ll" ]
 ok "new broad failure: the output names the ancestor" grep -q "failing here but not on ${c1:0:8}:" <<< "$out"
-ok "new broad failure: the gate summary is unchanged" [ "$(passed $O/lit16-summary.txt)/$(failed $O/lit16-summary.txt)" = 1195/0 ]
+ok "new broad failure: the gate summary is unchanged" [ "$(passed $O/lit16-summary.txt)/$(failed $O/lit16-summary.txt)" = 1328/0 ]
 
-# 3. A failing gate.
-run STUB_GATE_FAIL=1 -- lit16
-ok "failing gate: exit status 1" [ $rc -eq 1 ]
-ok "failing gate: ends with BUILD_FAIL" last_line_is BUILD_FAIL
-ok "failing gate: the summary counts the failure" [ "$(passed $O/lit16-summary.txt)/$(failed $O/lit16-summary.txt)" = 1194/1 ]
-ok "failing gate: the summary names the test" grep -q '^  Enzyme :: Enzyme/ReverseMode/stub_regression.ll$' $O/lit16-summary.txt
-ok "failing gate: the summary records lit's exit status" grep -q 'lit exit 1$' <(head -1 $O/lit16-summary.txt)
+# 3. A single failure in any gated directory fails the build.
+for test in Enzyme/ReverseMode/stub_regression.ll TypeAnalysis/stub_regression.ll ActivityAnalysis/reevaluation.cpp; do
+  run STUB_REGRESSION="$test" -- lit16
+  ok "$test: exit status 1" [ $rc -eq 1 ]
+  ok "$test: ends with BUILD_FAIL" last_line_is BUILD_FAIL
+  ok "$test: the summary counts the failure" [ "$(passed $O/lit16-summary.txt)/$(failed $O/lit16-summary.txt)" = 1327/1 ]
+  ok "$test: the summary names the test" grep -Fxq "  Enzyme :: $test" $O/lit16-summary.txt
+  ok "$test: the summary records lit's exit status" grep -q 'lit exit 1$' <(head -1 $O/lit16-summary.txt)
+done
 
 # 4. lit dies before its report.
 run STUB_LIT_NO_REPORT=1 -- lit16
@@ -183,13 +194,14 @@ ok "compile failure: exit status 1" [ $rc -eq 1 ]
 ok "compile failure: ends with BUILD_FAIL" last_line_is BUILD_FAIL
 ok "compile failure: the failed target installs nothing" [ ! -e $O/llvm18 ]
 ok "compile failure: the other library is installed" [ -f $O/llvm15/SHA256SUMS ]
-ok "compile failure: the gate still ran" [ "$(passed $O/lit16-summary.txt)" = 1195 ]
+ok "compile failure: the gate still ran" [ "$(passed $O/lit16-summary.txt)" = 1328 ]
 
 # 7. lit20 builds the helper test/Enzyme needs, and stays informational.
-run STUB_GATE_FAIL=1 -- lit20
+run STUB_REGRESSION=Enzyme/ReverseMode/stub_regression.ll -- lit20
 ok "lit20 builds the test call handler and no other helper" built_with $c2 lit20 "LLVMEnzyme-20 EnzymeTestCallHandler-20"
 ok "lit20: a failing test does not change the exit status" [ $rc -eq 0 ]
 ok "lit20-failed.txt lists the failing test" grep -q stub_regression $O/lit20-failed.txt
+ok "lit20 still runs test/Enzyme alone" [ "$(passed $O/lit20-summary.txt)" = 1194 ]
 
 # 8. Refusals.
 run -- nosuch
