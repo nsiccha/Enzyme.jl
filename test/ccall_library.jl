@@ -1,4 +1,4 @@
-using Enzyme, Test, LinearAlgebra
+using Enzyme, Test, LinearAlgebra, Libdl
 
 # A `ccall` names its library in one of several ways, and Julia compiles them differently:
 # a constant of the same module is resolved when the method is compiled, while Julia 1.12
@@ -6,7 +6,7 @@ using Enzyme, Test, LinearAlgebra
 # non-constant global is read when the call first runs, and so is any other expression
 # (which Julia 1.13 no longer accepts). A library read from a global must differentiate like
 # the first. Behind any other expression a function Enzyme has a rule for by name does too,
-# and a BLAS or LAPACK routine or a function without a rule raises an error.
+# including BLAS and LAPACK. A function without a rule raises an error.
 
 module CcallLibraries
     import LinearAlgebra
@@ -17,8 +17,13 @@ module CcallLibraries
     end
     name() = Base.libm_name
     lapack() = LinearAlgebra.BLAS.libblastrampoline
+    const dot_library = Ref("")
+    dot_provider() = dot_library[]
+    const providers = ["", ""]
+    provider(i) = providers[i]
 end
 
+const computed_blas_supported = Enzyme.API.supports_blas_library_call("dlacpy_") === true
 const ccall_library_constant = Base.libm_name
 ccall_library_variable = Base.libm_name
 ccall_lapack_variable = BLAS.libblastrampoline
@@ -69,16 +74,39 @@ const lapack_spellings = Pair{Symbol, Any}[
         quotient = Ref{Cint}(0)
         return ccall((:remquo, CcallLibraries.name()), Float64, (Float64, Float64, Ref{Cint}), x, 2.0, quotient)
     end
+    function dot_computed(x, y)
+        return ccall(
+            (BLAS.@blasfunc(ddot_), CcallLibraries.dot_provider()), Float64,
+            (Ref{BLAS.BlasInt}, Ptr{Float64}, Ref{BLAS.BlasInt}, Ptr{Float64}, Ref{BLAS.BlasInt}),
+            length(x), x, 1, y, 1,
+        )
+    end
+    function sum_dot_gradient(x, y)
+        dx = zero(x)
+        autodiff(Reverse, dot_computed, Active, Duplicated(x, dx), Const(y))
+        return sum(dx)
+    end
+    for (i, name) in enumerate((:first_dot, :second_dot))
+        @eval function $name(x, y)
+            return ccall(
+                (:ddot, CcallLibraries.provider($i)), Float64,
+                (Ref{Cint}, Ptr{Float64}, Ref{Cint}, Ptr{Float64}, Ref{Cint}),
+                length(x), x, 1, y, 1,
+            )
+        end
+    end
+    function two_dots(x, y)
+        value = first_dot(x, y) + 2 * second_dot(x, y)
+        x[1] = y[1] = 0.0
+        return value
+    end
     push!(scalar_libraries, cos_computed)
-end
-const lapack_definitions = copy(lapack_spellings)
-@static if VERSION < v"1.13-"
-    push!(lapack_definitions, :computed => :(CcallLibraries.lapack()))
+    push!(lapack_spellings, :computed => :(CcallLibraries.lapack()))
 end
 
 # LAPACK's `lacpy` copies one triangle of `A` into `B`. Its integers and its `uplo` go by
 # reference, as the `Ref`s of a hand-written wrapper.
-for (spelling, library) in lapack_definitions
+for (spelling, library) in lapack_spellings
     @eval function $(Symbol(:lacpy_, spelling, :!))(B::Matrix{Float64}, A::Matrix{Float64}, uplo::Char)
         m, n = size(A)
         ccall(
@@ -155,11 +183,90 @@ reverse_derivative(f, x) = autodiff(Reverse, f, Active, Active(x))[1][1]
         @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(Forward, f, Duplicated(0.7, 1.0))
     end
 
+    @static if VERSION < v"1.13-"
+        if computed_blas_supported
+            @testset "computed BLAS library is selected on first use" begin
+                x, y = [2.0, -1.0], [3.0, 4.0]
+                dx, dy = zeros(2), zeros(2)
+                missing = "enzyme_missing_blas_test_library"
+                CcallLibraries.dot_library[] = missing
+                @test_throws ErrorException autodiff(ReverseWithPrimal, dot_computed, Active, Duplicated(x, dx), Duplicated(y, dy))
+                CcallLibraries.dot_library[] = BLAS.libblastrampoline
+                for _ in 1:2
+                    fill!(dx, 0)
+                    fill!(dy, 0)
+                    _, primal = autodiff(ReverseWithPrimal, dot_computed, Active, Duplicated(x, dx), Duplicated(y, dy))
+                    @test primal == dot(x, y)
+                    @test dx == y
+                    @test dy == x
+                    CcallLibraries.dot_library[] = missing
+                end
+                CcallLibraries.dot_library[] = BLAS.libblastrampoline
+                @test autodiff(Forward, sum_dot_gradient, Const(x), Duplicated(y, [1.0, 2.0]))[1] == 3.0
+
+                # InlineABI can put the augmented primal and reverse pass into separate modules.
+                fwd, rev = autodiff_thunk(
+                    Enzyme.set_abi(ReverseSplitWithPrimal, Enzyme.InlineABI),
+                    Const{typeof(dot_computed)}, Active, Duplicated{typeof(x)}, Duplicated{typeof(y)}
+                )
+                fill!(dx, 0)
+                fill!(dy, 0)
+                args = (Const(dot_computed), Duplicated(x, dx), Duplicated(y, dy))
+                tape, primal, _ = fwd(args...)
+                rev(args..., 1.0, tape)
+                @test primal == dot(x, y)
+                @test dx == y
+                @test dy == x
+            end
+            @testset "two BLAS providers in one derivative" begin
+                cc = Sys.which("cc")
+                if Sys.isunix() && cc !== nothing
+                    mktempdir() do dir
+                        source = joinpath(@__DIR__, "ccall_blas_provider.c")
+                        for i in eachindex(CcallLibraries.providers)
+                            lib = joinpath(dir, "provider$i." * Libdl.dlext)
+                            run(`$cc -shared -fPIC -o $lib $source`)
+                            CcallLibraries.providers[i] = lib
+                        end
+                        x, y = [2.0, -1.0], [3.0, 4.0]
+                        dx, dy = zero(x), zero(y)
+                        _, value = autodiff(ReverseWithPrimal, two_dots, Active, Duplicated(copy(x), dx), Duplicated(copy(y), dy))
+                        @test value == 3 * dot(x, y)
+                        @test dx == 3 * y
+                        @test dy == 3 * x
+                        for lib in CcallLibraries.providers
+                            Libdl.dlopen(lib) do handle
+                                count = Libdl.dlsym(handle, :blas_calls)
+                                @test ccall(count, Cint, (Cint,), 0) == 1 # ddot
+                                @test ccall(count, Cint, (Cint,), 1) > 0  # dcopy before the overwrite
+                                @test ccall(count, Cint, (Cint,), 2) == 2 # daxpy for the two inputs
+                            end
+                        end
+                    end
+                else
+                    @test_skip false
+                end
+            end
+        end
+    end
+
     W = reshape(collect(1.0:16.0), 4, 4)
     w = vec(W)
     @testset "lacpy, $spelling" for (spelling, _) in lapack_spellings
         lacpy! = getfield(@__MODULE__, Symbol(:lacpy_, spelling, :!))
-        @testset "$(uplo)" for (uplo, copied) in (('U', triu(W)), ('L', tril(W)))
+        if spelling === :computed && !computed_blas_supported
+            X = lacpy_source .+ 1.0
+            @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(
+                Reverse, copied_active, Active, Const(lacpy!), Duplicated(copy(X), zeros(4, 4)),
+                Duplicated(zeros(4, 4), zeros(4, 4)), Const(w), Const('U'),
+            )
+            @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(
+                Forward, lacpy!, Duplicated(zeros(4, 4), zeros(4, 4)), Duplicated(copy(X), ones(4, 4)), Const('U'),
+            )
+            @test lacpy!(fill(-1.0, 4, 4), lacpy_source, 'U') == [i <= j ? lacpy_source[i, j] : -1.0 for i in 1:4, j in 1:4]
+            continue
+        end
+        @testset "$(uplo)" for (uplo, copied) in (('U', triu(W)), ('L', tril(W)), ('A', W))
             kept = W .- copied
             @test lacpy!(fill(-1.0, 4, 4), lacpy_source, uplo) == [copied[i, j] != 0 ? lacpy_source[i, j] : -1.0 for i in 1:4, j in 1:4]
 
@@ -189,22 +296,6 @@ reverse_derivative(f, x) = autodiff(Reverse, f, Active, Active(x))[1][1]
             dB = copy(seed)
             autodiff(Forward, lacpy!, Duplicated(zeros(4, 4), dB), Duplicated(copy(X), copy(tangent)), Const(uplo))
             @test dB == [copied[i, j] != 0 ? tangent[i, j] : seed[i, j] for i in 1:4, j in 1:4]
-        end
-    end
-
-    # A LAPACK routine behind a library that stays a run-time value has no derivative, and
-    # says so: before, compiling its derivative ended the process.
-    @static if VERSION < v"1.13-"
-        @testset "lacpy, computed" begin
-            X = lacpy_source .+ 1.0
-            @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(
-                Reverse, copied_active, Active, Const(lacpy_computed!), Duplicated(copy(X), zeros(4, 4)),
-                Duplicated(zeros(4, 4), zeros(4, 4)), Const(w), Const('U'),
-            )
-            @test_throws Enzyme.Compiler.EnzymeNoDerivativeError autodiff(
-                Forward, lacpy_computed!, Duplicated(zeros(4, 4), zeros(4, 4)), Duplicated(copy(X), ones(4, 4)), Const('U'),
-            )
-            @test lacpy_computed!(fill(-1.0, 4, 4), lacpy_source, 'U') == [i <= j ? lacpy_source[i, j] : -1.0 for i in 1:4, j in 1:4]
         end
     end
 end

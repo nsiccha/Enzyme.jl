@@ -1,0 +1,3 @@
+summary = "BLAS and LAPACK rules use the call site's runtime-selected ccall library for their primal and derivative routines"
+libenzyme_build = "cb1e89666f23b474fae1bb7a819fe23413487fe9"
+tests = ["test/ccall_library.jl"]

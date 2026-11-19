@@ -528,6 +528,7 @@ function compile_retained(@nospecialize(job::CompilerJob))::RetainedDerivative
     run!(ReinsertGCMarkerPass(), mod)
     fixup_callconv!(mod, JIT.get_tm())
 
+    materialize_runtime_blas!(mod)
     symbols = RetainedSymbols(retained_prefix(job))
     symbolic_inserted_values!(mod, meta.value_table.inserted, symbols)
     symbolic_addresses!(mod, symbols)
