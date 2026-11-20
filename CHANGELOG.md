@@ -9,6 +9,16 @@
   call's signature would require runtime dispatch. This lets Reverse compile
   a triangular matrix times a vector view directly.
 
+- Make `EnzymeRules.overwritten(config)` cover data behind references that a
+  custom rule's argument holds. For an immutable struct, tuple, named tuple,
+  view or other wrapper around an array, and for a callable that holds one,
+  the flag stayed `false` after a later write to that array. A rule that
+  reread the array in its reverse pass then returned a wrong derivative
+  without an error, as Enzyme's own `det` rule did for a view. The flag is now
+  `true` whenever a write the rule cannot see may follow its call, also in
+  split mode, and stays `false` otherwise. The repair is available when
+  `Enzyme.has_dogfood_repair(:overwritten_reachable_data)` is true.
+
 - Differentiate a broadcast writer in Reverse when a `GC.@preserve` overlap
   check selects between writing directly and copying a temporary result.
 
