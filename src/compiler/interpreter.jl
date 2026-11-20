@@ -469,6 +469,35 @@ include("tfunc.jl")
 
 import Core.Compiler: CallInfo
 
+@static if VERSION >= v"1.12-"
+    # Julia can widen an argument (e.g. typeof(transpose) to Function) when
+    # a call does not inline. If that target has no code in this interpreter's
+    # cache, the invoke becomes dynamic even when the exact callee is available.
+    function Core.Compiler.compileable_specialization(
+            code::Core.CodeInstance, effects::Core.Compiler.Effects,
+            et::Core.Compiler.InliningEdgeTracker, @nospecialize(info::CallInfo),
+            state::Core.Compiler.InliningState{<:EnzymeInterpreter},
+        )
+        CC = Core.Compiler
+        result = @invoke CC.compileable_specialization(
+            code::Union{Core.CodeInstance, MethodInstance}, effects::CC.Effects,
+            et::CC.InliningEdgeTracker, info::CallInfo, state::CC.InliningState,
+        )
+        if result isa CC.InvokeCase && result.invoke isa MethodInstance
+            mi = code.def
+            if mi isa MethodInstance && mi !== result.invoke && Base.isdispatchtuple(mi.specTypes) &&
+                    mi.def.nospecialize == 0 && CC.validate_sparams(mi.sparam_vals)
+                cached = get(CC.code_cache(state), mi, nothing)
+                if cached isa Core.CodeInstance
+                    CC.add_inlining_edge!(et, cached)
+                    return CC.InvokeCase(cached, effects, info)
+                end
+            end
+        end
+        return result
+    end
+end
+
 struct NoInlineCallInfo <: CallInfo
     info::CallInfo # wrapped call
     tt::Any # ::Type

@@ -1,0 +1,2 @@
+summary = "Preserve inferred invoke signatures when compiling derivatives, including triangular products with a vector view"
+tests = ["test/specialized_invokes.jl"]
