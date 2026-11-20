@@ -478,12 +478,57 @@ function dereferenceable_root_ptr(@nospecialize(v::LLVM.Value))::Bool
     return false
 end
 
+# Julia may box a by-reference argument for a dynamic call with one full memcpy.
+function boxed_argument_copy(inst::LLVM.CallInst)
+    fn = inst.called_operand
+    fn isa LLVM.Function && fn.intrinsic == LLVM.Intrinsic("llvm.memcpy") || return nothing
+    dst, src, len, volatile = inst.arguments
+    len isa LLVM.ConstantInt && is_zero(volatile) || return nothing
+    box, _ = get_base_and_offset(dst; offsetAllowed = false)
+    called_function_name(box) == "julia.gc_alloc_obj" && len == box.arguments[2] || return nothing
+    arg, _ = get_base_and_offset(src; offsetAllowed = false)
+    arg isa LLVM.Argument || return nothing
+    return box, arg
+end
+
+# In particular, a nested derivative may see the primal box saved on an inner
+# tape. Copy the fields individually so the outer pass can give a constant
+# reference its own shadow. Only split copies whose references travel inline.
+function split_boxed_argument_copies!(mod::LLVM.Module, enzyme_ctx::EnzymeContext)
+    for fn in mod.functions
+        fn.intrinsic == LLVM.Intrinsic("llvm.memcpy") || continue
+        for copy in collect(fn.users)
+            copy isa LLVM.CallInst || continue
+            pair = boxed_argument_copy(copy)
+            pair === nothing && continue
+            box, arg = pair
+            known, T, cc = abs_typeof(arg, enzyme_ctx)
+            known && cc == GPUCompiler.BITS_REF && isconcretetype(T) && !ismutabletype(T) || continue
+            known_box, BT, _ = abs_typeof(box, enzyme_ctx)
+            known_box && BT === T || continue
+            ty = convert(LLVMType, T)
+            any_jltypes(ty) && iszero(inline_roots_type(ty)) || continue
+            dst, src, len = copy.arguments
+            LLVM.storage_size(mod.datalayout, ty) == convert(Int, len) || continue
+            @dispose b = LLVM.IRBuilder() begin
+                position!(b, LLVM.before(copy))
+                from = pointercast!(b, src, LLVM.PointerType(ty, src.value_type.addrspace))
+                to = pointercast!(b, dst, LLVM.PointerType(ty, dst.value_type.addrspace))
+                copy_struct_into!(b, ty, to, from, true)
+            end
+            LLVM.erase!(copy)
+        end
+    end
+    return nothing
+end
+
 # A Julia by-reference immutable argument and its separate roots array contain
 # the references the caller supplied. LLVM can copy one of those fields into a
 # freshly boxed object as a machine integer. Keep it GC-tracked, and read it
 # before the allocation so reverse mode can obtain a separate zero shadow
 # without calling the collector during object initialization.
 function restore_boxed_reference_copies!(mod::LLVM.Module, enzyme_ctx::EnzymeContext)
+    split_boxed_argument_copies!(mod, enzyme_ctx)
     layout = mod.datalayout
     tracked = LLVM.PointerType(LLVM.StructType(LLVMType[]), Tracked)
     init_blocks = Set{LLVM.BasicBlock}()

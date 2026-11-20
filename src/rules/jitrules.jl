@@ -2003,6 +2003,14 @@ function boxed_constant_argument(gutils, @nospecialize(box::LLVM.Value), call::L
                 value isa Union{LLVM.ConstantInt, LLVM.ConstantFP, LLVM.PointerNull} && continue
                 value isa LLVM.Argument && is_constant_value(gutils, value) || return false
                 copied = true
+            elseif inst isa LLVM.CallInst
+                # Preprocessing may retain or re-form the full payload copy.
+                pair = boxed_argument_copy(inst)
+                pair === nothing && return false
+                dst, src = pair
+                dst == box && is_constant_value(gutils, src) || return false
+                inst.parent == bb && comes_before(inst, call) || return false
+                copied = true
             else
                 return false
             end
