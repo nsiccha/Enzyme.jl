@@ -99,9 +99,8 @@ function tri_hvp_active(mode, f, x, v, L)
 end
 
 # On Julia 1.12, `\` with a lower triangular matrix solves through ldiv!(L, B), which branches
-# at run time on whether L is also upper triangular. Forward over reverse through the solve in
-# that branch needs runtime activity: the reverse pass keeps the constant matrix on its tape,
-# as it does for any custom rule given a constant array.
+# at run time on whether L is also upper triangular, so the reverse pass keeps the constant
+# matrix on its tape on one branch only. Julia 1.11 was not measured for these solves.
 lower_backslash(f, W) =
     (f === tri_solve && W in (LowerTriangular, UnitLowerTriangular)) ||
     (f in (tri_solve_adjoint, tri_solve_transpose) && W in (UpperTriangular, UnitUpperTriangular))
@@ -134,16 +133,13 @@ lower_backslash(f, W) =
         @test hv ≈ H * v
         @test ddL ≈ fd rtol = 1.0e-6
 
-        if VERSION < v"1.11" || !lower_backslash(f, W)
+        if !(v"1.11" <= VERSION < v"1.12" && lower_backslash(f, W))
             dx, hv = tri_hvp(Forward, f, x, v, L)
             @test dx ≈ H * x
             @test hv ≈ H * v
             hv, ddL = tri_hvp_active(Forward, f, x, v, L)
             @test hv ≈ H * v
             @test ddL ≈ fd rtol = 1.0e-6
-        elseif VERSION >= v"1.12"
-            @test_broken tri_hvp(Forward, f, x, v, L)[2] ≈ H * v
-            @test_broken tri_hvp_active(Forward, f, x, v, L)[1] ≈ H * v
         end
     end
 end
