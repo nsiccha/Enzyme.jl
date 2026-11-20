@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep Reverse gradients finite when the compiler hoists arithmetic on an
+  infinite endpoint ahead of the branch that skips it. The native repair is
+  available as `Enzyme.has_dogfood_repair(:conditional_use_adjoints)`.
 - On Julia 1.12 and later, reuse the inferred specialization when widening a
   call's signature would require runtime dispatch. This lets Reverse compile
   a triangular matrix times a vector view directly.

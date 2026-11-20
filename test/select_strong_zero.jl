@@ -91,6 +91,42 @@ end
 
 unguarded_square(x) = x * x
 
+function guarded_endpoint(b, m, s)
+    b == -Inf && return -Inf
+    z = (b - m) / s
+    return exp(-z^2)
+end
+
+function endpoint_sum(x, y, lo)
+    m, s = x[1], exp(x[2])
+    total = 0.0
+    @simd for i in eachindex(y)
+        v = y[i]
+        total += if v < lo || v > 2.0
+            -Inf
+        else
+            upper = guarded_endpoint(2.0, m, s)
+            mass = lo == -Inf ? upper : upper - guarded_endpoint(lo, m, s)
+            -((v - m) / s)^2 / 2 - log(s) - mass
+        end
+    end
+    return total
+end
+
+@testset "Endpoint arithmetic hoisted ahead of its only use" begin
+    x, y = [0.7, log(0.6)], [1.2, 0.9, -0.5]
+    for lo in (-Inf, -1.0)
+        dx = zero(x)
+        autodiff(Reverse, endpoint_sum, Active, Duplicated(x, dx), Const(y), Const(lo))
+        for i in eachindex(x)
+            h = zero(x)
+            h[i] = 1.0e-6
+            fd = (endpoint_sum(x + h, y, lo) - endpoint_sum(x - h, y, lo)) / (2 * h[i])
+            @test dx[i] ≈ fd rtol = 1.0e-8
+        end
+    end
+end
+
 @testset "Select-masked nonfinite products" begin
     @testset "$T" for T in (Float32, Float64)
         for x in T.((0.0, 0.4, 1.0, -0.2, 1.2, NaN, Inf, -Inf, floatmax(T)))
