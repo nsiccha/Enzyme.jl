@@ -1,0 +1,2 @@
+summary = "Preserve constant references when a dynamic call boxes a by-reference argument with memcpy"
+tests = ["test/boxed_view.jl"]

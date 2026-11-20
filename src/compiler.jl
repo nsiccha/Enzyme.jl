@@ -5426,7 +5426,7 @@ function copy_struct_into!(builder::LLVM.IRBuilder, jltype::LLVM.LLVMType, dst::
         else
             LLVM.PointerType(dst.value_type.element_type, 11)
         end
-        dst = addrspacecast!(builder, PT2, dst)
+        dst = addrspacecast!(builder, dst, PT2)
     end
 
     if src.value_type.addrspace == 10
