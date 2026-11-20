@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Differentiate a broadcast writer in Reverse when a `GC.@preserve` overlap
+  check selects between writing directly and copying a temporary result.
+
 - Pack reverse caches of Booleans, fixed-size vectors and pointer-free numeric
   records across ragged loops. A three-level nest now grows one shared buffer
   per level, avoiding one allocation per inner invocation. The repair is
