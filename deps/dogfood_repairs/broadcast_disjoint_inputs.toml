@@ -1,0 +1,2 @@
+summary = "In-place broadcasts into an Array can read a disjoint Const array without allocating a shadow proportional to its length"
+tests = ["test/broadcast_unalias_allocations.jl"]
