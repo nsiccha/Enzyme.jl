@@ -317,6 +317,65 @@ function push_box_for_argument!(
     return al0
 end
 
+# A rule reads its argument's data in the reverse pass, and `overwritten(config)`
+# tells it whether that data may have changed since the augmented call. libEnzyme
+# reports this per operand, for the memory the operand points to: the object of a
+# boxed argument, with an array's elements, or the caller's copy of a value passed
+# by reference. A rule also reads what a reference inside that memory leads to: the
+# array a struct, tuple or view holds, the arrays inside an array. Whether a write
+# may reach such memory is what libEnzyme records per call (`may_write_after`).
+#
+# `reaches_mutable_memory(T)` says whether a value of type `T` leads to memory
+# outside its own storage that can change: a mutable object behind a reference it
+# holds, or a raw pointer. The elements of an `Array` or `Memory` are its own
+# storage. A `String`, a `Symbol` and a type cannot change.
+function reaches_mutable_memory(@nospecialize(T))::Bool
+    return own_storage_reaches_mutable(T, Any[])
+end
+
+# The fields or elements of one value of type `T`, stored in place.
+function own_storage_reaches_mutable(@nospecialize(T), seen::Vector{Any})::Bool
+    T isa DataType || return true
+    isconcretetype(T) || return true
+    (T <: Ptr || T <: Core.LLVMPtr) && return true
+    (T === Module || T === Core.SimpleVector) && return true
+    if T <: Array
+        return slot_reaches_mutable(eltype(T), seen)
+    end
+    @static if VERSION >= v"1.11-"
+        if T <: GenericMemory
+            return slot_reaches_mutable(eltype(T), seen)
+        end
+    end
+    for i in 1:fieldcount(T)
+        slot_reaches_mutable(fieldtype(T, i), seen) && return true
+    end
+    return false
+end
+
+# A field or element declared as `T`: a value stored in place, or a reference to
+# an object.
+function slot_reaches_mutable(@nospecialize(T), seen::Vector{Any})::Bool
+    if T isa Union
+        return slot_reaches_mutable(T.a, seen) || slot_reaches_mutable(T.b, seen)
+    end
+    T <: Type && return false
+    T isa DataType || return true
+    (T === String || T === Symbol) && return false
+    if Base.allocatedinline(T)
+        return own_storage_reaches_mutable(T, seen)
+    end
+    isconcretetype(T) || return true
+    ismutabletype(T) && return true
+    # An immutable object behind a reference: only what it holds can change. A
+    # type that holds itself adds nothing on the second visit.
+    for S in seen
+        S === T && return false
+    end
+    push!(seen, T)
+    return own_storage_reaches_mutable(T, seen)
+end
+
 function enzyme_custom_setup_args(
         @nospecialize(B::Union{Nothing, LLVM.IRBuilder}),
         orig::LLVM.CallInst,
@@ -340,6 +399,7 @@ function enzyme_custom_setup_args(
 
     mixeds = Tuple{LLVM.Value, Type, LLVM.Value}[]
     uncacheable = get_uncacheable(gutils, orig)
+    writes_follow = may_write_after(gutils, orig)
     mode = get_mode(gutils)
 
     retRemoved, parmsRemoved = removed_ret_parms(orig)
@@ -512,6 +572,12 @@ function enzyme_custom_setup_args(
             uncache_arg = uncacheable[arg.codegen.i] != 0
             if roots_op !== nothing
                 uncache_arg |= uncacheable[arg.codegen.i + 1] != 0
+            end
+            # Those flags cover the operand's own memory. Data behind a reference
+            # the argument holds may change whenever a write the rule cannot see
+            # follows the call.
+            if !uncache_arg && writes_follow && reaches_mutable_memory(arg.typ)
+                uncache_arg = true
             end
             push!(overwritten, uncache_arg)
         end

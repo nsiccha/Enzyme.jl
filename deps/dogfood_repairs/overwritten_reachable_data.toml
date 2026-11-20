@@ -1,0 +1,3 @@
+summary = "A custom rule's overwritten flag covers data behind references its argument holds"
+libenzyme_build = "05ce259ccbc1f40097351cdb7e7528dea722a303"
+tests = ["test/rules/overwritten_references.jl"]

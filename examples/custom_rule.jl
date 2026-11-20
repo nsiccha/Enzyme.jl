@@ -211,6 +211,8 @@ end
 # * We checked if the `config` requires the primal. If not, we need not compute the return value, but we make sure to mutate `y` in all cases.
 # * We checked if `x` could possibly be overwritten using the `Overwritten` attribute of [`EnzymeRules.RevConfig`](@ref).
 #   If so, we save the elements of `x` on the `tape` of the returned [`EnzymeRules.AugmentedReturn`](@ref) object.
+#   The attribute also covers data that an argument only refers to: for a struct, a tuple or a view that holds an array,
+#   it reports a possible write to that array.
 # * We return a shadow of `nothing` since the return value is [`Active`](@ref) and hence does not need a shadow.
 
 # Now, we write a method for [`EnzymeRules.reverse`](@ref):

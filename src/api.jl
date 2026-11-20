@@ -761,6 +761,42 @@ EnzymeGradientUtilsGetUncacheableArgs(gutils, orig, uncacheable, size) = ccall(
     size,
 )
 
+# Whether the loaded libEnzyme reports the writes that follow a call
+# (`EnzymeGradientUtilsGetSubsequentWrites`). A build without the entry point gives
+# no answer, and a custom rule's argument that holds a reference then always counts
+# as overwritten.
+function reports_subsequent_writes()
+    handle = Libdl.dlopen(libEnzyme)
+    try
+        return Libdl.dlsym_e(handle, :EnzymeGradientUtilsGetSubsequentWrites) != C_NULL
+    finally
+        Libdl.dlclose(handle)
+    end
+end
+
+# The kinds of write that follow the call `orig` and that its callee cannot see
+# (0 for none), or `nothing` when the loaded libEnzyme has no answer: it predates
+# this entry point, or holds no record for the call.
+function EnzymeGradientUtilsGetSubsequentWrites(gutils, orig)
+    handle = Libdl.dlopen(libEnzyme)
+    try
+        fn = Libdl.dlsym_e(handle, :EnzymeGradientUtilsGetSubsequentWrites)
+        fn == C_NULL && return nothing
+        writes = Ref{UInt8}(0)
+        found = ccall(
+            fn,
+            UInt8,
+            (EnzymeGradientUtilsRef, LLVMValueRef, Ptr{UInt8}),
+            gutils,
+            orig,
+            writes,
+        )
+        return found == 1 ? writes[] : nothing
+    finally
+        Libdl.dlclose(handle)
+    end
+end
+
 EnzymeGradientUtilsGetDiffeType(gutils, op, isforeign) = ccall(
     (:EnzymeGradientUtilsGetDiffeType, libEnzyme),
     CDIFFE_TYPE,
