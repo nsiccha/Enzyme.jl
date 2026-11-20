@@ -1,0 +1,3 @@
+summary = "Preserve zero adjoints of speculated arithmetic whose other uses only feed comparisons"
+libenzyme_build = "078431a87bc49e6391f64dc61eacf48412b220b5"
+tests = ["test/select_strong_zero.jl"]

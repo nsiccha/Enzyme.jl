@@ -127,6 +127,79 @@ end
     end
 end
 
+# The finite-endpoint arm compares a value computed from the endpoint, such as
+# the interval width `b - a`, before it uses the endpoint. LLVM computes that
+# value ahead of the loop together with `a`, and only the comparison reads it.
+for (name, test) in (
+        (:width, :(b - a >= 0.125)),
+        (:sum, :(b + a >= 0.125)),
+        (:scaled, :(2.0 * a >= 0.125)),
+        (:all, :((a >= -8) & (b <= 8) & (b - a >= 0.125))),
+    )
+    @eval function $(Symbol(:compared_lower_, name))(x, y, lo)
+        m, s = x[1], exp(x[2])
+        total = 0.0
+        @simd for i in eachindex(y)
+            v = y[i]
+            total += if v < lo || v > 2.0
+                -Inf
+            else
+                b = (2.0 - m) / s
+                mass = if lo == -Inf
+                    exp(-b * b)
+                else
+                    a = (lo - m) / s
+                    $test ? exp(-a * a) : 0.0
+                end
+                -((v - m) / s)^2 / 2 - log(s) - mass
+            end
+        end
+        return total
+    end
+end
+
+function compared_upper_width(x, y, hi)
+    m, s = x[1], exp(x[2])
+    total = 0.0
+    @simd for i in eachindex(y)
+        v = y[i]
+        total += if v < 0.0 || v > hi
+            -Inf
+        else
+            a = (0.0 - m) / s
+            mass = if hi == Inf
+                exp(-a * a)
+            else
+                b = (hi - m) / s
+                b - a >= 0.125 ? exp(-b * b) : 0.0
+            end
+            -((v - m) / s)^2 / 2 - log(s) - mass
+        end
+    end
+    return total
+end
+
+@testset "Endpoint arithmetic hoisted ahead of a comparison" begin
+    x = [0.7, log(0.6)]
+    cases = (
+        (compared_lower_width, [1.2, 0.9, -0.5], (-Inf, -1.0)),
+        (compared_lower_sum, [1.2, 0.9, -0.5], (-Inf, -1.0)),
+        (compared_lower_scaled, [1.2, 0.9, -0.5], (-Inf, -1.0)),
+        (compared_lower_all, [1.2, 0.9, -0.5], (-Inf, -1.0)),
+        (compared_upper_width, [1.2, 0.9, 0.5], (Inf, 2.0)),
+    )
+    @testset "$f, bound $bound" for (f, y, bounds) in cases, bound in bounds
+        dx = zero(x)
+        autodiff(Reverse, f, Active, Duplicated(x, dx), Const(y), Const(bound))
+        for i in eachindex(x)
+            h = zero(x)
+            h[i] = 1.0e-6
+            fd = (f(x + h, y, bound) - f(x - h, y, bound)) / (2 * h[i])
+            @test dx[i] ≈ fd rtol = 1.0e-8
+        end
+    end
+end
+
 @testset "Select-masked nonfinite products" begin
     @testset "$T" for T in (Float32, Float64)
         for x in T.((0.0, 0.4, 1.0, -0.2, 1.2, NaN, Inf, -Inf, floatmax(T)))

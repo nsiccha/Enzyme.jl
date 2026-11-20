@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep those Reverse gradients finite also when the hoisted arithmetic feeds a
+  comparison, such as an interval width `b - a` that a guard tests before it
+  uses `a`. The native repair is available as
+  `Enzyme.has_dogfood_repair(:compared_operand_adjoints)`.
 - Keep Reverse gradients finite when the compiler hoists arithmetic on an
   infinite endpoint ahead of the branch that skips it. The native repair is
   available as `Enzyme.has_dogfood_repair(:conditional_use_adjoints)`.
