@@ -68,15 +68,17 @@ function get_uncacheable(gutils::GradientUtils, orig::LLVM.CallInst)
     return uncacheable
 end
 
-# Whether a write that the callee of `orig` cannot see may follow the call before
-# its reverse pass runs: a write later in the calling function, or after a call of
-# that function. Such a write may change memory the callee reads through a pointer
-# it loads, which `get_uncacheable` does not describe: its flags cover the memory
-# each operand points to. Without an answer from libEnzyme this assumes one exists.
-function may_write_after(gutils::GradientUtils, orig::LLVM.CallInst)
-    get_mode(gutils) == API.DEM_ForwardMode && return false
+# The kinds of write that the callee of `orig` cannot see and that may follow the
+# call before its reverse pass runs: writes later in the calling function, or after
+# a call of that function. 0 means none, and otherwise the bits are
+# `API.SubsequentWriteAny` or `API.SubsequentWritePointers`. Such a write may change
+# memory the callee reads through a pointer it loads, which `get_uncacheable` does
+# not describe: its flags cover the memory each operand points to. Without an
+# answer from libEnzyme this assumes a write of any kind.
+function subsequent_writes(gutils::GradientUtils, orig::LLVM.CallInst)::UInt8
+    get_mode(gutils) == API.DEM_ForwardMode && return 0x00
     writes = API.EnzymeGradientUtilsGetSubsequentWrites(gutils, orig)
-    return writes === nothing || writes != 0
+    return writes === nothing ? API.SubsequentWriteAny : writes
 end
 
 erase_with_placeholder(

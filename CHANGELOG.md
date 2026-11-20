@@ -3,6 +3,17 @@
 ## Unreleased
 
 - On Julia 1.10, keep `EnzymeRules.overwritten(config)` `false` for an
+  argument that holds references when the only writes after the rule's call
+  store pointers, and nothing the argument leads to outside its own storage is
+  mutable memory that holds a pointer. Storing the rule's returned vector into a
+  `Ref` the caller passes, as a prepared pullback keeps its outputs, set the flag,
+  and a rule copied its argument's data on every call. A store of a pointer
+  cannot change numeric data, the rule as libEnzyme already applies to the
+  memory a differentiated call reads. From Julia 1.11 an array refers to its
+  memory through a field that Julia code replaces, so there an argument that
+  holds an array keeps the flag `true`. The repair is available as
+  `Enzyme.has_dogfood_repair(:later_pointer_stores)`.
+- On Julia 1.10, keep `EnzymeRules.overwritten(config)` `false` for an
   argument that holds references when a loop calls the rule and stores each
   result into an array the function allocated before the loop, as a plate of
   cells does. The write barrier after each store counted as exposing that array

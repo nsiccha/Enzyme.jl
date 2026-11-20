@@ -323,7 +323,8 @@ end
 # boxed argument, with an array's elements, or the caller's copy of a value passed
 # by reference. A rule also reads what a reference inside that memory leads to: the
 # array a struct, tuple or view holds, the arrays inside an array. Whether a write
-# may reach such memory is what libEnzyme records per call (`may_write_after`).
+# may reach such memory is what libEnzyme records per call (`subsequent_writes`),
+# with the kind of the writes: any write, or stores of pointer values only.
 #
 # `reaches_mutable_memory(T)` says whether a value of type `T` leads to memory
 # outside its own storage that can change: a mutable object behind a reference it
@@ -376,6 +377,77 @@ function slot_reaches_mutable(@nospecialize(T), seen::Vector{Any})::Bool
     return own_storage_reaches_mutable(T, seen)
 end
 
+# `reaches_mutable_pointers(T)` says whether a value of type `T` leads, outside its
+# own storage, to mutable memory that holds a pointer: a field of a mutable object
+# or an element of an array that refers to an object, or a raw pointer. Stores of
+# pointer values alone (`API.SubsequentWritePointers`) can change no other memory,
+# as libEnzyme assumes for the memory a call reads: Julia keeps object references
+# only where its garbage collector looks for them, never inside numeric data.
+# Before Julia 1.11 only runtime calls, which count as writes of any kind, write an
+# array's header. From Julia 1.11 an array is an object whose `ref` field refers to
+# its memory, and Julia code replaces that reference when the array grows.
+function reaches_mutable_pointers(@nospecialize(T))::Bool
+    return own_storage_reaches_pointers(T, false, Any[])
+end
+
+# The fields or elements of one value of type `T`, stored in place, in memory that
+# a later store can change when `mutable` is `true`. The argument's own storage is
+# not: libEnzyme's flag of the operand covers it.
+function own_storage_reaches_pointers(@nospecialize(T), mutable::Bool, seen::Vector{Any})::Bool
+    T isa DataType || return true
+    isconcretetype(T) || return true
+    (T <: Ptr || T <: Core.LLVMPtr) && return true
+    (T === Module || T === Core.SimpleVector) && return true
+    if T <: Array
+        @static if VERSION >= v"1.11-"
+            mutable && return true
+        end
+        return slot_reaches_pointers(eltype(T), mutable, seen)
+    end
+    @static if VERSION >= v"1.11-"
+        # A `Memory`'s length and data pointer are constant.
+        if T <: GenericMemory
+            return slot_reaches_pointers(eltype(T), mutable, seen)
+        end
+    end
+    for i in 1:fieldcount(T)
+        slot_reaches_pointers(fieldtype(T, i), mutable, seen) && return true
+    end
+    return false
+end
+
+# A field or element declared as `T`, in memory that a later store can change when
+# `mutable` is `true`.
+function slot_reaches_pointers(@nospecialize(T), mutable::Bool, seen::Vector{Any})::Bool
+    if T isa Union
+        return slot_reaches_pointers(T.a, mutable, seen) ||
+            slot_reaches_pointers(T.b, mutable, seen)
+    end
+    if T isa DataType && Base.allocatedinline(T)
+        return own_storage_reaches_pointers(T, mutable, seen)
+    end
+    # A reference, which a store of a pointer may replace.
+    mutable && return true
+    T <: Type && return false
+    T isa DataType || return true
+    (T === String || T === Symbol) && return false
+    isconcretetype(T) || return true
+    for S in seen
+        S === T && return false
+    end
+    push!(seen, T)
+    # An immutable object never changes; a mutable one may, wherever it is reached.
+    return own_storage_reaches_pointers(T, ismutabletype(T), seen)
+end
+
+# Whether the writes that follow a rule's call (`subsequent_writes`) may change
+# data that an argument of type `T` leads to outside its own storage.
+function later_writes_may_reach(writes::UInt8, @nospecialize(T))::Bool
+    writes == 0x00 && return false
+    writes & API.SubsequentWriteAny != 0x00 && return reaches_mutable_memory(T)
+    return reaches_mutable_pointers(T)
+end
+
 function enzyme_custom_setup_args(
         @nospecialize(B::Union{Nothing, LLVM.IRBuilder}),
         orig::LLVM.CallInst,
@@ -399,7 +471,7 @@ function enzyme_custom_setup_args(
 
     mixeds = Tuple{LLVM.Value, Type, LLVM.Value}[]
     uncacheable = get_uncacheable(gutils, orig)
-    writes_follow = may_write_after(gutils, orig)
+    writes_follow = subsequent_writes(gutils, orig)
     mode = get_mode(gutils)
 
     retRemoved, parmsRemoved = removed_ret_parms(orig)
@@ -574,9 +646,10 @@ function enzyme_custom_setup_args(
                 uncache_arg |= uncacheable[arg.codegen.i + 1] != 0
             end
             # Those flags cover the operand's own memory. Data behind a reference
-            # the argument holds may change whenever a write the rule cannot see
-            # follows the call.
-            if !uncache_arg && writes_follow && reaches_mutable_memory(arg.typ)
+            # the argument holds may change when a write the rule cannot see
+            # follows the call, and stores of pointers alone change only memory
+            # that holds pointers.
+            if !uncache_arg && later_writes_may_reach(writes_follow, arg.typ)
                 uncache_arg = true
             end
             push!(overwritten, uncache_arg)
