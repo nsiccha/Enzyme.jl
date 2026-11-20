@@ -9,6 +9,8 @@
 
 - Preserve the scalar result of a fused broadcast over zero-dimensional arrays
   during differentiation.
+- Restore Reverse differentiation when a write-only output can reuse the
+  zero shadow of a constant array. Compiling this case raised a `MethodError`.
 - Preserve the activity of constant data copied into a fresh trace or passed
   through dynamic dispatch. This fixes plain Reverse through Gen's dynamic
   `update` and through static updates reached via a type-unstable caller.

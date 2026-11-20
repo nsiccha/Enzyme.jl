@@ -1,0 +1,2 @@
+summary = "Reverse emits the call that reuses a constant array's zero shadow in a write-only output"
+tests = ["test/retained_shadows.jl"]

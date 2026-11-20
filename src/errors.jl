@@ -1453,6 +1453,20 @@ function emit_zero_shadows!(
         end
     end
     err === nothing || push!(args, unsafe_to_llvm(B, err))
+    return emit_zero_shadow_calls!(B, callee, args, ty, width, created, start)
+end
+
+# Hoist the calls together with any instructions used to prepare their arguments.
+# If they cannot run before object initialization, discard the whole sequence.
+function emit_zero_shadow_calls!(
+        B::LLVM.IRBuilder,
+        callee::Union{LLVM.Function, Nothing},
+        args::Vector{LLVM.Value},
+        @nospecialize(ty::LLVM.LLVMType),
+        width::Integer,
+        created::Vector{LLVM.Instruction},
+        start::Int = length(created) + 1,
+    )::Union{Nothing, LLVM.Value}
     sres = if width == 1
         emit_zero_shadow!(B, callee, args, ty, created)
     else

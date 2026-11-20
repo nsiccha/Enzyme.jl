@@ -417,7 +417,7 @@ function emit_reused_retained_shadow!(
     for p in args
         p isa LLVM.Argument && retained_shadow_readable!(p)
     end
-    return emit_zero_shadows!(B, args, cur.value_type, width, created)
+    return emit_zero_shadow_calls!(B, nothing, args, cur.value_type, width, created)
 end
 
 # Differentiating a derivative that contains this call: both results are fresh
