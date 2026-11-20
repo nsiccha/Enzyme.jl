@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Call the helper that reuses a constant array's zero shadow in a write-only
+  output, and the zero-shadow helper of a constant mutable object such as a
+  `Ref` stored beside active data, as compiled functions. Reverse called both
+  through `jl_apply_generic`, so `Enzyme.derivative_report` showed a dynamic
+  dispatch on the returning path of such a store. The registry of zero copies
+  the reuse keeps is now guarded by a spin lock. The repair is available as
+  `Enzyme.has_dogfood_repair(:static_zero_shadow_calls)`.
 - On Julia 1.10, keep `EnzymeRules.overwritten(config)` `false` for an
   argument that holds references when a loop calls the rule and stores each
   result into an array the function allocated before the loop, as a plate of

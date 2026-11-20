@@ -435,6 +435,38 @@ fixed_column_or_input(x) = sum(abs2, size(x, 2) == 0 ? ones(size(x, 1), 1) : x)
     end
 end
 
+mutable struct ReportConstScale
+    s::Float64
+end
+report_scale(c::Base.RefValue{Float64}) = c[]
+report_scale(c::ReportConstScale) = c.s
+function store_beside_active(a, c, out)
+    out[] = (a, c)
+    return sum(abs2, a) * report_scale(c)
+end
+
+@testset "Reverse resolves the shadow of a constant mutable object stored beside active data" begin
+    for c in (Ref(3.0), ReportConstScale(3.0))
+        a = [1.0, 2.0]
+        da = zero(a)
+        out = Ref((a, c))
+        dout = make_zero(out)
+        report = Enzyme.derivative_report() do
+            autodiff(Reverse, store_beside_active, Active, Duplicated(a, da), Const(c), Duplicated(out, dout))
+        end
+        @test da == 6a
+        @test report_scale(c) == 3.0
+        @test dout[][2] isa typeof(c)
+        @test dout[][2] !== c
+        @test report_scale(dout[][2]) == 0
+        derivative = derivative_of(report, store_beside_active)
+        @test isempty(returning(derivative, :enzyme_runtime_fallback))
+        # `make_zero` of a mutable struct reads its fields at a run-time index and
+        # dispatches inside its own body; only the call into it is resolved here.
+        c isa Base.RefValue && @test isempty(returning(derivative, :dynamic_dispatch))
+    end
+end
+
 @noinline dispatched(v) = Base.inferencebarrier(sin)(v)
 function sum_dispatched(x)
     s = 0.0

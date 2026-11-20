@@ -1426,13 +1426,18 @@ function emit_zero_shadows!(
     start = length(created) + 1
     f = err === nothing ? make_zero : empty_array_shadow
     callee = nothing
-    if is_array_type(TT) && isconcretetype(TT)
-        # Arrays are passed and returned as tracked objects. Keep the error boxed:
-        # its concrete struct layout varies with the diagnostic's contents.
+    if isconcretetype(TT) && (is_array_type(TT) || ismutabletype(TT))
+        # Arrays and other mutable objects are passed and returned as tracked
+        # objects. Keep the error boxed: its concrete struct layout varies with the
+        # diagnostic's contents.
         tt = err === nothing ? Tuple{Bool, typeof(f), TT} :
             Tuple{Bool, typeof(f), TT, EnzymeRuntimeActivityError}
         mod = B.insert_block.parent.parent
         callee = nested_codegen!(mode, mod, shadow_if_taken, tt)
+        # Otherwise call it through `jl_apply_generic`, as for any other type.
+        zero_shadow_signature(callee, prim, err) || (callee = nothing)
+    end
+    if callee !== nothing
         flag = taken === nothing ? LLVM.ConstantInt(LLVM.Int8Type(), 1) :
             zext!(B, taken, LLVM.Int8Type())
         flag isa LLVM.Instruction && push!(created, flag)
@@ -1454,6 +1459,24 @@ function emit_zero_shadows!(
     end
     err === nothing || push!(args, unsafe_to_llvm(B, err))
     return emit_zero_shadow_calls!(B, callee, args, ty, width, created, start)
+end
+
+# Whether `callee`, `shadow_if_taken` compiled for a tracked object `prim`, takes
+# the flag, `prim` (a pointer that a bitcast reaches) and, with `err`, the boxed
+# error, and returns a tracked object.
+function zero_shadow_signature(
+        callee::LLVM.Function,
+        @nospecialize(prim::LLVM.Value),
+        err::Union{Nothing, EnzymeRuntimeActivityError},
+    )::Bool
+    params = callee.parameters
+    length(params) == (err === nothing ? 2 : 3) || return false
+    params[1].value_type == LLVM.Int8Type() || return false
+    p = params[2].value_type
+    q = prim.value_type
+    p isa LLVM.PointerType && q isa LLVM.PointerType && p.addrspace == q.addrspace || return false
+    err === nothing || is_tracked_pointer(params[3].value_type) || return false
+    return is_tracked_pointer(LLVM.return_type(LLVM.function_type(callee)))
 end
 
 # Hoist the calls together with any instructions used to prepare their arguments.

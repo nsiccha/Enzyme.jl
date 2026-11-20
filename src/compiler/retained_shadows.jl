@@ -33,14 +33,17 @@
 const RetainedSinkElement = Union{Base.IEEEFloat, Complex{<:Base.IEEEFloat}}
 
 # The zero copies `reuse_retained_shadow` allocated, by address. A collected copy
-# leaves an entry whose `WeakRef` is cleared, which the next sweep removes.
+# leaves an entry whose `WeakRef` is cleared, which the next sweep removes. A spin
+# lock guards the table: it is held only for one lookup or insertion, and unlike a
+# `ReentrantLock` its `unlock` notifies no waiting task, which is a run-time
+# dispatched call in the derivative that calls this helper directly.
 mutable struct RetainedSinks
-    const lock::ReentrantLock
+    const lock::Threads.SpinLock
     const entries::Dict{UInt, WeakRef}
     limit::Int
 end
 
-const RETAINED_SINKS = RetainedSinks(ReentrantLock(), Dict{UInt, WeakRef}(), 64)
+const RETAINED_SINKS = RetainedSinks(Threads.SpinLock(), Dict{UInt, WeakRef}(), 64)
 
 retained_sink_key(sink::Array)::UInt = UInt(pointer_from_objref(sink))
 
@@ -400,24 +403,75 @@ function emit_reused_retained_shadow!(
         API.EnzymeGradientUtilsGetDiffeType(gutils, p, false) in
             (API.DFT_CONSTANT, API.DFT_DUP_ARG, API.DFT_DUP_NONEED) || return nothing
     end
-    args = LLVM.Value[
-        unsafe_to_llvm(B, reuse_retained_shadow),
-        new_from_original(gutils, cur),
-        invert_pointer(gutils, root, B),
-        unsafe_to_llvm(B, Val(path)),
-    ]
+    start = length(created) + 1
+    # The arguments after the path, and their Julia types: a shadow has the type
+    # of its primal.
+    args = LLVM.Value[new_from_original(gutils, cur), invert_pointer(gutils, root, B)]
+    types = Any[C, T]
     for p in f.parameters
         is_tracked_pointer(p.value_type) || continue
+        legal, P, _ = abs_typeof(p, enzyme_ctx, true)
+        P = legal ? P : Any
         push!(args, new_from_original(gutils, p))
+        push!(types, P)
         p == root && continue
         if API.EnzymeGradientUtilsGetDiffeType(gutils, p, false) in (API.DFT_DUP_ARG, API.DFT_DUP_NONEED)
             push!(args, invert_pointer(gutils, p, B))
+            push!(types, P)
         end
     end
     for p in args
         p isa LLVM.Argument && retained_shadow_readable!(p)
     end
-    return emit_zero_shadow_calls!(B, nothing, args, cur.value_type, width, created)
+    callee, vals = retained_shadow_callee(B, gutils, path, types, args, cur.value_type, created)
+    if callee === nothing
+        vals = LLVM.Value[
+            unsafe_to_llvm(B, reuse_retained_shadow), args[1], args[2],
+            unsafe_to_llvm(B, Val(path)), args[3:end]...,
+        ]
+    end
+    return emit_zero_shadow_calls!(B, callee, vals, cur.value_type, width, created, start)
+end
+
+retained_shadow_same_space(@nospecialize(a::LLVM.LLVMType), @nospecialize(b::LLVM.LLVMType))::Bool =
+    a isa LLVM.PointerType && b isa LLVM.PointerType && a.addrspace == b.addrspace
+
+# `reuse_retained_shadow` compiled for the argument types `types` (the path
+# apart), and `args` cast to its parameters, so the derivative calls it directly
+# rather than through `jl_apply_generic`. `(nothing, args)` where a type is not
+# concrete, so that only the run-time type selects the method, or where the
+# compiled signature does not take each argument as the tracked pointer it is.
+function retained_shadow_callee(
+        B::LLVM.IRBuilder,
+        gutils::GradientUtils,
+        path::Tuple,
+        types::Vector{Any},
+        args::Vector{LLVM.Value},
+        @nospecialize(ty::LLVM.LLVMType),
+        created::Vector{LLVM.Instruction},
+    )
+    all(isconcretetype, types) || return nothing, args
+    tt = Tuple{types[1], types[2], Val{path}, types[3:end]...}
+    mod = LLVM.parent(LLVM.parent(B.insert_block))
+    callee = nested_codegen!(get_mode(gutils), mod, reuse_retained_shadow, tt)
+    params = callee.parameters
+    length(params) == length(args) || return nothing, args
+    rt = LLVM.return_type(LLVM.function_type(callee))
+    is_tracked_pointer(rt) && retained_shadow_same_space(rt, ty) || return nothing, args
+    for (arg, param) in zip(args, params)
+        is_tracked_pointer(param.value_type) &&
+            retained_shadow_same_space(arg.value_type, param.value_type) || return nothing, args
+    end
+    vals = LLVM.Value[]
+    for (arg, param) in zip(args, params)
+        if arg.value_type != param.value_type
+            # Typed pointers: the same object under another pointee type.
+            arg = bitcast!(B, arg, param.value_type)
+            arg isa LLVM.Instruction && push!(created, arg)
+        end
+        push!(vals, arg)
+    end
+    return callee, vals
 end
 
 # Differentiating a derivative that contains this call: both results are fresh
