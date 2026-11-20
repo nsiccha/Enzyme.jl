@@ -7,6 +7,8 @@
   when `library()` returns a constant library name. The first and second
   derivatives share the call site's resolved address whichever runs first, so
   taking the second derivative does not evaluate the library expression again.
+- Differentiate real-valued outputs of complex Hermitian Cholesky factorizations
+  in Reverse for both lower and upper storage.
 - Merge upstream support for Julia 1.14 rule lookup and JIT modules, and its
   fixes for deferred derivatives and cached thunk imports. The in-tree
   EnzymeCore is now 0.8.29. Enzyme requires LLVM.jl 10.5.2 or newer on the
