@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep Reverse gradients finite when the compiler hoists arithmetic on an
+  infinite endpoint ahead of the branch that skips it. The native repair is
+  available as `Enzyme.has_dogfood_repair(:conditional_use_adjoints)`.
+
 - Differentiate a broadcast writer in Reverse when a `GC.@preserve` overlap
   check selects between writing directly and copying a temporary result.
 

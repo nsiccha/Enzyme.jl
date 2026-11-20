@@ -1,0 +1,3 @@
+summary = "Preserve zero adjoints when control flow skips the uses of speculated arithmetic"
+libenzyme_build = "593c7937cc90695ddd9c6ef31aa93f3c55e45eeb"
+tests = ["test/select_strong_zero.jl"]
