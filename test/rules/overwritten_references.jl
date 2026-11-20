@@ -264,6 +264,84 @@ make_vector() = zeros(3)
 make_wrapped() = Wrapped(zeros(3))
 make_tuple() = (Wrapped(zeros(3)),)
 
+# A rule that returns a new vector, which the caller stores into an array of its
+# own, as a plate of cells does. Julia follows each such store of a reference with
+# a write barrier on the array.
+doubled(g, x) = [weight(g) * x, 2 * weight(g) * x]
+
+const ROW_FLAGS = Ref{Any}(nothing)
+
+function EnzymeRules.augmented_primal(
+        config::EnzymeRules.RevConfigWidth{1},
+        ::Const{typeof(doubled)}, ::Type{RT}, g::Annotation, x::Active
+    ) where {RT}
+    ROW_FLAGS[] = EnzymeRules.overwritten(config)
+    saved = EnzymeRules.overwritten(config)[2] ? weight(g.val) : nothing
+    y = doubled(g.val, x.val)
+    dy = zero(y)
+    primal = EnzymeRules.needs_primal(config) ? y : nothing
+    shadow = EnzymeRules.needs_shadow(config) ? dy : nothing
+    return EnzymeRules.AugmentedReturn(primal, shadow, (dy, saved))
+end
+function EnzymeRules.reverse(
+        config::EnzymeRules.RevConfigWidth{1},
+        ::Const{typeof(doubled)}, ::Type{RT}, tape, g::Annotation, x::Active
+    ) where {RT}
+    dy, saved = tape
+    w = EnzymeRules.overwritten(config)[2] ? saved : weight(g.val)
+    return (nothing, w * dy[1] + 2 * w * dy[2])
+end
+
+# Each result goes into an array allocated before the loop, which the rule never
+# sees, so nothing written after a call can change what the rule read. The array
+# has a length known when the function compiles, or one read at run time.
+function stored_rows(g, a, x)
+    cells = Vector{Vector{Float64}}(undef, 3)
+    for k in 1:3
+        cells[k] = doubled(g, x)
+    end
+    return sum(sum, cells)
+end
+function stored_rows_runtime_length(g, a, x)
+    cells = Vector{Vector{Float64}}(undef, length(a) + 2)
+    for k in eachindex(cells)
+        cells[k] = doubled(g, x)
+    end
+    return sum(sum, cells)
+end
+# The same, also writing the array behind `g` after each call.
+function stored_rows_written(g, a, x)
+    cells = Vector{Vector{Float64}}(undef, length(a) + 2)
+    for k in eachindex(cells)
+        cells[k] = doubled(g, x)
+        a[1] += 1.0
+    end
+    return sum(sum, cells)
+end
+# Here the array the result goes into is the rule's argument: the store replaces
+# the vector the rule read.
+function replaced_row(g, a, x)
+    y = doubled(g, x)
+    g[1] = [42.0]
+    return sum(y)
+end
+
+function row_derivative(caller, g)
+    ROW_FLAGS[] = nothing
+    result = Enzyme.autodiff(
+        Reverse, Const(caller), Active, Const(g), Const(shared), Active(2.0)
+    )
+    return result[1][end]
+end
+
+# Whether the loaded libEnzyme lets a write barrier leave such an array unexposed.
+# Julia 1.11 and later keep an array's elements in a `Memory`, whose data pointer
+# libEnzyme does not trace back to the allocation when the memory is allocated
+# inline or merged with the shared empty memory, so there the flag stays `true`.
+const barrier_precise = precise && VERSION < v"1.11-" &&
+    isdefined(Enzyme, :has_dogfood_repair) &&
+    Enzyme.has_dogfood_repair(:unexposed_storage_barriers)
+
 # Enzyme's own rule for `det` keeps its argument unless the flag tells it to copy.
 function det_then_write(M)
     d = det(view(M, 1:2, 1:2))
@@ -375,6 +453,29 @@ end
         Enzyme.autodiff(Reverse, sum_then_clear, Active, Duplicated(x, dx), Const(make_output))
         @test OUTPUT_FLAGS[][3]
         @test dx ≈ [exp(0.1), exp(0.2), 0.0]
+    end
+
+    @testset "Results stored into an array allocated before a loop, $name" for (name, wrap) in (
+            "Vector" => identity,
+            "immutable struct" => Wrapped,
+            "tuple" => v -> (v, 1),
+        )
+        @testset "$(nameof(caller))" for caller in (stored_rows, stored_rows_runtime_length)
+            shared[1] = 3.0
+            @test row_derivative(caller, wrap(shared)) == 27.0
+            if barrier_precise
+                @test !ROW_FLAGS[][2]
+            end
+        end
+        shared[1] = 3.0
+        @test row_derivative(stored_rows_written, wrap(shared)) == 3 * (3.0 + 4.0 + 5.0)
+        @test ROW_FLAGS[][2]
+    end
+
+    @testset "A result stored into the array the rule read" begin
+        shared[1] = 3.0
+        @test row_derivative(replaced_row, [shared]) == 9.0
+        @test ROW_FLAGS[][2]
     end
 
     @testset "det of a view whose parent is written afterwards" begin

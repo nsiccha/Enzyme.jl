@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- On Julia 1.10, keep `EnzymeRules.overwritten(config)` `false` for an
+  argument that holds references when a loop calls the rule and stores each
+  result into an array the function allocated before the loop, as a plate of
+  cells does. The write barrier after each store counted as exposing that array
+  to the next call, so the flag was `true` and a rule copied its argument's
+  data on every call. On Julia 1.11 and later the flag stays `true` in this
+  case.
+  The native repair is available as
+  `Enzyme.has_dogfood_repair(:unexposed_storage_barriers)`.
 - Keep those Reverse gradients finite also when the hoisted arithmetic feeds a
   comparison, such as an interval width `b - a` that a guard tests before it
   uses `a`. The native repair is available as
