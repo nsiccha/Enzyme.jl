@@ -991,10 +991,19 @@ function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, addre
     return stub
 end
 
-# The cache contains one native address. Keep an LLVM global if something uses
-# the global's address as a value, rather than reading or setting that address.
-function runtime_lookup_cache_access(inst::LLVM.Value, slot::LLVM.GlobalVariable)
-    return inst isa LLVM.LoadInst || (inst isa LLVM.StoreInst && inst.operands[2] == slot && inst.operands[1] != slot)
+# Typed LLVM pointers may view a symbol address both as a generic function
+# pointer and as the function pointer in the indirect call's signature.
+function collect_runtime_lookup_accesses!(accesses::Vector{LLVM.Instruction}, location::LLVM.Value)
+    for user in location.users
+        if user isa LLVM.LoadInst || (user isa LLVM.StoreInst && user.operands[2] == location && user.operands[1] != location)
+            push!(accesses, user)
+        elseif user isa LLVM.ConstantExpr && user.opcode == LLVM.Opcode.BitCast
+            collect_runtime_lookup_accesses!(accesses, user) || return false
+        else
+            return false
+        end
+    end
+    return true
 end
 
 # Keep a host call site's runtime address with its compiled thunk. The table of Julia
@@ -1003,18 +1012,19 @@ function share_runtime_lookup_caches!(mod::LLVM.Module, enzyme_ctx::EnzymeContex
     for slot in collect(mod.globals)
         haskey(slot.metadata, "enzymejl_ccall_cache") || continue
         slot.initializer isa LLVM.PointerNull || continue
-        accesses = collect(slot.users)
+        accesses = LLVM.Instruction[]
+        collect_runtime_lookup_accesses!(accesses, slot) || continue
         isempty(accesses) && continue
-        all(Base.Fix2(runtime_lookup_cache_access, slot), accesses) || continue
         @dispose builder = IRBuilder() begin
             position!(builder, LLVM.before(first(accesses)))
             cell = unsafe_to_llvm(builder, Ref{Ptr{Cvoid}}(C_NULL); insert_name_if_not_exists = "ccall_cache", enzyme_ctx)
-            address = LLVM.const_bitcast(cell, LLVM.PointerType(slot.global_value_type, Tracked))
             for access in accesses
                 index = access isa LLVM.LoadInst ? 1 : 2
-                access.operands[index] = address
+                element_type = access isa LLVM.LoadInst ? access.value_type : access.operands[1].value_type
+                access.operands[index] = LLVM.const_bitcast(cell, LLVM.PointerType(element_type, Tracked))
             end
         end
+        LLVM.remove_dead_constant_users!(slot)
         erase!(slot)
     end
     return nothing
