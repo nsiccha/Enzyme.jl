@@ -1,6 +1,6 @@
 #!/bin/bash
 # Check build.sh's control flow, exit status and lit reports without LLVM and without compiling
-# anything: a stub cmake and a stub lit stand in for the real ones, inside a throwaway HOME.
+# anything: stub julia, cmake and lit inside a throwaway HOME.
 # usage: selftest.sh [path/to/build.sh]     (default: the build.sh beside this file)
 # Prints one line per failed check and ends with SELFTEST_OK or SELFTEST_FAIL; exit status 0 or 1.
 set -u
@@ -84,6 +84,17 @@ for a in $(grep -oE '\$A/[0-9a-f]{40}' "$script" | sed 's/^\$A\///'); do
   cp "$tmp/lit.py" "$home/.julia/artifacts/$a/tools/lit/lit.py"
 done
 
+# Skip Julia's -e program and record the artifact file, needed names and bindings.
+cat > "$tmp/bin/julia" <<'STUB_JULIA'
+#!/bin/bash
+[ "$1" = --startup-file=no ] && [ "$2" = -e ] || exit 1
+shift 3
+printf '%s\n' "$@" >> "$STUB_ARTIFACTS"
+exit "${STUB_ARTIFACT_RC:-0}"
+STUB_JULIA
+chmod +x "$tmp/bin/julia"
+export STUB_ARTIFACTS=$tmp/artifact-args
+
 # The stub cmake: logs its arguments, lists targets, and "builds" by creating the files a real
 # build leaves where the script looks for them.
 cat > "$tmp/bin/cmake" <<'STUB_CMAKE'
@@ -120,8 +131,9 @@ run() {
   while [ "$1" != -- ]; do settings+=("$1"); shift; done
   shift
   : > "$STUB_LOG"
+  : > "$STUB_ARTIFACTS"
   out=$(env -u BASH_ENV -u KB_DOGFOOD_ROOT -u KB_DOGFOOD_SRC -u KB_DOGFOOD_OUT -u STUB_HELPERS \
-        -u STUB_REGRESSION -u STUB_FAIL_BUILD -u STUB_LIT_NO_REPORT HOME="$home" PATH="$tmp/bin:$PATH" \
+        -u STUB_REGRESSION -u STUB_FAIL_BUILD -u STUB_LIT_NO_REPORT -u STUB_ARTIFACT_RC HOME="$home" PATH="$tmp/bin:$PATH" \
         KB_DOGFOOD_JOBS=2 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "${settings[@]}" bash "$D/build.sh" "$@" 2>&1)
   rc=$?
 }
@@ -143,6 +155,12 @@ run --
 O=$D/$c1
 ok "default targets: exit status 0" [ $rc -eq 0 ]
 ok "default targets: ends with BUILD_OK" last_line_is BUILD_OK
+ok "artifact root in the build directory" grep -Fxq "$D/Artifacts.toml" "$STUB_ARTIFACTS"
+ok "default targets need all four trees" grep -Fxq "llvm15 llvm18 llvm20 llvm16" "$STUB_ARTIFACTS"
+for v in 15 16 18 20; do
+  hash=$(sed -En "s|^LLVM$v=.*/([0-9a-f]{40}).*|\\1|p" "$script")
+  ok "rooted llvm$v matches its toolchain" grep -Fxq "llvm$v=$hash" "$STUB_ARTIFACTS"
+done
 ok "lit16 builds both test helpers beside the plugin" built_with $c1 lit16 "LLVMEnzyme-16 EnzymeTestCallHandler-16 EnzymeActivityReEvaluationTest"
 ok "lit16-summary.txt opens by naming all gated directories" grep -Fxq "lit16 gate: test/Enzyme test/TypeAnalysis test/ActivityAnalysis on the LLVM 16 plugin, commit $c1, lit exit 0" <(head -1 $O/lit16-summary.txt)
 ok "lit16-summary.txt reports the gate's combined passes" [ "$(passed $O/lit16-summary.txt)" = 1328 ]
@@ -162,6 +180,7 @@ ok "BUILD_INFO records the commit" grep -q "sha=$c1" $O/BUILD_INFO
 git_ -C "$D/src" checkout -q --detach "$c2"
 run STUB_REGRESSION=BCLoader/stub_new.ll -- lit16
 O=$D/$c2
+ok "lit16 needs only llvm16" grep -Fxq "llvm16" "$STUB_ARTIFACTS"
 ok "new broad failure: exit status stays 0" [ $rc -eq 0 ]
 ok "new broad failure: listed against the built ancestor" [ "$(cat $O/lit16-broad-new-failures.txt 2> /dev/null)" = "Enzyme :: BCLoader/stub_new.ll" ]
 ok "new broad failure: the output names the ancestor" grep -q "failing here but not on ${c1:0:8}:" <<< "$out"
@@ -198,12 +217,17 @@ ok "compile failure: the gate still ran" [ "$(passed $O/lit16-summary.txt)" = 13
 
 # 7. lit20 builds the helper test/Enzyme needs, and stays informational.
 run STUB_REGRESSION=Enzyme/ReverseMode/stub_regression.ll -- lit20
+ok "lit20 needs only llvm20" grep -Fxq "llvm20" "$STUB_ARTIFACTS"
 ok "lit20 builds the test call handler and no other helper" built_with $c2 lit20 "LLVMEnzyme-20 EnzymeTestCallHandler-20"
 ok "lit20: a failing test does not change the exit status" [ $rc -eq 0 ]
 ok "lit20-failed.txt lists the failing test" grep -q stub_regression $O/lit20-failed.txt
 ok "lit20 still runs test/Enzyme alone" [ "$(passed $O/lit20-summary.txt)" = 1194 ]
 
 # 8. Refusals.
+run STUB_ARTIFACT_RC=1 -- lib15
+ok "artifact failure: exit status 1" [ $rc -eq 1 ]
+ok "artifact failure: ends with BUILD_FAIL" last_line_is BUILD_FAIL
+ok "artifact failure: nothing is configured" [ ! -s "$STUB_LOG" ]
 run -- nosuch
 ok "unknown target: exit status 1" [ $rc -eq 1 ]
 echo "// edited" >> "$D/src/enzyme/CMakeLists.txt"

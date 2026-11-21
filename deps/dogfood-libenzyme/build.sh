@@ -44,6 +44,36 @@ O=${KB_DOGFOOD_OUT:-$D}
 OUT=$O/$SHA; mkdir -p $OUT $D/build
 echo "host=${KB_HOST:-?} branch=$(git -C $S rev-parse --abbrev-ref HEAD) sha=$SHA src=$S targets=[$WHAT] script=$(sha256sum < "$0" | cut -c1-12) $(date -u +%FT%TZ)" | tee -a $OUT/BUILD_INFO
 
+# Pkg.gc follows registered Artifacts.toml files. Root the whole toolchain before
+# downloading anything, but only restore trees needed by the requested targets.
+need=()
+for w in $WHAT; do
+  case $w in
+    lib15|lit16|lib18|lib20|lit20) need+=("llvm${w:3}");;
+  esac
+done
+if ! JULIA_DEPOT_PATH="$HOME/.julia:" flock "$D/Artifacts.toml.lock" julia --startup-file=no -e '
+  using Pkg.Artifacts, TOML
+  toml = ARGS[1]
+  needed = Set(split(ARGS[2]))
+  names = Set{String}()
+  for binding in ARGS[3:end]
+    name, hash = split(binding, "=")
+    push!(names, name)
+    bind_artifact!(toml, String(name), Base.SHA1(hash); force=true)
+  end
+  for stale in setdiff(keys(TOML.parsefile(toml)), names)
+    unbind_artifact!(toml, stale)
+  end
+  for name in needed
+    ensure_artifact_installed(String(name), toml)
+  end' "$D/Artifacts.toml" "${need[*]}" \
+      "llvm15=${LLVM15##*/}" "llvm16=${LLVM16##*/}" "llvm18=${LLVM18##*/}" "llvm20=${LLVM20##*/}"; then
+  echo "failed to prepare the LLVM artifacts in $D/Artifacts.toml"
+  echo BUILD_FAIL
+  exit 1
+fi
+
 # lit's closing report: the failed test names, when there are any, and the counts. A log without
 # one (lit was killed, or never started) gives its last lines instead.
 lit_report() {
@@ -70,7 +100,7 @@ for w in $WHAT; do
     lit20) LL=$LLVM20; FLAGS="-DENZYME_CLANG=OFF -DENZYME_EXTERNAL_SHARED_LIB=OFF -DLLVM_EXTERNAL_LIT=$LLVM20/tools/lit"; T="LLVMEnzyme-20"; V=20; H="EnzymeTestCallHandler-20";;
     *) echo "unknown target $w"; fail=1; continue;;
   esac
-  [ -d $LL/lib/cmake/llvm ] || { echo "missing LLVM for $w: $LL (install the LLVM_full_jll artifact first)"; fail=1; continue; }
+  [ -d $LL/lib/cmake/llvm ] || { echo "missing LLVM cmake directory for $w: $LL/lib/cmake/llvm"; fail=1; continue; }
   echo "== $w ($T) $(date +%T)"
   cmake -DLLVM_DIR=$LL/lib/cmake/llvm -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENZYME_ENABLE_BENCHMARKS=OFF $FLAGS -B$B -S$SRC > $B.cmake.log 2>&1 || { echo "cmake FAILED $w"; tail -20 $B.cmake.log; fail=1; continue; }
   if [ -n "$H" ]; then  # a source older than a helper's tests does not define that helper
