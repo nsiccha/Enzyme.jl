@@ -3581,6 +3581,18 @@ function enzyme!(
         removedRoots::Set{Int},
         enzyme_ctx::EnzymeContext,
     )
+    # A derivative compiled while another compilation is in progress (the inner derivative of a
+    # nested one, a derivative taken with `autodiff_deferred` in the function that one
+    # differentiates, a thunk a rule asks for by its types) may be differentiated again with the
+    # module it is linked into, and so may a compiled thunk that a compilation imports (see
+    # `cached_autodiff_without_tape_arena`). An outer derivative cannot differentiate through
+    # libEnzyme's tape arena, whose one release at the return frees every cache together, so
+    # such a derivative keeps one allocation per cache (repair `tape_arena`).
+    if (enzyme_ctx.without_tape_arena || !job.config.toplevel) &&
+            !haskey(LLVM.flags(mod), "enzyme_no_tape_arena")
+        LLVM.flags(mod)["enzyme_no_tape_arena", LLVM.API.LLVMModuleFlagBehaviorWarning] =
+            LLVM.Metadata(LLVM.ConstantInt(Int32(1)))
+    end
     fold_type_tests!(mod, enzyme_ctx)
     simplify_conditioned_selects!(mod)
     narrow_tuple_fields!(mod, enzyme_ctx)
@@ -6706,7 +6718,9 @@ function GPUCompiler.compile_unhooked(output::Symbol, job::CompilerJob{<:EnzymeT
     end
     # Every compilation runs under its own context; a nested compilation gets
     # its own and hands the outer one back when it returns.
-    mod, meta = @with ENZYME_CONTEXT => EnzymeContext(job.world) begin
+    enzyme_ctx = EnzymeContext(job.world)
+    enzyme_ctx.without_tape_arena = isassigned(ENZYME_CONTEXT) || WITHOUT_TAPE_ARENA[]
+    mod, meta = @with ENZYME_CONTEXT => enzyme_ctx begin
         compile_unhooked_impl(output, job)
     end
     if outer !== nothing
@@ -9013,7 +9027,17 @@ struct CachedThunk
     TapeType::Type
     by_threads::Bool
     several_threads::Base.RefValue{Any}
+    # The derivative reserves caches from libEnzyme's tape arena, and its variants compiled
+    # without it, by whether they are compiled for several threads.
+    tape_arena::Bool
+    without_tape_arena::Dict{Bool, Any}
 end
+
+# Set while a thunk is compiled again for a compilation that imports it (see
+# `cached_autodiff_without_tape_arena`).
+const WITHOUT_TAPE_ARENA = ScopedValues.ScopedValue(false)
+
+uses_tape_arena(mod::LLVM.Module) = haskey(LLVM.functions(mod), "__enzyme_caller_tape_reserve")
 
 # adjoint/primal pointer => the thunk's IR, for nested differentiation
 const autodiff_cache = Dict{Ptr{Cvoid}, CachedThunk}()
@@ -9066,11 +9090,12 @@ function cached_autodiff_for_several_threads(cached::CachedThunk)::CachedThunk
     end
     if compiled === nothing
         mod, _, adjoint_name, primal_name, TapeType, prepost, value_table, _ = _thunk(for_several_threads(cached.job))
+        tape_arena = uses_tape_arena(mod)
         dispose(mod)
         lock(cache_publish_lock)
         compiled = try
             if cached.several_threads[] === nothing
-                cached.several_threads[] = (; adjoint_name, primal_name, TapeType, prepost, value_table)
+                cached.several_threads[] = (; adjoint_name, primal_name, TapeType, prepost, value_table, tape_arena)
             end
             cached.several_threads[]
         finally
@@ -9081,7 +9106,44 @@ function cached_autodiff_for_several_threads(cached::CachedThunk)::CachedThunk
         error("the derivative of $(cached.job.source) has another tape type when it is compiled for several threads")
     end
     entry = cached.augmented ? compiled.primal_name::String : compiled.adjoint_name
-    return CachedThunk(entry, compiled.prepost, compiled.value_table, cached.job, cached.augmented, cached.TapeType, true, cached.several_threads)
+    return CachedThunk(entry, compiled.prepost, compiled.value_table, cached.job, cached.augmented, cached.TapeType, true, cached.several_threads, compiled.tape_arena, cached.without_tape_arena)
+end
+
+"""
+    cached_autodiff_without_tape_arena(cached, several_threads)
+
+The thunk `cached`, compiled again without libEnzyme's tape arena for a compilation that
+imports its code and differentiates it again (see `import_cached_autodiff!`): an outer
+derivative cannot differentiate through the arena's one release of every cache. A thunk
+without the arena is returned as it is. The variant is compiled once per thunk and number of
+threads, and keeps the thunk's tape type: the arena only changes where the caches the tape
+points to live.
+"""
+function cached_autodiff_without_tape_arena(cached::CachedThunk, several_threads::Bool)::CachedThunk
+    cached.tape_arena || return cached
+    several_threads &= cached.by_threads
+    lock(cache_publish_lock)
+    compiled = try
+        get(cached.without_tape_arena, several_threads, nothing)
+    finally
+        unlock(cache_publish_lock)
+    end
+    if compiled === nothing
+        job = several_threads ? for_several_threads(cached.job) : cached.job
+        mod, _, adjoint_name, primal_name, TapeType, prepost, value_table, _ = @with WITHOUT_TAPE_ARENA => true _thunk(job)
+        dispose(mod)
+        lock(cache_publish_lock)
+        compiled = try
+            get!(cached.without_tape_arena, several_threads, (; adjoint_name, primal_name, TapeType, prepost, value_table))
+        finally
+            unlock(cache_publish_lock)
+        end
+    end
+    if compiled.TapeType !== cached.TapeType
+        error("the derivative of $(cached.job.source) has another tape type when it is compiled without the tape arena")
+    end
+    entry = cached.augmented ? compiled.primal_name::String : compiled.adjoint_name
+    return CachedThunk(entry, compiled.prepost, compiled.value_table, cached.job, cached.augmented, cached.TapeType, cached.by_threads, cached.several_threads, false, cached.without_tape_arena)
 end
 
 # Compile `job` and publish it under `key`. If another compile of the same job published
@@ -9090,19 +9152,21 @@ end
 function compile_and_publish(@nospecialize(job::CompilerJob), key::UInt)::CompileResult
     Threads.atomic_add!(compiled_derivatives, 1)
     mod, edges, adjoint_name, primal_name, TapeType, prepost, value_table, by_threads = _thunk(job)
+    tape_arena = uses_tape_arena(mod)
     # The JIT takes the module: read what its code calls first (see `derivative_report`).
     record, ir = compiled_derivative_record(job, mod)
     obj = _link(job, mod, edges, adjoint_name, primal_name, TapeType, prepost)
     LLVM.dispose(mod)
     publish_derivative_record!(record, ir, obj.adjoint, obj.primal)
     several_threads = Ref{Any}(nothing)
+    without_tape_arena = Dict{Bool, Any}()
     lock(cache_publish_lock)
     try
         if obj.adjoint isa Ptr{Nothing}
-            autodiff_cache[obj.adjoint] = CachedThunk(adjoint_name, prepost, value_table, job, false, TapeType, by_threads, several_threads)
+            autodiff_cache[obj.adjoint] = CachedThunk(adjoint_name, prepost, value_table, job, false, TapeType, by_threads, several_threads, tape_arena, without_tape_arena)
         end
         if obj.primal isa Ptr{Nothing} && primal_name isa String
-            autodiff_cache[obj.primal] = CachedThunk(primal_name, prepost, value_table, job, true, TapeType, by_threads, several_threads)
+            autodiff_cache[obj.primal] = CachedThunk(primal_name, prepost, value_table, job, true, TapeType, by_threads, several_threads, tape_arena, without_tape_arena)
         end
         published = get(cache, key, nothing)
         if published !== nothing

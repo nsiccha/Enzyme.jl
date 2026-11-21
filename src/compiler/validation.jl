@@ -1306,10 +1306,16 @@ function import_cached_autodiff!(mod::LLVM.Module, ptr::Ptr{Cvoid}, FT::LLVM.Fun
     # The thunk becomes part of this compilation's module: it is imported as compiled for the
     # number of threads the module is compiled for, and what the number of threads decides in
     # it, it decides in the module (see `ForSeveralThreads`).
-    if enzyme_ctx.several_threads
+    several_threads = enzyme_ctx.several_threads
+    if several_threads
         # A dynamic call: compiling the thunk again goes through the whole compiler, which
         # the code that checks a module must not come to depend on (see `in_calling_world`).
         cached = in_calling_world(cached_autodiff_for_several_threads, cached)::CachedThunk
+    end
+    # Its code is differentiated again with this module, which cannot be done through
+    # libEnzyme's tape arena (repair `tape_arena`).
+    if cached.tape_arena
+        cached = in_calling_world(cached_autodiff_without_tape_arena, cached, several_threads)::CachedThunk
     end
     enzyme_ctx.by_threads |= cached.by_threads
     pname = cached.entry

@@ -198,6 +198,9 @@ mutable struct EnzymeContext
     callee_atomic_add::Union{Bool, Nothing, Type{InheritedPlainAdd}}
     several_threads::Bool
     by_threads::Bool
+    # Compile without libEnzyme's tape arena: another compilation is in progress, which may
+    # differentiate what this one compiles again (repair `tape_arena`).
+    without_tape_arena::Bool
     EnzymeContext(world::Integer) = new(
         world,
         LLVM.Module[],
@@ -210,6 +213,7 @@ mutable struct EnzymeContext
         Any[],
         true,
         nothing,
+        false,
         false,
         false,
     )
