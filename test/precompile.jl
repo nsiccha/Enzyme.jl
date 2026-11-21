@@ -1313,6 +1313,55 @@ print(
 )
 """
 
+# A finding in a function called from two places names both, also when the derivative is
+# linked from an image: the image keeps the call sites with the findings.
+const RETAINED_SITES = """
+module EnzymeRetainedSites
+using Enzyme
+@noinline function scaled(v, s)
+    out = similar(v)
+    @inbounds for i in eachindex(v)
+        out[i] = s * v[i]
+    end
+    return out
+end
+function two_sites(x)
+    a = scaled(x, 2.0)
+    b = scaled(x, 3.0)
+    return sum(a) + sum(b)
+end
+gradient_of(x) = Enzyme.gradient(Reverse, two_sites, x)[1]
+const WORKLOAD = gradient_of([1.0, 2.0, 3.0])
+end
+"""
+
+const RETAINED_SITES_REPORT = """
+using Enzyme, EnzymeRetainedSites
+report = Enzyme.derivative_report() do
+    EnzymeRetainedSites.gradient_of([1.0, 2.0, 3.0])
+end
+d = only(report.derivatives)
+sited = [f for f in d.findings if !f.throw_only && f.kind === :gc_allocation && !isempty(f.call_sites)]
+lines = unique([[(site.frames[1].func, site.frames[1].line) for site in f.call_sites] for f in sited])
+stats = Enzyme.Compiler.retained_derivative_stats()
+print(
+    stats.materialized, " ", d.origin, " ", !isempty(sited), " ", lines == [[(:two_sites, 11), (:two_sites, 12)]], " ",
+    all(f -> last(f.frames).func === :scaled && length(Enzyme.call_chains(f)) == 2, sited), " ", report.value == [5.0, 5.0, 5.0],
+)
+"""
+
+@testset "call sites in a report on a derivative linked from an image" begin
+    precompile_test_harness() do load_path
+        write(joinpath(load_path, "EnzymeRetainedSites.jl"), RETAINED_SITES)
+        retained = Enzyme.Compiler.retention_supported()
+        ok, fields = run_child(load_path, RETAINED_SITES_REPORT)
+        @test ok
+        if ok
+            @test fields == [retained ? "1" : "0", retained ? "image" : "compiled", "true", "true", "true", "true"]
+        end
+    end
+end
+
 @testset "a report on a derivative linked from an image" begin
     precompile_test_harness() do load_path
         write(joinpath(load_path, "EnzymeRetained.jl"), RETAINED)

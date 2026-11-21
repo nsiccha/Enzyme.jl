@@ -416,6 +416,236 @@ end
 end
 
 # The findings of `d` on paths that return.
+# Debug information of a module written out here: the source lines of each call, and the
+# functions they are in. A function without a subprogram has no source lines, like a wrapper
+# Enzyme generates.
+const SITES_IR = """
+declare i64 @malloc(i64)
+
+define internal i64 @julia_scaled(i64 %n) !dbg !10 {
+top:
+  %a = call i64 @malloc(i64 16), !dbg !101
+  %b = call i64 @malloc(i64 32)
+  %s = add i64 %a, %b
+  ret i64 %s
+}
+
+define internal i64 @julia_mid(i64 %n) !dbg !11 {
+top:
+  %a = call i64 @julia_scaled(i64 %n), !dbg !110
+  %b = call i64 @julia_scaled(i64 %n), !dbg !111
+  %s = add i64 %a, %b
+  ret i64 %s
+}
+
+define internal i64 @julia_leaf(i64 %n) !dbg !13 {
+top:
+  %a = call i64 @malloc(i64 8), !dbg !130
+  ret i64 %a
+}
+
+define internal i64 @julia_branch(i64 %n) !dbg !14 {
+top:
+  %a = call i64 @julia_leaf(i64 %n), !dbg !140
+  ret i64 %a
+}
+
+define internal i64 @julia_leaf2(i64 %n) !dbg !15 {
+top:
+  %a = call i64 @malloc(i64 64), !dbg !150
+  ret i64 %a
+}
+
+define internal i64 @wrapper_nodbg(i64 %n) {
+top:
+  %a = call i64 @julia_leaf2(i64 %n)
+  ret i64 %a
+}
+
+define internal i64 @julia_dead(i64 %n) {
+top:
+  %a = call i64 @julia_scaled(i64 %n)
+  ret i64 %a
+}
+
+define internal i64 @julia_rec(i64 %n) !dbg !16 {
+top:
+  %a = call i64 @malloc(i64 48), !dbg !160
+  %c = icmp eq i64 %n, 0
+  br i1 %c, label %done, label %again
+again:
+  %m = sub i64 %n, 1
+  %r = call i64 @julia_rec(i64 %m), !dbg !161
+  ret i64 %r
+done:
+  ret i64 %a
+}
+
+define internal i64 @julia_ping(i64 %n) !dbg !17 {
+top:
+  %a = call i64 @malloc(i64 72), !dbg !170
+  %c = icmp eq i64 %n, 0
+  br i1 %c, label %done, label %again
+again:
+  %m = sub i64 %n, 1
+  %r = call i64 @julia_pong(i64 %m), !dbg !171
+  ret i64 %r
+done:
+  ret i64 %a
+}
+
+define internal i64 @julia_pong(i64 %n) !dbg !18 {
+top:
+  %r = call i64 @julia_ping(i64 %n), !dbg !180
+  ret i64 %r
+}
+
+define i64 @diffejulia_nested(i64 %n) !dbg !12 {
+top:
+  %a = call i64 @julia_mid(i64 %n), !dbg !121
+  %b = call i64 @julia_mid(i64 %n), !dbg !122
+  %c = call i64 @julia_mid(i64 %n), !dbg !123
+  %d = call i64 @julia_branch(i64 %n), !dbg !124
+  %e = call i64 @julia_branch(i64 %n), !dbg !124
+  %f = call i64 @wrapper_nodbg(i64 %n), !dbg !125
+  %g = call i64 @julia_leaf2(i64 %n), !dbg !126
+  %h = call i64 @julia_rec(i64 %n), !dbg !127
+  %i = call i64 @julia_ping(i64 %n), !dbg !128
+  %j = call i64 @julia_pong(i64 %n), !dbg !129
+  %s1 = add i64 %a, %b
+  %s2 = add i64 %s1, %c
+  %s3 = add i64 %s2, %d
+  %s4 = add i64 %s3, %e
+  %s5 = add i64 %s4, %f
+  %s6 = add i64 %s5, %g
+  %s7 = add i64 %s6, %h
+  %s8 = add i64 %s7, %i
+  %s9 = add i64 %s8, %j
+  ret i64 %s9
+}
+
+!llvm.module.flags = !{!0}
+!llvm.dbg.cu = !{!1}
+!0 = !{i32 2, !"Debug Info Version", i32 3}
+!1 = distinct !DICompileUnit(language: DW_LANG_C89, file: !2, producer: "julia", isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)
+!2 = !DIFile(filename: "sites.jl", directory: ".")
+!3 = !DIFile(filename: "boot.jl", directory: ".")
+!4 = !DISubroutineType(types: !5)
+!5 = !{}
+!10 = distinct !DISubprogram(name: "scaled", scope: null, file: !2, line: 1, type: !4, scopeLine: 1, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!11 = distinct !DISubprogram(name: "mid", scope: null, file: !2, line: 10, type: !4, scopeLine: 10, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!12 = distinct !DISubprogram(name: "nested", scope: null, file: !2, line: 20, type: !4, scopeLine: 20, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!13 = distinct !DISubprogram(name: "leaf", scope: null, file: !2, line: 50, type: !4, scopeLine: 50, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!14 = distinct !DISubprogram(name: "branch", scope: null, file: !2, line: 55, type: !4, scopeLine: 55, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!15 = distinct !DISubprogram(name: "leaf2", scope: null, file: !2, line: 60, type: !4, scopeLine: 60, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!16 = distinct !DISubprogram(name: "rec", scope: null, file: !2, line: 30, type: !4, scopeLine: 30, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!17 = distinct !DISubprogram(name: "ping", scope: null, file: !2, line: 35, type: !4, scopeLine: 35, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!18 = distinct !DISubprogram(name: "pong", scope: null, file: !2, line: 40, type: !4, scopeLine: 40, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!19 = distinct !DISubprogram(name: "Array", scope: null, file: !3, line: 477, type: !4, scopeLine: 477, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !1, retainedNodes: !5)
+!100 = !DILocation(line: 2, scope: !10)
+!101 = !DILocation(line: 477, scope: !19, inlinedAt: !100)
+!110 = !DILocation(line: 12, scope: !11)
+!111 = !DILocation(line: 13, scope: !11)
+!121 = !DILocation(line: 21, scope: !12)
+!122 = !DILocation(line: 22, scope: !12)
+!123 = !DILocation(line: 23, scope: !12)
+!124 = !DILocation(line: 24, scope: !12)
+!125 = !DILocation(line: 25, scope: !12)
+!126 = !DILocation(line: 26, scope: !12)
+!127 = !DILocation(line: 27, scope: !12)
+!128 = !DILocation(line: 28, scope: !12)
+!129 = !DILocation(line: 29, scope: !12)
+!130 = !DILocation(line: 51, scope: !13)
+!140 = !DILocation(line: 56, scope: !14)
+!150 = !DILocation(line: 61, scope: !15)
+!160 = !DILocation(line: 31, scope: !16)
+!161 = !DILocation(line: 32, scope: !16)
+!170 = !DILocation(line: 36, scope: !17)
+!171 = !DILocation(line: 37, scope: !17)
+!180 = !DILocation(line: 41, scope: !18)
+"""
+
+lines(frames) = [(frame.func, frame.line) for frame in frames]
+site_lines(sites) = [lines(site.frames) for site in sites]
+DerivativeFinding_without_sites(f) = Enzyme.DerivativeFinding(f.kind, f.callee, f.in_function, f.sweep, f.frames, f.in_loop, f.throw_only, f.bytes, f.count)
+
+@testset "where a call comes from" begin
+    findings = scan(SITES_IR)
+    malloc_of(bytes) = only(f for f in findings if f.callee == "malloc" && f.bytes == bytes)
+
+    # A function called from two places, each in a function called from three places. Each
+    # function's call sites are listed once and shared.
+    scaled = malloc_of(16)
+    @test lines(scaled.frames) == [(:Array, 477), (:scaled, 2)]
+    @test [site.in_function for site in scaled.call_sites] == ["julia_mid", "julia_mid"]
+    @test site_lines(scaled.call_sites) == [[(:mid, 12)], [(:mid, 13)]]
+    above = scaled.call_sites[1].call_sites
+    @test scaled.call_sites[2].call_sites === above
+    @test site_lines(above) == [[(:nested, 21)], [(:nested, 22)], [(:nested, 23)]]
+    @test all(site -> isempty(site.call_sites) && site.in_function == "diffejulia_nested", above)
+    @test all(site -> site.count == 1 && !site.in_loop && !site.throw_only, scaled.call_sites)
+    # An unreachable caller is not a call site.
+    @test !any(site -> site.in_function == "julia_dead", scaled.call_sites)
+    chains = Enzyme.call_chains(scaled)
+    @test length(chains) == 6
+    @test lines(chains[1]) == [(:Array, 477), (:scaled, 2), (:mid, 12), (:nested, 21)]
+    @test Set(lines(chain)[end] for chain in chains) == Set([(:nested, 21), (:nested, 22), (:nested, 23)])
+
+    # A call without a source line gets the call sites of its function.
+    unlocated = malloc_of(32)
+    @test isempty(unlocated.frames)
+    @test unlocated.call_sites === scaled.call_sites
+
+    # Two calls at one source line are one call site, so the lines go on to the caller.
+    leaf = malloc_of(8)
+    @test lines(leaf.frames) == [(:leaf, 51), (:branch, 56), (:nested, 24)]
+    @test isempty(leaf.call_sites)
+    @test Enzyme.call_chains(leaf) == [leaf.frames]
+
+    # A call from a function without debug information is a call site without lines of its
+    # own; the lines go on above it.
+    leaf2 = malloc_of(64)
+    @test lines(leaf2.frames) == [(:leaf2, 61)]
+    @test [site.in_function for site in leaf2.call_sites] == ["diffejulia_nested", "wrapper_nodbg"]
+    @test site_lines(leaf2.call_sites) == [[(:nested, 26)], [(:nested, 25)]]
+
+    # A function that calls itself: the recursive call lists how the recursion is entered.
+    rec = malloc_of(48)
+    @test lines(rec.frames) == [(:rec, 31)]
+    @test [site.in_function for site in rec.call_sites] == ["diffejulia_nested", "julia_rec"]
+    recursive = rec.call_sites[2]
+    @test lines(recursive.frames) == [(:rec, 32)]
+    @test site_lines(recursive.call_sites) == [[(:nested, 27)]]
+    @test length(Enzyme.call_chains(rec)) == 2
+
+    # Two functions that call each other, entered through both: every entry is listed.
+    ping = malloc_of(72)
+    @test lines(ping.frames) == [(:ping, 36)]
+    @test [site.in_function for site in ping.call_sites] == ["diffejulia_nested", "julia_pong"]
+    through_pong = ping.call_sites[2]
+    @test lines(through_pong.frames) == [(:pong, 41)]
+    @test site_lines(through_pong.call_sites) == [[(:nested, 28)], [(:nested, 29)]]
+    @test Set(lines(chain) for chain in Enzyme.call_chains(ping)) == Set(
+        [
+            [(:ping, 36), (:nested, 28)],
+            [(:ping, 36), (:pong, 41), (:nested, 28)],
+            [(:ping, 36), (:pong, 41), (:nested, 29)],
+        ]
+    )
+
+    # Findings of separate scans compare and hash equal, call sites included.
+    again = scan(SITES_IR)
+    @test again == findings
+    @test hash(again) == hash(findings)
+    @test malloc_of(16) != DerivativeFinding_without_sites(malloc_of(16))
+
+    text = sprint(show, MIME"text/plain"(), scaled)
+    @test occursin("called from 2 sites:", text)
+    @test occursin("called from 3 sites:", text)
+    @test occursin("called from the same 3 sites as above", text)
+    @test sprint(show, scaled.call_sites[1]) == "call in julia_mid (primal) at mid @ ./sites.jl:12, called from 3 sites"
+end
+
 returning(d) = [f for f in d.findings if !f.throw_only]
 returning(d, kind::Symbol) = [f for f in d.findings if !f.throw_only && f.kind === kind]
 derivative_of(report, f) = only(d for d in report.derivatives if d.func === typeof(f))
@@ -512,6 +742,48 @@ end
     @test isempty(returning(callee, :dynamic_dispatch))
     @test top.atomic_add === nothing
     @test callee.atomic_add === nothing
+end
+
+@noinline function report_scaled(v, s)
+    out = similar(v)
+    @inbounds for i in eachindex(v)
+        out[i] = s * v[i]
+    end
+    return out
+end
+function report_two_sites(x)
+    a = report_scaled(x, 2.0)
+    b = report_scaled(x, 3.0)
+    return sum(a) + sum(b)
+end
+report_one_site(x) = sum(report_scaled(x, 2.0))
+
+# Enzyme differentiates a function Julia does not inline as a function of its own, which the
+# derivative calls from each place the source calls it.
+@testset "the call sites of a function called from several places" begin
+    first_line = first(methods(report_two_sites)).line
+    x = [1.0, 2.0, 3.0]
+    report = Enzyme.derivative_report() do
+        Enzyme.gradient(Reverse, report_two_sites, x)
+    end
+    @test report.value[1] == fill(5.0, 3)
+    allocations = [f for f in returning(derivative_of(report, report_two_sites), :gc_allocation) if occursin("report_scaled", f.in_function)]
+    @test !isempty(allocations)
+    for f in allocations
+        @test last(f.frames).func === :report_scaled
+        @test [only(site.frames).func for site in f.call_sites] == [:report_two_sites, :report_two_sites]
+        @test [only(site.frames).line for site in f.call_sites] == [first_line + 1, first_line + 2]
+        @test all(site -> isempty(site.call_sites), f.call_sites)
+        @test [last(chain).line for chain in Enzyme.call_chains(f)] == [first_line + 1, first_line + 2]
+    end
+
+    # With one call site the lines go on to it, as they always did.
+    report = Enzyme.derivative_report() do
+        Enzyme.gradient(Reverse, report_one_site, x)
+    end
+    allocations = [f for f in returning(derivative_of(report, report_one_site), :gc_allocation) if occursin("report_scaled", f.in_function)]
+    @test !isempty(allocations)
+    @test all(f -> isempty(f.call_sites) && last(f.frames).func === :report_one_site, allocations)
 end
 
 @noinline dispatched_cosine(v) = Base.inferencebarrier(cos)(v)

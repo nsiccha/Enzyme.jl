@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- `Enzyme.derivative_report` names where a call comes from when the compiled
+  function holding it is called from several places. The `frames` of a
+  finding go up through the call of its function while that function has
+  exactly one call site, and used to stop there without naming any. A finding
+  now also has `call_sites`: the call sites of the function where its frames
+  stop, each an `Enzyme.DerivativeCallSite` with its own frames and, where
+  those stop again, its own `call_sites`. A call inside a recursion lists the
+  calls that enter the recursion. Only calls the derivative can reach count, a
+  call without debug information is a call site named by its compiled
+  function, and an instruction without a source line gets the call sites of
+  its function. Call sites are listed once per function and shared, so a
+  report stays linear in the size of the module. `Enzyme.call_chains(finding)`
+  lists one complete chain of source lines per call path.
+  `Enzyme.has_dogfood_repair(:derivative_report_call_sites)` reports this
+  repair.
 - Call the helper that reuses a constant array's zero shadow in a write-only
   output, and the zero-shadow helper of a constant mutable object such as a
   `Ref` stored beside active data, as compiled functions. Reverse called both
