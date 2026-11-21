@@ -1,0 +1,3 @@
+summary = "Reverse can replay a multiway merge inside a loop when one arm checks a bound and throws on failure"
+libenzyme_build = "9ab984199ebf029c4356423c5c5060767d1158ca"
+tests = ["test/checked_gather.jl"]
