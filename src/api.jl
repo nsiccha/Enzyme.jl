@@ -1521,6 +1521,14 @@ function __init__()
     ptr = cglobal((:EnzymeJuliaAddrLoad, libEnzyme))
     val = true
     ccall((:EnzymeSetCLBool, libEnzyme), Cvoid, (Ptr{Cvoid}, UInt8), ptr, val)
+    # The dogfood build's tape arena (repair `tape_arena`): libEnzyme leaves it off, so its own
+    # tests keep one allocation per cache, and Julia turns it on. A library without the options
+    # (the stock one) has no arena.
+    handle = Libdl.dlopen(libEnzyme)
+    for name in (:EnzymeCallerOwnedTapes, :EnzymeArenaCombinedCaches)
+        option = Libdl.dlsym_e(handle, name)
+        option == C_NULL || ccall((:EnzymeSetCLBool, libEnzyme), Cvoid, (Ptr{Cvoid}, UInt8), option, true)
+    end
     return zcache!(true)
 end
 

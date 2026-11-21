@@ -1,0 +1,3 @@
+summary = "Reserve the loop caches of non-inlined calls a combined Reverse derivative makes in loops, and its own bounded caches of numbers, from one tape arena per call instead of one malloc and free each"
+libenzyme_build = "bfb732a1c0b74802107646aa7645f3e2a22037a4"
+tests = ["test/tape_arena.jl"]

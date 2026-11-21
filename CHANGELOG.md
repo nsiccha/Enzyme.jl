@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Reverse gradients make a few native allocations per call where they made one
+  `malloc` and one `free` per cached value. The non-inlined calls a combined
+  Reverse derivative makes inside loops reserve their loop caches of numbers
+  and Bools from one tape arena that the derivative owns and releases when it
+  returns, and so do the derivative's own bounded caches of numbers. A
+  superposition sum over each subject's events, called once per observation,
+  made 1203 mallocs per gradient at 600 observations and makes a handful. The
+  arena holds at most one partly used 64 KiB chunk beyond what its caches store
+  at scale, and up to twice what a small tape stores. A derivative that another
+  derivative differentiates again (a nested derivative, an imported thunk, a
+  derivative compiled while another compilation runs) keeps one allocation per
+  cache. The native repair is available as
+  `Enzyme.has_dogfood_repair(:tape_arena)`; libEnzyme leaves the arena off and
+  Enzyme turns on `-enzyme-caller-owned-tapes` and
+  `-enzyme-arena-combined-caches` when it loads.
 - `Enzyme.derivative_report` names where a call comes from when the compiled
   function holding it is called from several places. The `frames` of a
   finding go up through the call of its function while that function has

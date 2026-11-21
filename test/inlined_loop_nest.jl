@@ -75,6 +75,21 @@ function ilnest_live_bytes()
     return Int(info.uordblks + info.hblkhd)
 end
 
+# A callable of its own type: its derivative is compiled where it is first asked for.
+struct ILNestNoArena{F}
+    f::F
+end
+(w::ILNestNoArena)(args...) = w.f(args...)
+function ilnest_without_arena(f)
+    Enzyme.has_dogfood_repair(:tape_arena) || return f()
+    Enzyme.API.EnzymeSetCLBool(:EnzymeCallerOwnedTapes, false)
+    try
+        return f()
+    finally
+        Enzyme.API.EnzymeSetCLBool(:EnzymeCallerOwnedTapes, true)
+    end
+end
+
 # `x + 0.0` is x, but LLVM cannot fold it (signed zeros).
 @noinline ilnest_probe(x::Float64) = x + 0.0
 
@@ -238,14 +253,19 @@ const ILNEST_CASES = (
         # The inner loop's carried state is one native tape entry per step per carried
         # value; before, the inlined loop also taped the gathered element and the weights
         # (and the callee form the weights) at every step.
+        # The tape arena (repair `tape_arena`) holds the callee form's caches in chunks that
+        # can hold up to twice what they store at this size, which would hide the count;
+        # test/tape_arena.jl bounds that. So the count is taken of a derivative compiled
+        # without it, of a wrapper no other test differentiates.
         if VERSION >= v"1.11-"
         elseif ILNEST_MALLINFO2[] != C_NULL
             @testset "native tape" begin
-                live(f) = begin
-                    grad!(f, P, shadows)
+                live(f) = ilnest_without_arena() do
+                    g = ILNestNoArena(f)
+                    grad!(g, P, shadows)
                     GC.gc()
                     before = ilnest_live_bytes()
-                    grad!(f, P, shadows)
+                    grad!(g, P, shadows)
                     ILNEST_LIVE_IN_REVERSE[] - before
                 end
                 step_bytes = G * T * sizeof(Float64)
