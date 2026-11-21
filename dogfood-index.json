@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "c3a3fb9b20cf9fa44bf816e6bbc296bbd84856f1"
+    "sha": "37b2a484727a28a78679d28a24e7071d916ca437"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-21T11:43:41Z",
+  "prepared_at": "2026-11-21T15:38:22Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -6029,6 +6029,85 @@
       },
       "depends_on": [],
       "requires": [],
+      "validation": []
+    },
+    {
+      "id": "caller-owned-loop-tapes",
+      "title": "Combined reverse mode allocates a loop cache for each call to a non-inlined function",
+      "role": "fix",
+      "summary": "Keep bounded pointer-free reverse-mode loop caches in storage owned by a derivative invocation, including caches used by its non-inlined callees.",
+      "repairs": [
+        {
+          "id": "tape_arena",
+          "covers": [
+            "implementation",
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/issues/3826",
+          "relation": "related"
+        }
+      ],
+      "draft": {
+        "title": "Combined reverse mode allocates a loop cache for each call to a non-inlined function",
+        "body": "An outer loop writes an output buffer and calls a non-inlined inner loop once per observation. The inner loop reads event times and amplitudes from arrays that may alias the buffer. Reverse mode needs to save those values and the outcome of a branch. Allocating and freeing each bounded cache on every call makes allocator traffic grow with the number of observations.\n\nThe fork commit reports 1,203 native allocations for one gradient of 600 observations. The gradient took 2.25 times as long as equivalent arithmetic whose caches were packed by the caller. Those measurements describe the original workload. The [synthetic regression](https://github.com/nsiccha/Enzyme.jl/blob/18119914ebb75d4d22a0fce789d90bf946c35662/test/tape_arena.jl) exposes the same call boundary in `arena_model` and `arena_superpose`. Its `allocation_sites` check compiles the model with the two arena switches on and off, counts calls to `malloc` outside the reserve helper, and checks that the arena removes allocation sites. A matrix-exponential fixture also requires at least 17 fewer static allocation sites.\n\nExpected behavior is that one reverse invocation can own the bounded, pointer-free caches it creates and release the storage on return. Empty and variable-length inner loops must produce the same gradients. The regression compares combined and split reverse, finite differences, forward-over-reverse and reverse-over-reverse, and checks live native bytes on glibc systems with `mallinfo2`.\n\nThe [Julia integration](https://github.com/nsiccha/Enzyme.jl/commit/18119914ebb75d4d22a0fce789d90bf946c35662) enables both native switches when available, suppresses the arena for nested compilation, and imports an arena-free cached thunk when differentiating previously compiled code. Otherwise the next derivative would have to differentiate a bulk release of the arena. The seven native prerequisites below are the original ordered implementation on the fork. The native compiler keeps this optimization off until a frontend enables it. The integration and its regression fixture are available together in the fork. The related upstream [triangular-loop report](https://github.com/EnzymeAD/Enzyme.jl/issues/3826) describes a maximum-trip-count opportunity within a nested loop. This example also crosses a non-inlined call boundary.",
+        "prepared_at": "2026-11-21T15:38:22Z"
+      },
+      "fix": {
+        "originals": [
+          "18119914ebb75d4d22a0fce789d90bf946c35662"
+        ],
+        "commits": [],
+        "why_together": "The Julia commit opts into the two native flags, handles nested compilation and imported thunks, and includes the regression fixtures. Its native prerequisites are listed in parent order. They extend cache coverage, bound spare capacity and preserve alias and pointer semantics. The integrated build selects the final native revision."
+      },
+      "requires": [
+        {
+          "name": "Borrow caller storage for bounded integer loop caches in augmented callees",
+          "repo": "nsiccha/Enzyme",
+          "sha": "2bfcc48cfb246f0657641bf52bc5ba01c05380cd",
+          "build": "bfb732a1c0b74802107646aa7645f3e2a22037a4"
+        },
+        {
+          "name": "Borrow caller storage for pointer-free loop caches of augmented callees",
+          "repo": "nsiccha/Enzyme",
+          "sha": "6b4a4eda4370e27bb26d5338bdd4565278b59615",
+          "build": "bfb732a1c0b74802107646aa7645f3e2a22037a4"
+        },
+        {
+          "name": "Reserve a combined derivative's bounded loop caches from its tape arena",
+          "repo": "nsiccha/Enzyme",
+          "sha": "e4562699af9d154064d55c11b622f1e9c70008a5",
+          "build": "bfb732a1c0b74802107646aa7645f3e2a22037a4"
+        },
+        {
+          "name": "Keep pointers out of the tape arena and give reservations malloc's aliasing facts",
+          "repo": "nsiccha/Enzyme",
+          "sha": "b61ff30dcb85a42e60fb9a29e5fe663b1a99df5d",
+          "build": "bfb732a1c0b74802107646aa7645f3e2a22037a4"
+        },
+        {
+          "name": "Bound the tape arena's spare capacity and keep it out of nested derivatives",
+          "repo": "nsiccha/Enzyme",
+          "sha": "f05f53083e905e38df3ba922d0299d3783b7bf7f",
+          "build": "bfb732a1c0b74802107646aa7645f3e2a22037a4"
+        },
+        {
+          "name": "Leave the tape arena off unless the frontend turns it on",
+          "repo": "nsiccha/Enzyme",
+          "sha": "0a2c55b620151df044e5f8f536e0e56f3ad7a5a9",
+          "build": "bfb732a1c0b74802107646aa7645f3e2a22037a4"
+        },
+        {
+          "name": "Tag pointer-free caches for the arena only when it is on",
+          "repo": "nsiccha/Enzyme",
+          "sha": "bfb732a1c0b74802107646aa7645f3e2a22037a4",
+          "build": "bfb732a1c0b74802107646aa7645f3e2a22037a4"
+        }
+      ],
       "validation": []
     }
   ]
