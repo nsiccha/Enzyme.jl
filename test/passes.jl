@@ -205,6 +205,51 @@ end
     end
 end
 
+@static if isdefined(Base, :lookup_binding_partition)
+    @testset "activity of a boxed constant binding" begin
+        fixture = Module(:BindingShadowFixture)
+        Core.eval(fixture, :(const constant = "first"))
+        Core.eval(fixture, :(variable = "first"))
+        world = Base.get_world_counter()
+        constant = convert(Core.Binding, GlobalRef(fixture, :constant))
+        variable = convert(Core.Binding, GlobalRef(fixture, :variable))
+        LLVM.Context() do llvmctx
+            mod = parse(
+                LLVM.Module, """
+                @cell = external global ptr
+                declare ptr addrspace(10) @jl_get_binding_value_seqcst(ptr)
+                define ptr addrspace(10) @read_cell() {
+                    %addr = load ptr, ptr @cell
+                    %value = call ptr addrspace(10) @jl_get_binding_value_seqcst(ptr %addr)
+                    ret ptr addrspace(10) %value
+                }
+                """
+            )
+            _, read, _ = collect(only(mod.functions["read_cell"].blocks).instructions)
+            ctx = Enzyme.Compiler.EnzymeContext(world)
+            @test !Enzyme.Compiler.inactive_binding_load(read, ctx)
+            ctx.julia_values["cell"] = variable
+            @test !Enzyme.Compiler.inactive_binding_load(read, ctx)
+            @test isempty(ctx.edges)
+            ctx.julia_values["cell"] = constant
+            @test Enzyme.Compiler.inactive_binding_load(read, ctx)
+            @test ctx.edges == Any[constant]
+            validity = Enzyme.Compiler.track_validity(ctx.edges)
+            @test validity isa Core.CodeInstance
+            @test validity.max_world == typemax(UInt)
+
+            Core.eval(fixture, :(const constant = Ref(1.0)))
+            new_world = Base.get_world_counter()
+            @test validity.max_world < new_world
+            new_ctx = Enzyme.Compiler.EnzymeContext(new_world)
+            new_ctx.julia_values["cell"] = constant
+            @test !Enzyme.Compiler.inactive_binding_load(read, new_ctx)
+            @test isempty(new_ctx.edges)
+            @test Enzyme.Compiler.inactive_binding_load(read, ctx)
+        end
+    end
+end
+
 @testset "import_cached_autodiff!" begin
     LLVM.Context() do ctx
         # A cached thunk's bitcode carries the Julia functions it calls. Two

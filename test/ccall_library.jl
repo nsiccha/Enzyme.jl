@@ -69,6 +69,7 @@ const lapack_spellings = Pair{Symbol, Any}[
 
 @static if VERSION < v"1.13-"
     cos_computed(x) = ccall((:cos, CcallLibraries.name()), Float64, (Float64,), x)
+    cold_cos_computed(x) = ccall((:cos, CcallLibraries.name()), Float64, (Float64,), x)
     scaled_by_computed(x) = x * ccall((:cos, CcallLibraries.name()), Float64, (Float64,), 2.0)
     function remquo_computed(x)
         quotient = Ref{Cint}(0)
@@ -142,6 +143,10 @@ reverse_derivative(f, x) = autodiff(Reverse, f, Active, Active(x))[1][1]
 
 @testset "ccall libraries" begin
     x = 0.3
+    @static if v"1.12-" <= VERSION < v"1.13-"
+        # Ask for the second derivative before the call site has resolved its library.
+        @test only(autodiff(Forward, reverse_derivative, Const(cold_cos_computed), Duplicated(x, 1.0))) ≈ -cos(x)
+    end
     @testset "$f" for f in scalar_libraries
         @test f(x) ≈ cos(x)
         @test autodiff(Reverse, f, Active, Active(x))[1][1] ≈ -sin(x)

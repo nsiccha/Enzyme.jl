@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- On Julia 1.12, the second derivative of a call such as
+  `ccall((:cos, library()), Float64, (Float64,), x)` works on the first call
+  when `library()` returns a constant library name.
 - Merge upstream support for Julia 1.14 rule lookup and JIT modules, and its
   fixes for deferred derivatives and cached thunk imports. The in-tree
   EnzymeCore is now 0.8.29. Enzyme requires LLVM.jl 10.5.2 or newer on the
