@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "87a43043428a80dc3edac592310ce77501378d65"
+    "sha": "29bf71f512e8ef96e42388a4c20bef60e259735e"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
     "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
   },
-  "prepared_at": "2026-11-19T05:39:02Z",
+  "prepared_at": "2026-11-21T11:43:41Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -5278,6 +5278,675 @@
           "why": "The repair record names the original native build. The package selects the cherry-pick of that change on the published native branch."
         }
       ],
+      "validation": []
+    },
+    {
+      "id": "typed-array-zero-shadow",
+      "role": "fix",
+      "title": "A known matrix type still dispatches at run time to create its zero shadow",
+      "summary": "Mixed-activity branches with a known concrete array type call the zero-shadow helper directly.",
+      "repairs": [
+        {
+          "id": "typed_array_zero_shadow",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "A known matrix type still dispatches at run time to create its zero shadow",
+        "body": "For x = reshape(collect(1.0:6), 2, 3), differentiate sum(abs2, size(x, 2) == 0 ? ones(size(x, 1), 1) : x). The nonempty branch contributes 2x to the input shadow. The empty matrix exercises the other branch. Both branches have a concrete matrix type, yet the compiled reverse derivative used a dynamic call into the zero-shadow helper. The regression checks the numerical result and inspects the returning path for dynamic dispatch and runtime fallback.\n\nRegression coverage in the fork: [derivative_report.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/derivative_report.jl), [constant_array_branch.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/constant_array_branch.jl).\n\nOriginal Julia change: [66b1018f](https://github.com/nsiccha/Enzyme.jl/commit/66b1018fa25f7988bd5bdfe93723be7596805f04).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "66b1018fa25f7988bd5bdfe93723be7596805f04"
+        ],
+        "commits": [],
+        "why_together": "The first commit specializes the existing fresh-array shadow builder and adds the derivative-report fixture. The separate retained-output repair below fixes another caller of the changed builder."
+      },
+      "depends_on": [
+        "fresh-data-merge"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "retained-shadow-emission",
+      "role": "fix",
+      "title": "Reverse compilation fails when a write-only output reuses a constant array’s zero shadow",
+      "summary": "Reverse emits the call that reuses a constant array's zero shadow in a write-only output.",
+      "repairs": [
+        {
+          "id": "retained_shadow_emission",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse compilation fails when a write-only output reuses a constant array’s zero shadow",
+        "body": "Differentiate a function that returns active values and a constant array through a write-only output. After specializing calls that create fresh-array shadows, this separate output path still called the old builder signature and raised MethodError during compilation. It should reuse eligible zero storage and preserve the input and any shadow still visible to the caller. The linked retained-output fixture exercises both cases.\n\nRegression coverage in the fork: [retained_shadows.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/retained_shadows.jl).\n\nOriginal Julia change: [3b9eb970](https://github.com/nsiccha/Enzyme.jl/commit/3b9eb970a970c01aa064e05afc6d24ac798c72b9).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "3b9eb970a970c01aa064e05afc6d24ac798c72b9"
+        ],
+        "commits": [],
+        "why_together": "The change extracts the common emission and hoisting step, then passes the retained-output arguments to it. The retained-output tests already exist on the prerequisite fork state."
+      },
+      "depends_on": [
+        "typed-array-zero-shadow",
+        "returned-memory"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "static-zero-shadow-calls",
+      "role": "fix",
+      "title": "Reverse dispatches dynamically when storing constant mutable data beside an active array",
+      "summary": "Reverse calls the zero-shadow helpers of a reused constant array and of a constant mutable object directly, without run-time dispatch.",
+      "repairs": [
+        {
+          "id": "static_zero_shadow_calls",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse dispatches dynamically when storing constant mutable data beside an active array",
+        "body": "Store (a, c) in an output Ref and return sum(abs2, a) * c[], with a = [1.0, 2.0] and c = Ref(3.0). Reverse should accumulate 6a, preserve c, and store a distinct zero Ref alongside the active shadow. The derivative used a generic call to make the zero copy. A second case used a generic call to find a reusable constant-array shadow. The fixture inspects the compiled returning paths as well as the values. A user-defined mutable struct may still dispatch inside its own field traversal.\n\nRegression coverage in the fork: [retained_shadows.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/retained_shadows.jl), [derivative_report.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/derivative_report.jl).\n\nOriginal Julia change: [45e69c7e](https://github.com/nsiccha/Enzyme.jl/commit/45e69c7e3da7f1a05a597031804ee88eb8d2568e).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "45e69c7e3da7f1a05a597031804ee88eb8d2568e"
+        ],
+        "commits": [],
+        "why_together": "One implementation specializes the two related helper calls. It also guards the shared registry of reusable zero copies and adds checks for both call paths."
+      },
+      "depends_on": [
+        "retained-shadow-emission"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "boxed-argument-memcpy",
+      "role": "fix",
+      "title": "Nested differentiation of indexed matrix multiplication loses constant references at a dynamic call",
+      "summary": "Preserve constant references when a dynamic call boxes a by-reference argument with memcpy.",
+      "repairs": [
+        {
+          "id": "boxed_argument_memcpy",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Nested differentiation of indexed matrix multiplication loses constant references at a dynamic call",
+        "body": "For A = D[rows, :], differentiate sum(abs2, view(D, rows, :) * q) with D and rows constant. Forward over Reverse should produce 2A′Aq and the Hessian-vector product 2A′Av without changing the indexed data. The dynamic call boxes an argument by copying its record. Constant references inside that copy could lose their activity information. The regression also makes D active and repeats a row index to check accumulation into its parent.\n\nRegression coverage in the fork: [boxed_view.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/boxed_view.jl).\n\nOriginal Julia change: [cf4760f0](https://github.com/nsiccha/Enzyme.jl/commit/cf4760f07560639a8476573a44082f6991980b2c).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "cf4760f07560639a8476573a44082f6991980b2c"
+        ],
+        "commits": [],
+        "why_together": "The original change handles the record-copy case in the existing boxing analysis and includes both regression cases."
+      },
+      "depends_on": [
+        "boxed-constant-argument"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "ccall-computed-blas-library",
+      "role": "fix",
+      "title": "BLAS derivatives can call a different provider from the library selected by the primal",
+      "summary": "BLAS and LAPACK rules use the call site's runtime-selected ccall library for their primal and derivative routines.",
+      "repairs": [
+        {
+          "id": "ccall_computed_blas_library",
+          "covers": [
+            "implementation",
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "BLAS derivatives can call a different provider from the library selected by the primal",
+        "body": "Use a ccall to dlacpy with a library expression evaluated at run time. Its reverse rule also needs routines for operations on the adjoint. Those routines must come from the same provider chosen for that call site. The fixture creates two providers, calls both in one derivative, and checks first-use selection and copied entries. It covers computed-library calls on Julia 1.10–1.12.\n\nRegression coverage in the fork: [ccall_library.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/ccall_library.jl).\n\nThe Julia change uses [this native compiler change](https://github.com/nsiccha/Enzyme/commit/cb1e89666f23b474fae1bb7a819fe23413487fe9).\n\nOriginal Julia change: [b14d634c](https://github.com/nsiccha/Enzyme.jl/commit/b14d634cdd54761a728dd56d8cf51be00f6b53ce).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "b14d634cdd54761a728dd56d8cf51be00f6b53ce"
+        ],
+        "commits": [],
+        "why_together": "The Julia change binds each call site to its selected library and tests two coexisting providers. The native change selects that same library for generated helper routines."
+      },
+      "depends_on": [
+        "ccall-runtime-library"
+      ],
+      "requires": [
+        {
+          "name": "Use the primal BLAS library for cache copies and helper routines",
+          "repo": "nsiccha/Enzyme",
+          "sha": "cb1e89666f23b474fae1bb7a819fe23413487fe9",
+          "build": "cb1e89666f23b474fae1bb7a819fe23413487fe9",
+          "why": "The Julia change binds each call site to its selected library and tests two coexisting providers. The native change selects that same library for generated helper routines."
+        }
+      ],
+      "validation": []
+    },
+    {
+      "id": "mixed-record-merges",
+      "role": "fix",
+      "title": "Reverse cannot keep pointer and scalar derivatives together across a loop-carried record",
+      "summary": "Reverse routes pointer shadows and floating-point adjoints separately when a branch carries an inline record.",
+      "repairs": [
+        {
+          "id": "mixed_record_merges",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse cannot keep pointer and scalar derivatives together across a loop-carried record",
+        "body": "In a loop, retain a tuple of an array and i*x until a Boolean refreshes it. Store each retained tuple, then sum the array values and the scalar fields. The array reference needs a shadow pointer while the scalar needs a numerical adjoint. Ordinary Reverse lost this distinction at the control-flow merge. The fixture includes all-refresh, partial-refresh, and empty inputs. With three unit-length records and weights [2.0], the two refresh patterns in the fixture give derivatives 11 and 12.\n\nRegression coverage in the fork: [record_merges.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/record_merges.jl).\n\nOriginal Julia change: [eb269f81](https://github.com/nsiccha/Enzyme.jl/commit/eb269f8111274a3c540d88b3003d70d77303a4cb).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "eb269f8111274a3c540d88b3003d70d77303a4cb"
+        ],
+        "commits": [],
+        "why_together": "The original change splits the record at the merge and tests pointer and scalar fields together."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "memoryref-offset",
+      "role": "fix",
+      "title": "Reverse loses the displacement of an interior array read after LLVM reorders the byte offset",
+      "summary": "Recognize the byte displacement between MemoryRef pointers in reverse and nested derivatives.",
+      "repairs": [
+        {
+          "id": "memoryref_offset",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse loses the displacement of an interior array read after LLVM reorders the byte offset",
+        "body": "An array can start partway through its backing Memory. When the index is dynamic, LLVM can reassociate the index with the difference between the two data pointers. Reverse must differentiate the element actually read. In the linked Julia 1.12+ case its value is 11; cubing it gives a gradient of 3*11² in just that slot. A directional derivative checks the second derivative at the same slot.\n\nRegression coverage in the fork: [memoryref_offset.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/memoryref_offset.jl).\n\nOriginal Julia change: [ea2e4f1a](https://github.com/nsiccha/Enzyme.jl/commit/ea2e4f1aee56765cd8093fce60db3eb1e032f8ee).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "ea2e4f1aee56765cd8093fce60db3eb1e032f8ee"
+        ],
+        "commits": [],
+        "why_together": "The change groups the pointer difference before differentiation. Its tests distinguish address calculations from an integer difference that the program stores as data."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "unread-native-tapes",
+      "role": "fix",
+      "title": "An optimized reverse sweep still allocates native tape buffers it never reads",
+      "summary": "Reverse eliminates native tape allocations whose stored values are never read.",
+      "repairs": [
+        {
+          "id": "unread_native_tapes",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "An optimized reverse sweep still allocates native tape buffers it never reads",
+        "body": "A guarded reduction can leave reverse tape buffers as long as the input even after optimization makes their loads unnecessary. In the regression, two buffers receive the same series of stores, but only one is read. The unused allocation and its stores and free should disappear, while the other buffer and its use must remain. The fixture checks the post-AD module for this distinction.\n\nRegression coverage in the fork: [derivative_report.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/derivative_report.jl).\n\nOriginal Julia change: [527fd1ce](https://github.com/nsiccha/Enzyme.jl/commit/527fd1cea2ac73e9de9d83533e6cec81651083ed).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "527fd1cea2ac73e9de9d83533e6cec81651083ed"
+        ],
+        "commits": [],
+        "why_together": "The change runs library-attribute inference after AD so the optimizer can eliminate the unused allocation. Its regression keeps a second, observable allocation as a control."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "ragged-cache-levels",
+      "role": "regression",
+      "title": "Reverse allocates one cache per inner invocation of a deeply ragged loop",
+      "summary": "Pack Boolean, vector, and pointer-free aggregate reverse caches across nested ragged chunks.",
+      "repairs": [
+        {
+          "id": "ragged_cache_levels",
+          "covers": [
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse allocates one cache per inner invocation of a deeply ragged loop",
+        "body": "Differentiate a three-level loop whose middle and inner trip counts come from the enclosing iteration. Save an inner Boolean decision and update a loop-carried floating-point state. A cache per inner invocation scales with the number of small chunks. Growable storage can instead be shared per level and element type. The fixture compares combined and split Reverse, empty and uneven chunks, and finite differences.\n\nRegression coverage in the fork: [packed_cache_groups.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/packed_cache_groups.jl).\n\nThe implementation is in [the Enzyme compiler](https://github.com/nsiccha/Enzyme/commit/2528afe8490e74f86fde7f0b054a83a281d12e3f). The Julia change adds the regression and selects the native build.\n\nOriginal Julia changes: [8f6f5be8](https://github.com/nsiccha/Enzyme.jl/commit/8f6f5be81f2a3612e8aa89844c187896c4f9eded), [dd4eb1a5](https://github.com/nsiccha/Enzyme.jl/commit/dd4eb1a5a9bbbbb5b6e0dd78ea8dd9384cd67079).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "8f6f5be81f2a3612e8aa89844c187896c4f9eded",
+          "dd4eb1a5a9bbbbb5b6e0dd78ea8dd9384cd67079"
+        ],
+        "commits": [],
+        "why_together": "The first commit adds the Julia fixture and declares the original native build. The second selects its reviewed cherry-pick on the unified compiler branch."
+      },
+      "depends_on": [],
+      "requires": [
+        {
+          "name": "Pack ragged cache levels and pointer-free records in growable buffers",
+          "repo": "nsiccha/Enzyme",
+          "sha": "2528afe8490e74f86fde7f0b054a83a281d12e3f",
+          "build": "7d2c43fdac651cb746f21e99b6d3b5cfb958c47a",
+          "why": "The first commit adds the Julia fixture and declares the original native build. The second selects its reviewed cherry-pick on the unified compiler branch."
+        }
+      ],
+      "validation": []
+    },
+    {
+      "id": "scalar-broadcast-materialize",
+      "role": "fix",
+      "title": "Differentiating a fused zero-dimensional broadcast changes the scalar primal result",
+      "summary": "Materializing a default rank-zero broadcast over a zero-dimensional array returns its scalar element during differentiation.",
+      "repairs": [
+        {
+          "id": "scalar_broadcast_materialize",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Differentiating a fused zero-dimensional broadcast changes the scalar primal result",
+        "body": "For u = [0.3, -0.2] and x = fill(0.5), evaluate 0.2 - (u[1] .+ x .* u[2]). Julia materializes the rank-zero broadcast as a scalar. ReverseWithPrimal should return that same scalar and accumulate [-1.0, -0.5] in u. The regression also uses an ordinary scalar x and checks that broadcasting a rank-zero input with a vector still returns a vector.\n\nRegression coverage in the fork: [broadcast_materialize.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/broadcast_materialize.jl).\n\nOriginal Julia change: [e8761f35](https://github.com/nsiccha/Enzyme.jl/commit/e8761f35eeb513c524d6baae90675bfe962d7b0d).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "e8761f35eeb513c524d6baae90675bfe962d7b0d"
+        ],
+        "commits": [],
+        "why_together": "The original change preserves scalar materialization and tests the rank-zero and vector-valued cases."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "gc-preserve-branch",
+      "role": "regression",
+      "title": "Reverse fails on a broadcast writer whose overlap check has two GC-preserve exits",
+      "summary": "Reverse a GC preserve region whose two ends branch to the same pair of destinations.",
+      "repairs": [
+        {
+          "id": "gc_preserve_branch",
+          "covers": [
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Reverse fails on a broadcast writer whose overlap check has two GC-preserve exits",
+        "body": "A writer computes x + 0.25g into a destination and sums the result. It can write directly when the inputs are disjoint and must preserve the inputs while choosing a temporary when storage overlaps. Reverse could not handle two preserve ends branching to the same destinations. With x = [2,3] and g = [5,7] the disjoint case should give [1,1] for dx and [0.25,0.25] for dg. The fixture also covers both overlap cases.\n\nRegression coverage in the fork: [gc_preserve_branch.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/gc_preserve_branch.jl).\n\nThe implementation is in [the Enzyme compiler](https://github.com/nsiccha/Enzyme/commit/09013d217ca615c127c5e2f64ee2c158eecf544e). The Julia change adds the regression and selects the native build.\n\nOriginal Julia change: [2f158161](https://github.com/nsiccha/Enzyme.jl/commit/2f158161515544d3b41fc52cfeb75691a6ad54ae).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "2f158161515544d3b41fc52cfeb75691a6ad54ae"
+        ],
+        "commits": [],
+        "why_together": "The Julia commit supplies the public regression and selects the native change that rejoins the preserve ends before reversing them."
+      },
+      "depends_on": [],
+      "requires": [
+        {
+          "name": "Rejoin branching Julia GC preserve ends before reversing them",
+          "repo": "nsiccha/Enzyme",
+          "sha": "09013d217ca615c127c5e2f64ee2c158eecf544e",
+          "build": "09013d217ca615c127c5e2f64ee2c158eecf544e",
+          "why": "The Julia commit supplies the public regression and selects the native change that rejoins the preserve ends before reversing them."
+        }
+      ],
+      "validation": []
+    },
+    {
+      "id": "specialized-invokes",
+      "role": "fix",
+      "title": "Reverse falls back to runtime dispatch for an already inferred function argument",
+      "summary": "Preserve inferred invoke signatures when compiling derivatives, including triangular products with a vector view.",
+      "repairs": [
+        {
+          "id": "specialized_invokes",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [
+        {
+          "url": "https://github.com/EnzymeAD/Enzyme.jl/pull/3665",
+          "relation": "related"
+        }
+      ],
+      "draft": {
+        "title": "Reverse falls back to runtime dispatch for an already inferred function argument",
+        "body": "On Julia 1.12+, pass identity to a non-inlined function that squares x when its operation is identity. At x = 3 the derivative is 6. Widening the inferred invoke signature to Function can lose the compiled target and introduce a runtime fallback. The regression checks the result and the derivative report, then exercises ordinary and transposed triangular matrices multiplied by a vector view.\n\nRegression coverage in the fork: [specialized_invokes.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/specialized_invokes.jl).\n\nOriginal Julia change: [f96900a2](https://github.com/nsiccha/Enzyme.jl/commit/f96900a2b474c594208055bb9826bb097eca4862).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "f96900a2b474c594208055bb9826bb097eca4862"
+        ],
+        "commits": [],
+        "why_together": "The change reuses the inferred invoke target when the widened signature has no compiled method and includes the numerical and dispatch checks."
+      },
+      "depends_on": [],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "conditional-use-adjoints",
+      "role": "regression",
+      "title": "Hoisting arithmetic from an untaken infinite-endpoint branch can turn a finite gradient into NaN",
+      "summary": "Preserve zero adjoints when control flow skips the uses of speculated arithmetic.",
+      "repairs": [
+        {
+          "id": "conditional_use_adjoints",
+          "covers": [
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "Hoisting arithmetic from an untaken infinite-endpoint branch can turn a finite gradient into NaN",
+        "body": "A bounded score skips its lower-endpoint contribution when lo == -Inf. The compiler may hoist endpoint arithmetic above that test. The arithmetic has zero upstream adjoint on the skipped path, yet the generated reverse computation could combine zero with an infinite value and produce NaN. The fixture compares the parameter gradient with central differences at lo = -Inf and at a finite lower endpoint.\n\nRegression coverage in the fork: [select_strong_zero.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/select_strong_zero.jl).\n\nThe implementation is in [the Enzyme compiler](https://github.com/nsiccha/Enzyme/commit/593c7937cc90695ddd9c6ef31aa93f3c55e45eeb). The Julia change adds the regression and selects the native build.\n\nOriginal Julia change: [a0cf1fc5](https://github.com/nsiccha/Enzyme.jl/commit/a0cf1fc5affd1bf3d71092872d8734247824869e).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "a0cf1fc5affd1bf3d71092872d8734247824869e"
+        ],
+        "commits": [],
+        "why_together": "The Julia commit supplies the endpoint regression and selects the native conditional-use repair."
+      },
+      "depends_on": [],
+      "requires": [
+        {
+          "name": "Preserve zero adjoints in speculated arithmetic with conditional uses",
+          "repo": "nsiccha/Enzyme",
+          "sha": "593c7937cc90695ddd9c6ef31aa93f3c55e45eeb",
+          "build": "593c7937cc90695ddd9c6ef31aa93f3c55e45eeb",
+          "why": "The Julia commit supplies the endpoint regression and selects the native conditional-use repair."
+        }
+      ],
+      "validation": []
+    },
+    {
+      "id": "compared-operand-adjoints",
+      "role": "regression",
+      "title": "A comparison of hoisted endpoint arithmetic can reintroduce a NaN reverse gradient",
+      "summary": "Preserve zero adjoints of speculated arithmetic whose other uses only feed comparisons.",
+      "repairs": [
+        {
+          "id": "compared_operand_adjoints",
+          "covers": [
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "A comparison of hoisted endpoint arithmetic can reintroduce a NaN reverse gradient",
+        "body": "Inside a finite-endpoint branch, compare the interval width b - a to a threshold before using a. The width may be computed before a guard that skips an infinite endpoint. Even though the hoisted width only feeds a comparison, the reverse pass could propagate a NaN through its operands. The public fixture tests lower and upper infinite bounds, finite controls, and width, sum, and scaled comparisons against finite differences.\n\nRegression coverage in the fork: [select_strong_zero.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/select_strong_zero.jl).\n\nThe implementation is in [the Enzyme compiler](https://github.com/nsiccha/Enzyme/commit/078431a87bc49e6391f64dc61eacf48412b220b5). The Julia change adds the regression and selects the native build.\n\nOriginal Julia change: [a0ec996b](https://github.com/nsiccha/Enzyme.jl/commit/a0ec996b8eb611c81447fcf1076dd1c447a0b0f9).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "a0ec996b8eb611c81447fcf1076dd1c447a0b0f9"
+        ],
+        "commits": [],
+        "why_together": "This follow-up extends zero-adjoint protection to operands whose additional uses are comparisons. The Julia commit adds the distinguishing cases."
+      },
+      "depends_on": [
+        "conditional-use-adjoints"
+      ],
+      "requires": [
+        {
+          "name": "Protect operands of hoisted values that only comparisons read",
+          "repo": "nsiccha/Enzyme",
+          "sha": "078431a87bc49e6391f64dc61eacf48412b220b5",
+          "build": "078431a87bc49e6391f64dc61eacf48412b220b5",
+          "why": "This follow-up extends zero-adjoint protection to operands whose additional uses are comparisons. The Julia commit adds the distinguishing cases."
+        }
+      ],
+      "validation": []
+    },
+    {
+      "id": "overwritten-reachable-data",
+      "role": "fix",
+      "title": "A custom reverse rule can silently reread a changed array through an immutable wrapper",
+      "summary": "A custom rule's overwritten flag covers data behind references its argument holds.",
+      "repairs": [
+        {
+          "id": "overwritten_reachable_data",
+          "covers": [
+            "implementation",
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "A custom reverse rule can silently reread a changed array through an immutable wrapper",
+        "body": "Differentiate det of a view of [2.0 1.0; 1.0 3.0], then write to the parent in the primal. The reverse rule needs the original matrix. If overwritten(config) only describes the wrapper itself, the rule can see false and reread the modified elements, giving a wrong derivative. The expected cofactor matrix is [3 -1; -1 2]. Other cases cover structs, tuples, callables holding data, and writes between split passes.\n\nRegression coverage in the fork: [overwritten_references.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/rules/overwritten_references.jl).\n\nThe Julia change uses [this native compiler change](https://github.com/nsiccha/Enzyme/commit/05ce259ccbc1f40097351cdb7e7528dea722a303).\n\nOriginal Julia change: [07ec0c9b](https://github.com/nsiccha/Enzyme.jl/commit/07ec0c9bb5806bbd25bf6e24ae70bc0b8e215a62).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "07ec0c9bb5806bbd25bf6e24ae70bc0b8e215a62"
+        ],
+        "commits": [],
+        "why_together": "The Julia handler accounts for mutable storage reachable through an argument and uses the native query for later writes. The fixture checks genuine writes and read-only controls."
+      },
+      "depends_on": [],
+      "requires": [
+        {
+          "name": "Report the writes that follow a call through the C API",
+          "repo": "nsiccha/Enzyme",
+          "sha": "05ce259ccbc1f40097351cdb7e7528dea722a303",
+          "build": "05ce259ccbc1f40097351cdb7e7528dea722a303",
+          "why": "The Julia handler accounts for mutable storage reachable through an argument and uses the native query for later writes. The fixture checks genuine writes and read-only controls."
+        }
+      ],
+      "validation": []
+    },
+    {
+      "id": "unexposed-storage-barriers",
+      "role": "regression",
+      "title": "A write barrier on fresh result storage makes a custom rule copy unrelated input data",
+      "summary": "A write barrier after storing a reference into an array the function allocated leaves that array unexposed to an earlier call, so writes into it no longer count as overwriting what the call read.",
+      "repairs": [
+        {
+          "id": "unexposed_storage_barriers",
+          "covers": [
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "A write barrier on fresh result storage makes a custom rule copy unrelated input data",
+        "body": "Allocate an array before a loop and save each rule result into it. On Julia 1.10 the reference store and write barrier could make the output array appear exposed to another invocation. A custom rule then saw overwritten(config) as true and saved copies of data the stores could not modify. The regression contrasts storing in newly allocated output with storing back to an array read by the rule. The expected flag can differ on Julia 1.11 and later.\n\nRegression coverage in the fork: [overwritten_references.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/rules/overwritten_references.jl).\n\nThe implementation is in [the Enzyme compiler](https://github.com/nsiccha/Enzyme/commit/400c1bdc7b35d7ecd941ddef3b18d02d176d3bb0). The Julia change adds the regression and selects the native build.\n\nOriginal Julia change: [2206eefd](https://github.com/nsiccha/Enzyme.jl/commit/2206eefdba091adfd88d3683eebba203a4c75a5a).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "2206eefdba091adfd88d3683eebba203a4c75a5a"
+        ],
+        "commits": [],
+        "why_together": "The original Julia change exercises both destinations and selects the native exposure-analysis change."
+      },
+      "depends_on": [
+        "overwritten-reachable-data"
+      ],
+      "requires": [
+        {
+          "name": "Let a write barrier leave private storage unexposed to a call",
+          "repo": "nsiccha/Enzyme",
+          "sha": "400c1bdc7b35d7ecd941ddef3b18d02d176d3bb0",
+          "build": "400c1bdc7b35d7ecd941ddef3b18d02d176d3bb0",
+          "why": "The original Julia change exercises both destinations and selects the native exposure-analysis change."
+        }
+      ],
+      "validation": []
+    },
+    {
+      "id": "later-pointer-stores",
+      "role": "fix",
+      "title": "A pointer-only store after a custom rule marks distinct numeric storage as overwritten",
+      "summary": "Stores of pointers alone after a custom rule's call leave its overwritten flag false for an argument whose reachable mutable memory holds no pointers.",
+      "repairs": [
+        {
+          "id": "later_pointer_stores",
+          "covers": [
+            "implementation",
+            "native-prerequisite",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "A pointer-only store after a custom rule marks distinct numeric storage as overwritten",
+        "body": "After a custom rule reads a numeric array held by a wrapper, save its returned object in a Ref passed by the caller. On Julia 1.10, this store of a pointer cannot overwrite the numeric elements, but the flag previously asked the rule to copy them. The fixture also replaces a reachable pointer field that genuinely can change the data selected by the rule. Julia 1.11+ arrays have replaceable backing memory, so their flag can correctly remain true.\n\nRegression coverage in the fork: [overwritten_references.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/rules/overwritten_references.jl).\n\nThe Julia change uses [this native compiler change](https://github.com/nsiccha/Enzyme/commit/05ce259ccbc1f40097351cdb7e7528dea722a303).\n\nOriginal Julia change: [6db3e31b](https://github.com/nsiccha/Enzyme.jl/commit/6db3e31b44cc1840dd59a883e26bc723533799aa).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "6db3e31b44cc1840dd59a883e26bc723533799aa"
+        ],
+        "commits": [],
+        "why_together": "The change distinguishes pointer-only stores from writes that can change reachable mutable memory holding pointers. It uses the same native subsequent-writes query."
+      },
+      "depends_on": [
+        "overwritten-reachable-data"
+      ],
+      "requires": [
+        {
+          "name": "Report the writes that follow a call through the C API",
+          "repo": "nsiccha/Enzyme",
+          "sha": "05ce259ccbc1f40097351cdb7e7528dea722a303",
+          "build": "05ce259ccbc1f40097351cdb7e7528dea722a303",
+          "why": "The change distinguishes pointer-only stores from writes that can change reachable mutable memory holding pointers. It uses the same native subsequent-writes query."
+        }
+      ],
+      "validation": []
+    },
+    {
+      "id": "derivative-report-call-sites",
+      "role": "fix",
+      "title": "A derivative report loses source locations when a helper has several callers",
+      "summary": "A derivative report's findings and call sites list the call sites of a compiled function called from several places (call_sites, Enzyme.call_chains), where their source lines used to stop without naming any.",
+      "repairs": [
+        {
+          "id": "derivative_report_call_sites",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "upstream_refs": [],
+      "draft": {
+        "title": "A derivative report loses source locations when a helper has several callers",
+        "body": "Compile a derivative that calls the same helper from two different source lines and inspect a finding inside that helper. Previously its frame chain stopped at the helper, hiding both call sites. The report should expose both reachable paths and share common suffixes so the representation stays bounded. The public tests cover multiple callers, a call without a source line, and entry into a recursive component.\n\nRegression coverage in the fork: [derivative_report.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/derivative_report.jl), [precompile.jl](https://github.com/nsiccha/Enzyme.jl/blob/29bf71f512e8ef96e42388a4c20bef60e259735e/test/precompile.jl).\n\nOriginal Julia change: [bda7fa08](https://github.com/nsiccha/Enzyme.jl/commit/bda7fa0830f80422c3c45fe938127460ce2f7d9d).",
+        "prepared_at": "2026-11-21T11:43:41Z"
+      },
+      "fix": {
+        "originals": [
+          "bda7fa0830f80422c3c45fe938127460ce2f7d9d"
+        ],
+        "commits": [],
+        "why_together": "The change records reachable call sites once per function, exposes call_chains, and tests the frame chains and report compilation."
+      },
+      "depends_on": [
+        "derivative-report",
+        "derivative-report-reachability"
+      ],
+      "requires": [],
+      "validation": []
+    },
+    {
+      "id": "static-hvp-const-array-rules",
+      "role": "regression",
+      "title": "Static Hessian-vector products through Const-array rules and triangular solves",
+      "summary": "Regression coverage for nested differentiation of a custom rule with a Const-array argument and of triangular solves.",
+      "repairs": [],
+      "upstream_refs": [],
+      "fix": {
+        "originals": [
+          "1a1679df97ccaf35aff5afd2dae8dc5eaa4f37f0"
+        ],
+        "commits": [],
+        "why_together": "The original adds the nested-rule fixture and removes runtime activity from the triangular-solve HVP checks. It changes only tests."
+      },
+      "depends_on": [],
+      "requires": [],
       "validation": []
     }
   ]
