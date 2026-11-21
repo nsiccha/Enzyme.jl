@@ -40,6 +40,31 @@ SafeAtomicToRegularStorePass() = FunctionPass("safe_atomic_to_regular_store", sa
 Addr13NoAliasPass() = ModulePass("addr13_noalias", addr13NoAlias)
 RemoveAlwaysInlineRootsPass() = ModulePass("remove_alwaysinline_roots", remove_alwaysinline_roots!)
 
+"""
+    run_alwaysinliner!(mod)
+
+Inline the `alwaysinline` functions of `mod`, after SimplifyCFG on every function.
+
+The `AlwaysInlinerPass` of LLVM 18 computes the `BlockFrequencyInfo` of each callee. Its
+`BranchProbabilityInfo` is superlinear in the number of blocks in a loop. An unoptimized
+kernel body can have several 100k blocks, which mostly SimplifyCFG removes; without it
+the inliner takes minutes per such function.
+"""
+function run_alwaysinliner!(mod::LLVM.Module)
+    @dispose pb = PassBuilder() begin
+        register!(pb, RemoveAlwaysInlineRootsPass())
+        add!(pb, ModulePassManager()) do mpm
+            add!(mpm, FunctionPassManager()) do fpm
+                add!(fpm, SimplifyCFGPass())
+            end
+            add!(mpm, RemoveAlwaysInlineRootsPass())
+            add!(mpm, AlwaysInlinerPass())
+        end
+        run!(pb, mod)
+    end
+    return
+end
+
 # `mark_loads_dereferenceable!` for the compilation `enzyme_ctx`.
 struct MarkLoadsDereferenceable
     enzyme_ctx::Union{EnzymeContext, Nothing}
@@ -527,6 +552,21 @@ function fixup_callconv!(mod::LLVM.Module, tm::Union{LLVM.TargetMachine, Nothing
             end
             if !hasuse
                 eraseInst(mod, g)
+            end
+        end
+    end
+    # Since LLVM 22, lifetime intrinsics must refer directly to an alloca (or
+    # poison). Argument promotion above may leave them on other pointers.
+    if LLVM.version() >= v"22"
+        for name in ("llvm.lifetime.start.p0", "llvm.lifetime.end.p0")
+            haskey(mod.functions, name) || continue
+            for u in collect(mod.functions[name].uses)
+                ci = u.user
+                ci isa LLVM.CallInst || continue
+                ptr = last(collect(ci.arguments))
+                if !(ptr isa LLVM.AllocaInst || ptr isa LLVM.PoisonValue)
+                    erase!(ci)
+                end
             end
         end
     end

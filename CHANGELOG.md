@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Merge upstream support for Julia 1.14 rule lookup and JIT modules, and its
+  fixes for deferred derivatives and cached thunk imports. The in-tree
+  EnzymeCore is now 0.8.29. Enzyme requires LLVM.jl 10.5.2 or newer on the
+  10.x line, and GPUCompiler 2.23 or newer on the 2.x line.
 - Reverse gradients make a few native allocations per call where they made one
   `malloc` and one `free` per cached value. The non-inlined calls a combined
   Reverse derivative makes inside loops reserve their loop caches of numbers

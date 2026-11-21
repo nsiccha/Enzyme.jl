@@ -229,11 +229,16 @@ end
         LLVM.dispose(buf)
 
         ptr = reinterpret(Ptr{Cvoid}, UInt(0x2788))
-        # The synthetic thunk has the same body for every thread count.
+        # A second thunk with the same entry name (JuliaLang/julia#60031).
+        other_ptr = reinterpret(Ptr{Cvoid}, UInt(0x4078))
+        # The synthetic thunks have the same body for every thread count.
         job = Enzyme.Compiler.get_job(identity, Const, Tuple{Const{Int64}})
-        Enzyme.Compiler.autodiff_cache[ptr] = Enzyme.Compiler.CachedThunk(
-            "thunk", bitcode, Enzyme.Compiler.JuliaValueTable(), job, false, Nothing, false, Ref{Any}(nothing),
-        )
+        for key in (ptr, other_ptr)
+            Enzyme.Compiler.autodiff_cache[key] = Enzyme.Compiler.CachedThunk(
+                "thunk", bitcode, Enzyme.Compiler.JuliaValueTable(), job, false, Nothing, false, Ref{Any}(nothing),
+                false, Dict{Bool, Any}(),
+            )
+        end
         try
             Enzyme.@with Enzyme.Compiler.ENZYME_CONTEXT =>
                 Enzyme.Compiler.EnzymeContext(GPUCompiler.tls_world_age()) begin
@@ -253,14 +258,23 @@ end
                 # The blob is not imported a second time, so nothing it carries
                 # is defined twice.
                 @test !haskey(second_mod.functions, "julia_shared")
+                @test LLVM.name(declared) == LLVM.name(imported)
 
+                # The entry of the second thunk gets a different name.
+                other = Enzyme.Compiler.import_cached_autodiff!(first_mod, other_ptr, FT)
+                @test !LLVM.isdeclaration(other)
+                @test !LLVM.isdeclaration(imported)
+                @test LLVM.name(other) != LLVM.name(imported)
+
+                entry = LLVM.name(imported)
                 LLVM.link!(first_mod, second_mod)
                 Enzyme.Compiler.internalize_imported_thunks!(first_mod)
-                @test first_mod.functions["thunk"].linkage ==
+                @test first_mod.functions[entry].linkage ==
                     LLVM.Linkage.Internal
             end
         finally
             delete!(Enzyme.Compiler.autodiff_cache, ptr)
+            delete!(Enzyme.Compiler.autodiff_cache, other_ptr)
         end
     end
 end
