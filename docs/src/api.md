@@ -27,4 +27,6 @@ Enzyme.derivative_report
 Enzyme.DerivativeReport
 Enzyme.ReportedDerivative
 Enzyme.DerivativeFinding
+Enzyme.DerivativeCallSite
+Enzyme.call_chains
 ```

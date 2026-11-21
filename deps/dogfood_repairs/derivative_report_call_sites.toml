@@ -1,0 +1,2 @@
+summary = "A derivative report's findings and call sites list the call sites of a compiled function called from several places (call_sites, Enzyme.call_chains), where their source lines used to stop without naming any"
+tests = ["test/derivative_report.jl", "test/precompile.jl"]

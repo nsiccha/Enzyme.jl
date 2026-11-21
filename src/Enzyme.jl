@@ -333,7 +333,7 @@ include("rules/provided_gradient.jl")
 include("dogfood_repairs.jl")
 
 import .Compiler: CompilationException
-import .Compiler: derivative_report, DerivativeReport, ReportedDerivative, DerivativeFinding
+import .Compiler: derivative_report, DerivativeReport, ReportedDerivative, DerivativeFinding, DerivativeCallSite, call_chains
 
 @inline function falses_from_args(N)
     return ntuple(Returns(false), Val(N))

@@ -14,6 +14,39 @@
 # which runs in the world its method was defined in.
 
 """
+    DerivativeCallSite
+
+A call of a compiled function of a derivative's module, as listed in the `call_sites` of a
+[`DerivativeFinding`](@ref) or of another call site.
+
+- `in_function`: the compiled function that holds the call.
+- `sweep`: the sweep the call is in, as for a finding.
+- `frames`: the source lines of the call, innermost first: its own, those it was inlined into,
+  and those of the call of its function while that function has exactly one call site. Empty
+  for a call without debug information.
+- `in_loop`: whether the call is in a loop, or in a function called from one.
+- `throw_only`: whether the call is only reached on a path that ends in an error.
+- `count`: how many calls of the module this site stands for: calls in `in_function` with the
+  same source lines.
+- `call_sites`: where `frames` stop because the function holding them is called from several
+  places, its call sites; empty when they reach the derivative's entry. For a call inside a
+  recursion (a function that calls itself, directly or through others), the calls that enter
+  the recursion from outside it. Call sites are listed once per function and shared, so the
+  same vector can appear under several findings and sites.
+
+[`call_chains`](@ref) lists the complete chains of source lines this structure stands for.
+"""
+struct DerivativeCallSite
+    in_function::String
+    sweep::Symbol
+    frames::Vector{StackTraces.StackFrame}
+    in_loop::Bool
+    throw_only::Bool
+    count::Int
+    call_sites::Vector{DerivativeCallSite}
+end
+
+"""
     DerivativeFinding
 
 One kind of call in the compiled code of a derivative, found by [`derivative_report`](@ref).
@@ -31,7 +64,13 @@ One kind of call in the compiled code of a derivative, found by [`derivative_rep
 - `sweep`: `:forward` or `:reverse` for the sweep the call is in, `:combined` in a function that
   holds both sweeps where the call cannot be proven to be in the reverse one, and `:primal` in
   code that is not differentiated.
-- `frames`: the source lines the call comes from, from debug info, innermost first.
+- `frames`: the source lines the call comes from, from debug info, innermost first: its own,
+  those it was inlined into, and those of the call of its function while that function has
+  exactly one call site.
+- `call_sites`: where `frames` stop because the function holding them is called from several
+  places, its call sites (see [`DerivativeCallSite`](@ref)), each with its own frames and call
+  sites; empty when `frames` reach the derivative's entry. [`call_chains`](@ref) lists one
+  complete chain of source lines per call path.
 - `in_loop`: whether the call is in a loop, or in a function called from one.
 - `throw_only`: whether the call is only reached on a path that ends in an error,
   including when every call of its helper is on such a path. Code the derivative
@@ -50,16 +89,79 @@ struct DerivativeFinding
     throw_only::Bool
     bytes::Union{Nothing, Int}
     count::Int
+    call_sites::Vector{DerivativeCallSite}
+end
+
+DerivativeFinding(kind, callee, in_function, sweep, frames, in_loop, throw_only, bytes, count) =
+    DerivativeFinding(kind, callee, in_function, sweep, frames, in_loop, throw_only, bytes, count, DerivativeCallSite[])
+
+# Call sites are shared between findings and sites, so a comparison visits each pair of
+# vectors once: its cost stays linear in what they hold, however often they are shared.
+function same_call_sites(a::Vector{DerivativeCallSite}, b::Vector{DerivativeCallSite}, seen::IdDict{Any, Base.IdSet{Any}})::Bool
+    a === b && return true
+    length(a) == length(b) || return false
+    compared = get!(Base.IdSet{Any}, seen, a)
+    b in compared && return true
+    push!(compared, b)
+    for (x, y) in zip(a, b)
+        same_call_site(x, y, seen) || return false
+    end
+    return true
+end
+
+function same_call_site(a::DerivativeCallSite, b::DerivativeCallSite, seen::IdDict{Any, Base.IdSet{Any}})::Bool
+    return a.in_function == b.in_function && a.sweep === b.sweep && a.frames == b.frames &&
+        a.in_loop == b.in_loop && a.throw_only == b.throw_only && a.count == b.count &&
+        same_call_sites(a.call_sites, b.call_sites, seen)
+end
+
+Base.:(==)(a::DerivativeCallSite, b::DerivativeCallSite) = same_call_site(a, b, IdDict{Any, Base.IdSet{Any}}())
+
+# The hash leaves out the call sites above: equal sites hash equal, and hashing stays linear.
+function Base.hash(a::DerivativeCallSite, h::UInt)
+    return hash(a.count, hash(a.throw_only, hash(a.in_loop, hash(a.frames, hash(a.sweep, hash(a.in_function, hash(:DerivativeCallSite, h)))))))
 end
 
 function Base.:(==)(a::DerivativeFinding, b::DerivativeFinding)
     return a.kind === b.kind && a.callee == b.callee && a.in_function == b.in_function &&
         a.sweep === b.sweep && a.frames == b.frames && a.in_loop == b.in_loop &&
-        a.throw_only == b.throw_only && a.bytes == b.bytes && a.count == b.count
+        a.throw_only == b.throw_only && a.bytes == b.bytes && a.count == b.count &&
+        same_call_sites(a.call_sites, b.call_sites, IdDict{Any, Base.IdSet{Any}}())
 end
 
 function Base.hash(a::DerivativeFinding, h::UInt)
     return hash(a.count, hash(a.bytes, hash(a.throw_only, hash(a.in_loop, hash(a.frames, hash(a.sweep, hash(a.in_function, hash(a.callee, hash(a.kind, h)))))))))
+end
+
+"""
+    call_chains(finding::DerivativeFinding)::Vector{Vector{StackTraces.StackFrame}}
+    call_chains(site::DerivativeCallSite)
+
+The complete chains of source lines that reach `finding`, innermost first, one per path
+through its [`call_sites`](@ref DerivativeFinding) and theirs: each is the finding's `frames`
+followed by the frames of one call site at each level. A finding whose frames reach the
+derivative's entry has one chain, its `frames`.
+
+The number of chains is the number of call paths, which multiplies across levels: a function
+called from three places that calls the finding's function from two has six. A call site
+without debug information adds no frames to its chains.
+"""
+call_chains(f::Union{DerivativeFinding, DerivativeCallSite}) =
+    append_call_chains!(Vector{StackTraces.StackFrame}[], f.frames, f.call_sites)
+
+function append_call_chains!(
+        chains::Vector{Vector{StackTraces.StackFrame}},
+        prefix::Vector{StackTraces.StackFrame},
+        sites::Vector{DerivativeCallSite},
+    )::Vector{Vector{StackTraces.StackFrame}}
+    if isempty(sites)
+        push!(chains, copy(prefix))
+        return chains
+    end
+    for site in sites
+        append_call_chains!(chains, vcat(prefix, site.frames), site.call_sites)
+    end
+    return chains
 end
 
 # Julia's entry points for a call whose method is looked up, or reached through the generic
@@ -450,15 +552,195 @@ function scanned_function(fn::LLVM.Function, defined::Dict{String, Int})::Scanne
     return ScannedFunction(name, fn, blks, reachable_from(succ, entry), reaches(succ, returning), on_cycle(succ), reverse, sweep)
 end
 
-# The source lines `inst` comes from, innermost first: its own, those it was inlined into, and
-# those of the callers of its function while there is exactly one.
-function source_frames(inst::LLVM.Instruction)::Vector{StackTraces.StackFrame}
+# The source lines of `inst` itself, innermost first: its own and those it was inlined into.
+function instruction_frames(inst::LLVM.Instruction)::Vector{StackTraces.StackFrame}
     frames = StackTraces.StackFrame[]
-    for frame in GPUCompiler.backtrace(inst)
+    loc = inst.debug_location
+    while loc !== nothing
+        scope = loc.scope
+        line = Int(loc.line)
         # A wrapper Enzyme generates has no source line.
-        frame.line > 0 && push!(frames, frame)
+        if scope !== nothing && line > 0
+            name = replace(something(scope.name, ""), r";$" => "")
+            isempty(name) && (name = "unknown")
+            file = scope.file
+            path = file === nothing ? "unknown" :
+                joinpath(something(file.directory, ""), something(file.filename, ""))
+            push!(frames, StackTraces.StackFrame(Symbol(name), Symbol(path), line))
+        end
+        loc = loc.inlined_at
     end
     return frames
+end
+
+debug_location_key(inst::LLVM.Instruction)::UInt =
+    (loc = inst.debug_location; loc === nothing ? UInt(0) : reference_key(loc.ref))
+
+# The calls of one compiled function from one other function at one source position: one call
+# site of the function. Calls without debug information form one site per calling function.
+mutable struct CallGroup
+    const caller::Int
+    const call::LLVM.Instruction
+    sweep::Symbol
+    count::Int
+    in_loop::Bool
+    throw_only::Bool
+end
+
+# What `scan_derivative` knows about the module's calls, to say where a call comes from.
+struct CallSiteGraph
+    scanned::Vector{ScannedFunction}
+    # The calls of each function, in blocks the entry of their function reaches:
+    # (calling function, block, call).
+    incoming::Vector{Vector{Tuple{Int, Int, LLVM.Instruction}}}
+    reachable::BitVector
+    returning::BitVector
+    in_loop::BitVector
+    # The strongly connected component of each function in the call graph, and its members.
+    component::Vector{Int}
+    members::Dict{Int, Vector{Int}}
+    groups::Dict{Int, Vector{CallGroup}}
+    own_frames::Dict{UInt, Vector{StackTraces.StackFrame}}
+    walks::Dict{Tuple{UInt, Int}, Tuple{Vector{StackTraces.StackFrame}, Int}}
+    sites::Dict{Int, Vector{DerivativeCallSite}}
+    entries::Dict{Int, Vector{DerivativeCallSite}}
+end
+
+function CallSiteGraph(
+        scanned::Vector{ScannedFunction},
+        callees::Vector{Vector{Int}},
+        incoming::Vector{Vector{Tuple{Int, Int, LLVM.Instruction}}},
+        reachable::BitVector,
+        returning::BitVector,
+        in_loop::BitVector,
+    )
+    component = strongly_connected_components(callees)
+    members = Dict{Int, Vector{Int}}()
+    for (k, c) in enumerate(component)
+        push!(get!(Vector{Int}, members, c), k)
+    end
+    return CallSiteGraph(
+        scanned, incoming, reachable, returning, in_loop, component, members,
+        Dict{Int, Vector{CallGroup}}(), Dict{UInt, Vector{StackTraces.StackFrame}}(),
+        Dict{Tuple{UInt, Int}, Tuple{Vector{StackTraces.StackFrame}, Int}}(),
+        Dict{Int, Vector{DerivativeCallSite}}(), Dict{Int, Vector{DerivativeCallSite}}(),
+    )
+end
+
+function own_frames(g::CallSiteGraph, inst::LLVM.Instruction)::Vector{StackTraces.StackFrame}
+    key = debug_location_key(inst)
+    key == 0 && return StackTraces.StackFrame[]
+    frames = get(g.own_frames, key, nothing)
+    if frames === nothing
+        frames = instruction_frames(inst)
+        g.own_frames[key] = frames
+    end
+    return frames
+end
+
+# The call sites of function `f` in code the derivative can reach.
+function call_groups(g::CallSiteGraph, f::Int)::Vector{CallGroup}
+    known = get(g.groups, f, nothing)
+    known === nothing || return known
+    groups = CallGroup[]
+    index = Dict{Tuple{Int, UInt}, Int}()
+    for (k, b, call) in g.incoming[f]
+        g.reachable[k] || continue
+        sf = g.scanned[k]
+        sweep = sf.sweep === :combined && sf.reverse[b] ? :reverse : sf.sweep
+        looped = g.in_loop[k] || sf.cyclic[b]
+        thrown = !g.returning[k] || !sf.returns[b]
+        key = (k, debug_location_key(call))
+        i = get(index, key, 0)
+        if i == 0
+            push!(groups, CallGroup(k, call, sweep, 1, looped, thrown))
+            index[key] = length(groups)
+        else
+            group = groups[i]
+            group.count += 1
+            group.sweep === sweep || (group.sweep = sf.sweep)
+            group.in_loop |= looped
+            group.throw_only &= thrown
+        end
+    end
+    g.groups[f] = groups
+    return groups
+end
+
+# The source lines `inst` in function `k` comes from, innermost first: its own, those it was
+# inlined into, and those of the call of its function while that function has exactly one call
+# site. Also the function where they stop.
+function walked_frames(g::CallSiteGraph, inst::LLVM.Instruction, k::Int)::Tuple{Vector{StackTraces.StackFrame}, Int}
+    key = (debug_location_key(inst), k)
+    known = get(g.walks, key, nothing)
+    known === nothing || return known
+    frames = copy(own_frames(g, inst))
+    f = k
+    visited = BitSet((k,))
+    while true
+        groups = call_groups(g, f)
+        length(groups) == 1 || break
+        group = only(groups)
+        group.caller in visited && break
+        append!(frames, own_frames(g, group.call))
+        push!(visited, group.caller)
+        f = group.caller
+    end
+    result = (frames, f)
+    g.walks[key] = result
+    return result
+end
+
+function call_site_isless(a::DerivativeCallSite, b::DerivativeCallSite)::Bool
+    a.throw_only == b.throw_only || return !a.throw_only
+    a.in_function == b.in_function || return a.in_function < b.in_function
+    la = isempty(a.frames) ? 0 : first(a.frames).line
+    lb = isempty(b.frames) ? 0 : first(b.frames).line
+    la == lb || return la < lb
+    return length(a.frames) < length(b.frames)
+end
+
+# The call site for the calls of `group`, which call a function of component `component`.
+function call_site(g::CallSiteGraph, group::CallGroup, component::Int)::DerivativeCallSite
+    frames, stop = walked_frames(g, group.call, group.caller)
+    above = if g.component[stop] == component
+        # Its lines stop inside the recursion it calls into: say how that recursion is entered.
+        recursion_entries(g, component)
+    else
+        call_sites(g, stop)
+    end
+    return DerivativeCallSite(
+        g.scanned[group.caller].name, group.sweep, frames, group.in_loop, group.throw_only,
+        group.count, above,
+    )
+end
+
+# The call sites of function `f`, listed when lines stop there.
+function call_sites(g::CallSiteGraph, f::Int)::Vector{DerivativeCallSite}
+    known = get(g.sites, f, nothing)
+    known === nothing || return known
+    sites = DerivativeCallSite[]
+    for group in call_groups(g, f)
+        push!(sites, call_site(g, group, g.component[f]))
+    end
+    sort!(sites; lt = call_site_isless)
+    g.sites[f] = sites
+    return sites
+end
+
+# The calls that enter the recursion `component` from outside it. Each is in a function the
+# recursion does not reach, so listing what is above them cannot come back here.
+function recursion_entries(g::CallSiteGraph, component::Int)::Vector{DerivativeCallSite}
+    known = get(g.entries, component, nothing)
+    known === nothing || return known
+    sites = DerivativeCallSite[]
+    for f in g.members[component], group in call_groups(g, f)
+        g.component[group.caller] == component && continue
+        push!(sites, call_site(g, group, component))
+    end
+    sort!(sites; lt = call_site_isless)
+    g.entries[component] = sites
+    return sites
 end
 
 const FINDING_KIND_ORDER = (:dynamic_dispatch, :enzyme_runtime_fallback, :box, :gc_allocation, :native_allocation, :runtime_call)
@@ -500,6 +782,7 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
     loop_calls = Tuple{Int, Int}[]
     roots = falses(nf)
     external = Tuple{Int, Int, LLVM.Instruction, String}[]
+    incoming = Vector{Tuple{Int, Int, LLVM.Instruction}}[Tuple{Int, Int, LLVM.Instruction}[] for _ in 1:nf]
     address_names = Dict{UInt, String}()
     for (k, sf) in enumerate(scanned)
         # A local definition with no callers can survive optimization. Only exported
@@ -512,6 +795,7 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
                 how, name, idx = called_function(inst, defined, global_names, address_names)
                 if how === :internal
                     push!(callees[k], idx)
+                    push!(incoming[idx], (k, b, inst))
                     sf.returns[b] && push!(returning_callees[k], idx)
                     sf.cyclic[b] && push!(loop_calls, (k, idx))
                 elseif how === :named
@@ -532,10 +816,12 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
         reachable[caller] && (loop_roots[callee] = true)
     end
     in_loop = reachable_from(callees, loop_roots)
+    graph = CallSiteGraph(scanned, callees, incoming, reachable, returning, in_loop)
 
     counts = Dict{DerivativeFinding, Int}()
     order = DerivativeFinding[]
-    frames_of = Dict{Tuple{UInt, UInt}, Vector{StackTraces.StackFrame}}()
+    # Where the lines of the calls in each function stop: the same for all of them.
+    stops = Dict{String, Int}()
     for (k, b, inst, name) in external
         reachable[k] || continue
         sf = scanned[k]
@@ -545,13 +831,8 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
         else
             classify_callee(inst, name)
         end
-        loc = inst.debug_location
-        key = (loc === nothing ? UInt(0) : reference_key(loc.ref), reference_key(sf.fn.ref))
-        frames = get(frames_of, key, nothing)
-        if frames === nothing
-            frames = source_frames(inst)
-            frames_of[key] = frames
-        end
+        frames, stop = walked_frames(graph, inst, k)
+        stops[sf.name] = stop
         sweep = sf.sweep === :combined && sf.reverse[b] ? :reverse : sf.sweep
         finding = DerivativeFinding(
             kind, callee, sf.name, sweep, frames,
@@ -566,7 +847,7 @@ function scan_derivative(mod::LLVM.Module, global_names::Union{Nothing, Dict{Str
     end
     findings = DerivativeFinding[]
     for f in order
-        push!(findings, DerivativeFinding(f.kind, f.callee, f.in_function, f.sweep, f.frames, f.in_loop, f.throw_only, f.bytes, counts[f]))
+        push!(findings, DerivativeFinding(f.kind, f.callee, f.in_function, f.sweep, f.frames, f.in_loop, f.throw_only, f.bytes, counts[f], call_sites(graph, stops[f.in_function])))
     end
     sort!(findings; lt = finding_isless)
     return findings
@@ -1051,11 +1332,47 @@ function Base.show(io::IO, f::DerivativeFinding)
     return nothing
 end
 
+function print_frames(io::IO, frames::Vector{StackTraces.StackFrame}, indent::String)
+    for (i, frame) in enumerate(frames)
+        print(io, "\n", indent, i == 1 ? "at " : "   ", frame.func, " @ ", frame.file, ":", frame.line)
+    end
+    return nothing
+end
+
+# Call sites are shared, so each vector is printed once per finding, and referred to after.
+function print_call_sites(io::IO, sites::Vector{DerivativeCallSite}, indent::String, printed::Base.IdSet{Any})
+    isempty(sites) && return nothing
+    n = length(sites)
+    if sites in printed
+        print(io, "\n", indent, "called from the same ", n, n == 1 ? " site" : " sites", " as above")
+        return nothing
+    end
+    push!(printed, sites)
+    print(io, "\n", indent, "called from ", n, n == 1 ? " site:" : " sites:")
+    for site in sites
+        print(io, "\n", indent, "- in ", site.in_function, " (", site.sweep, ")")
+        site.count == 1 || print(io, " ×", site.count)
+        site.in_loop && print(io, ", in a loop")
+        site.throw_only && print(io, ", on an error path")
+        print_frames(io, site.frames, indent * "  ")
+        print_call_sites(io, site.call_sites, indent * "  ", printed)
+    end
+    return nothing
+end
+
 function Base.show(io::IO, ::MIME"text/plain", f::DerivativeFinding)
     show(io, f)
-    for (i, frame) in enumerate(f.frames)
-        print(io, "\n    ", i == 1 ? "at " : "   ", frame.func, " @ ", frame.file, ":", frame.line)
-    end
+    print_frames(io, f.frames, "    ")
+    print_call_sites(io, f.call_sites, "    ", Base.IdSet{Any}())
+    return nothing
+end
+
+function Base.show(io::IO, site::DerivativeCallSite)
+    print(io, "call in ", site.in_function, " (", site.sweep, ")")
+    site.count == 1 || print(io, " ×", site.count)
+    isempty(site.frames) || print(io, " at ", first(site.frames).func, " @ ", first(site.frames).file, ":", first(site.frames).line)
+    n = length(site.call_sites)
+    n == 0 || print(io, ", called from ", n, n == 1 ? " site" : " sites")
     return nothing
 end
 
