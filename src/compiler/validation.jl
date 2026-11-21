@@ -951,14 +951,14 @@ end
 runtime_lookup_stub_name(slot::LLVM.GlobalVariable, fname::String) = "ejlrt\$" * fname * "\$" * slot.name
 
 """
-    runtime_lookup_stub!(mod, slot, fname, FT, cc) -> LLVM.Function
+    runtime_lookup_stub!(mod, slot, address_type, fname, FT, cc) -> LLVM.Function
 
 The function that stands for the native symbol `fname` behind the call-site slot `slot`: its
 body loads the address the lazy lookup stored there and calls it with its own arguments, in the
 calling convention `cc`. It carries the symbol's name (`enzyme_math`), is not inlined before
 differentiation, and keeps its signature.
 """
-function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname::String, FT::LLVM.FunctionType, cc)::LLVM.Function
+function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, address_type::LLVM.LLVMType, fname::String, FT::LLVM.FunctionType, cc)::LLVM.Function
     name = runtime_lookup_stub_name(slot, fname)
     funcs = mod.functions
     haskey(funcs, name) && return funcs[name]
@@ -971,7 +971,10 @@ function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname
     push!(attributes, EnumAttribute(:noinline))
     builder = IRBuilder()
     position!(builder, LLVM.at_end(BasicBlock(stub, "entry")))
-    address = load!(builder, slot.global_value_type, slot)
+    # Imported call sites can store their pointer in a rooted Julia value. The
+    # lookup determines the loaded type even if the slot has an opaque body.
+    location = bitcast!(builder, slot, LLVM.PointerType(address_type, slot.value_type.addrspace))
+    address = load!(builder, address_type, location)
     address.ordering = LLVM.AtomicOrdering.Unordered
     callee = address
     T_callee = LLVM.PointerType(FT)
@@ -986,6 +989,35 @@ function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname
         ret!(builder, result)
     end
     return stub
+end
+
+# The cache contains one native address. Keep an LLVM global if something uses
+# the global's address as a value, rather than reading or setting that address.
+function runtime_lookup_cache_access(inst::LLVM.Value, slot::LLVM.GlobalVariable)
+    return inst isa LLVM.LoadInst || (inst isa LLVM.StoreInst && inst.operands[2] == slot && inst.operands[1] != slot)
+end
+
+# Keep a host call site's runtime address with its compiled thunk. The table of Julia
+# values referenced by a thunk is shared with every compilation importing its bitcode.
+function share_runtime_lookup_caches!(mod::LLVM.Module, enzyme_ctx::EnzymeContext)
+    for slot in collect(mod.globals)
+        haskey(slot.metadata, "enzymejl_ccall_cache") || continue
+        slot.initializer isa LLVM.PointerNull || continue
+        accesses = collect(slot.users)
+        isempty(accesses) && continue
+        all(Base.Fix2(runtime_lookup_cache_access, slot), accesses) || continue
+        @dispose builder = IRBuilder() begin
+            position!(builder, LLVM.before(first(accesses)))
+            cell = unsafe_to_llvm(builder, Ref{Ptr{Cvoid}}(C_NULL); insert_name_if_not_exists = "ccall_cache", enzyme_ctx)
+            address = LLVM.const_bitcast(cell, LLVM.PointerType(slot.global_value_type, Tracked))
+            for access in accesses
+                index = access isa LLVM.LoadInst ? 1 : 2
+                access.operands[index] = address
+            end
+        end
+        erase!(slot)
+    end
+    return nothing
 end
 
 """
@@ -1020,6 +1052,9 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
     end
     slot === nothing && return nothing
     slot.metadata["enzyme_inactive"] = LLVM.MDNode(LLVM.Metadata[])
+    @static if VERSION < v"1.13-"
+        slot.metadata["enzymejl_ccall_cache"] = LLVM.MDNode(LLVM.Metadata[])
+    end
     blas = API.supports_blas_library_call(fname)
     # Older builds leave a computed BLAS call behind its inactive pointer.
     if blas === nothing && FFI.BLASSupport.lookup_blas_symbol(fname) !== nothing
@@ -1055,7 +1090,7 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
     end
     if blas !== true
         for call in through
-            stub = runtime_lookup_stub!(mod, slot, fname, call.called_type, call.callconv)
+            stub = runtime_lookup_stub!(mod, slot, inst.value_type, fname, call.called_type, call.callconv)
             call.called_operand = stub
         end
         return nothing
