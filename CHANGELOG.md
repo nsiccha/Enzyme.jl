@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Merge upstream support for Julia 1.14 rule lookup and JIT modules, and its
+  fixes for deferred derivatives and cached thunk imports. The in-tree
+  EnzymeCore is now 0.8.29. Enzyme requires LLVM.jl 10.5.2 or newer on the
+  10.x line, and GPUCompiler 2.23 or newer on the 2.x line.
 - `Enzyme.derivative_report` names where a call comes from when the compiled
   function holding it is called from several places. The `frames` of a
   finding go up through the call of its function while that function has
