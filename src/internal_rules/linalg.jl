@@ -16,10 +16,13 @@
             return LinearAlgebra.lu(cache_A)
         end
     end
+    # For a real rectangular system the pullback needs the matrix for both the
+    # transpose solve and the least-squares residuals.
+    if AT <: Matrix{<:LinearAlgebra.BlasReal} && eltype(AT) === eltype(BT)
+        return cache_A
+    end
     return LinearAlgebra.qr(cache_A, ColumnNorm())
 end
-
-@inline onedimensionalize(::Type{T}) where {T <: Array} = Vector{eltype(T)}
 
 # Triangular solves for derivatives. For a strided triangular BLAS matrix, `ldiv!` and `\`
 # call LAPACK's trtrs, which besides solving checks the matrix for singularity, which the
@@ -85,7 +88,20 @@ function EnzymeRules.augmented_primal(
         A::Annotation{AT},
         b::Annotation{BT},
     ) where {RT, AT <: Array, BT <: Array}
+    return _augmented_dense_solve(config, RT, A, b)
+end
 
+function EnzymeRules.augmented_primal(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(\)},
+        ::Type{RT},
+        A::Annotation{Matrix{T}},
+        b::Annotation{<:Base.StridedSubArray{T, 1}},
+    ) where {RT, T <: LinearAlgebra.BlasReal}
+    return _augmented_dense_solve(config, RT, A, b)
+end
+
+function _augmented_dense_solve(config, ::Type{RT}, A::Annotation{AT}, b) where {RT, AT}
     cache_A = if EnzymeRules.overwritten(config)[2]
         copy(A.val)
     else
@@ -124,11 +140,12 @@ function EnzymeRules.augmented_primal(
     end
 
     UT = Union{
-        LinearAlgebra.Diagonal{eltype(AT), onedimensionalize(BT)},
+        AT,
+        LinearAlgebra.Diagonal{eltype(AT), Vector{eltype(AT)}},
         LinearAlgebra.LowerTriangular{eltype(AT), AT},
         LinearAlgebra.UpperTriangular{eltype(AT), AT},
         LinearAlgebra.LU{eltype(AT), AT, Vector{Int}},
-        LinearAlgebra.QRPivoted{eltype(AT), AT, onedimensionalize(BT), Vector{Int}},
+        LinearAlgebra.QRPivoted{eltype(AT), AT, Vector{eltype(AT)}, Vector{Int}},
     }
 
     cache = NamedTuple{
@@ -162,7 +179,7 @@ function EnzymeRules.reverse(
         ::Type{RT},
         cache,
         A::Annotation{<:Array},
-        b::Annotation{<:Array},
+        b::Annotation{<:Union{Array, Base.StridedSubArray{<:LinearAlgebra.BlasReal, 1}}},
     ) where {RT}
 
     y, dys, cache_A, cache_b = cache
@@ -205,10 +222,16 @@ function EnzymeRules.reverse(
 
     for (dA, db, dy) in zip(dAs, dbs, dys)
         z = _trisolve(transpose(cache_A), dy)
-        if !(typeof(A) <: Const)
+        if dA !== nothing && !(EnzymeRules.runtime_activity(config) && dA === A.val)
             dA .-= z * transpose(y)
+            if cache_A isa Matrix
+                # The pseudoinverse also differentiates the residual and the
+                # projection onto the row space when the system is rectangular.
+                dA .+= (cache_b - cache_A * y) * transpose(cache_A \ z)
+                dA .+= (transpose(cache_A) \ y) * transpose(dy - transpose(cache_A) * z)
+            end
         end
-        if !(typeof(b) <: Const)
+        if db !== nothing && !(EnzymeRules.runtime_activity(config) && db === b.val)
             db .+= z
         end
         dy .= eltype(dy)(0)
