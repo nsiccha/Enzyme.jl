@@ -1017,6 +1017,34 @@ parent_scope(@nospecialize(val::LLVM.Value), depth = 0) = parent_scope(val.paren
 parent_scope(val::LLVM.Argument, depth = 0) =
     parent_scope(val.parent, depth + 1)
 
+# A boxed binding can supply its own shadow when its value cannot contain derivative
+# data. Record the binding dependency in the same world that proved its value's type.
+function inactive_binding_load(@nospecialize(value::LLVM.Value), ctx::EnzymeContext)::Bool
+    @static if isdefined(Base, :lookup_binding_partition)
+        value isa LLVM.CallInst || return false
+        target = value.called_operand
+        target isa LLVM.Function || return false
+        target.name in ("jl_get_binding_value_seqcst", "ijl_get_binding_value_seqcst") || return false
+        value.value_type isa LLVM.PointerType && value.value_type.addrspace == Tracked || return false
+        length(value.arguments) == 1 || return false
+        address = only(value.arguments)
+        address isa LLVM.LoadInst || return false
+        slot = only(address.operands)
+        slot isa LLVM.GlobalVariable || return false
+        found = julia_value_of_slot(slot, ctx)
+        found === nothing && return false
+        binding = something(found)
+        binding isa Core.Binding || return false
+        part = Base.lookup_binding_partition(ctx.world, binding)
+        Base.binding_kind(part) == Base.PARTITION_KIND_CONST || return false
+        guaranteed_const_nongen(Core.Typeof(Base.partition_restriction(part)), ctx.world) || return false
+        push!(ctx.edges, binding)
+        return true
+    else
+        return false
+    end
+end
+
 function julia_error(
         cstr::Cstring,
         val::LLVM.API.LLVMValueRef,
@@ -1398,6 +1426,10 @@ function julia_error(
             ncur = new_from_original(gutils, cur)
             if cur in keys(seen)
                 return seen[cur]
+            end
+
+            if mode == API.DEM_ForwardMode && enzyme_ctx !== nothing && inactive_binding_load(cur, enzyme_ctx)
+                return make_batched(ncur, prevbb)
             end
 
             if isa(cur, LLVM.LoadInst)
