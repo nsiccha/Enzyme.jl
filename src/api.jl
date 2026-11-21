@@ -774,6 +774,14 @@ function reports_subsequent_writes()
     end
 end
 
+# The kinds of write libEnzyme reports, as bits (`SubsequentWriteAny` and
+# `SubsequentWritePointers` in its `EnzymeLogic.cpp`). Any is any write, and absorbs
+# the other kind. Pointers alone means only stores of pointer values: they cannot
+# change memory that holds numbers, since Julia keeps object references only where
+# its garbage collector looks for them.
+const SubsequentWriteAny = 0x01
+const SubsequentWritePointers = 0x02
+
 # The kinds of write that follow the call `orig` and that its callee cannot see
 # (0 for none), or `nothing` when the loaded libEnzyme has no answer: it predates
 # this entry point, or holds no record for the call.

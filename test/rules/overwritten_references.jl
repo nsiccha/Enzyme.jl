@@ -334,6 +334,63 @@ function row_derivative(caller, g)
     return result[1][end]
 end
 
+# The result goes into a `Ref` the caller passes, as a prepared pullback keeps its
+# outputs. That store of a pointer cannot change the numbers the rule read.
+function stored_in_box(box, g, x)
+    y = doubled(g, x)
+    box[] = y
+    return sum(y)
+end
+
+function box_derivative(caller, g)
+    ROW_FLAGS[] = nothing
+    box = Ref([0.0, 0.0])
+    dbox = Ref([0.0, 0.0])
+    result = Enzyme.autodiff(
+        Reverse, Const(caller), Active, Duplicated(box, dbox), Const(g), Active(2.0)
+    )
+    return result[1][end]
+end
+
+# Containers whose own storage or reachable memory holds a pointer that a store
+# of a pointer replaces after the call, so that the rule would read another
+# vector in its reverse pass.
+struct Boxed
+    box::Base.RefValue{Vector{Float64}}
+end
+struct Rows
+    rows::Vector{Vector{Float64}}
+end
+mutable struct Name
+    name::Symbol
+end
+struct Named
+    name::Name
+end
+data(g::Boxed) = g.box[]
+data(g::Rows) = g.rows[1]
+
+function replaced_in_ref(g, a, x)
+    y = doubled(g, x)
+    g[] = [42.0]
+    return sum(y)
+end
+function replaced_field(g, a, x)
+    y = doubled(g, x)
+    g.values = [42.0]
+    return sum(y)
+end
+function replaced_in_box(g, a, x)
+    y = doubled(g, x)
+    g.box[] = [42.0]
+    return sum(y)
+end
+function replaced_row_of(g, a, x)
+    y = doubled(g, x)
+    g.rows[1] = [42.0]
+    return sum(y)
+end
+
 # Whether the loaded libEnzyme lets a write barrier leave such an array unexposed.
 # Julia 1.11 and later keep an array's elements in a `Memory`, whose data pointer
 # libEnzyme does not trace back to the allocation when the memory is allocated
@@ -341,6 +398,19 @@ end
 const barrier_precise = precise && VERSION < v"1.11-" &&
     isdefined(Enzyme, :has_dogfood_repair) &&
     Enzyme.has_dogfood_repair(:unexposed_storage_barriers)
+
+# Whether stores of pointers alone after the call leave the flag `false` for an
+# argument whose reachable mutable memory holds no pointers. From Julia 1.11 an
+# array's object holds a reference to its memory that Julia code replaces, so
+# there an argument that holds an array keeps the flag `true`.
+const pointer_precise = precise && VERSION < v"1.11-" &&
+    isdefined(Enzyme, :has_dogfood_repair) &&
+    Enzyme.has_dogfood_repair(:later_pointer_stores)
+# The containers whose own storage is immutable and holds the array by reference.
+const pointer_free_containers = (
+    "immutable struct", "struct in a struct", "struct with a Symbol and a String",
+    "tuple", "named tuple", "view", "adjoint", "Symmetric",
+)
 
 # Enzyme's own rule for `det` keeps its argument unless the flag tells it to copy.
 function det_then_write(M)
@@ -476,6 +546,68 @@ end
         shared[1] = 3.0
         @test row_derivative(replaced_row, [shared]) == 9.0
         @test ROW_FLAGS[][2]
+    end
+
+    @testset "A result stored into a Ref the caller passes, $name" for (name, wrap) in containers
+        shared[1] = 3.0
+        @test box_derivative(stored_in_box, wrap(shared)) == 9.0
+        # The store writes a pointer into the box, and this argument leads to no
+        # mutable memory that holds a pointer. The other containers hold one in
+        # their own storage, where libEnzyme's flag of the operand counts the box
+        # as possibly the same object.
+        if pointer_precise && name in pointer_free_containers
+            @test !ROW_FLAGS[][2]
+        end
+    end
+
+    @testset "A pointer stored after the call replaces what the rule read, $(nameof(caller))" for (caller, wrap) in (
+            replaced_in_ref => v -> Ref(v),
+            replaced_field => MutableWrapped,
+            replaced_row => v -> [v],
+            replaced_in_box => v -> Boxed(Ref(v)),
+            replaced_row_of => v -> Rows([v]),
+        )
+        shared[1] = 3.0
+        @test row_derivative(caller, wrap(shared)) == 9.0
+        @test ROW_FLAGS[][2]
+    end
+
+    if isdefined(Enzyme.Compiler, :reaches_mutable_pointers)
+        @testset "Which argument types lead to mutable memory that holds a pointer" begin
+            reaches = Enzyme.Compiler.reaches_mutable_memory
+            pointers = Enzyme.Compiler.reaches_mutable_pointers
+            never = (
+                Float64, Vector{Float64}, Matrix{Int}, Tuple{Float64, Int},
+                Base.RefValue{Float64}, UnitRange{Int}, Vector{Union{Missing, Float64}},
+                Vector{String}, Chain, Tagged{Float64}, Holder,
+            )
+            # The array behind the argument holds numbers. Before Julia 1.11 only
+            # runtime calls write its header; from 1.11 its `ref` field is a pointer.
+            arrays = (
+                Wrapped, MutableWrapped, Outer, Labelled, Scale,
+                Tuple{Vector{Float64}, Int}, @NamedTuple{values::Vector{Float64}},
+                Base.RefValue{Vector{Float64}}, Vector{Vector{Float64}}, Vector{Wrapped},
+                typeof(view([1.0], 1:1)), typeof([1.0]'), Symmetric{Float64, Matrix{Float64}},
+            )
+            always = (
+                Boxed, Rows, Named, Vector{Any}, Vector{Vector{String}},
+                Dict{Symbol, Float64}, Ptr{Float64}, Tuple{Ptr{Float64}, Int}, Any,
+                AbstractVector{Float64},
+            )
+            for T in never
+                @test !pointers(T)
+            end
+            for T in arrays
+                @test pointers(T) == (VERSION >= v"1.11-")
+            end
+            for T in always
+                @test pointers(T)
+            end
+            # What stores of pointers can change, a write of any kind can change.
+            for T in (never..., arrays..., always...)
+                @test !pointers(T) || reaches(T)
+            end
+        end
     end
 
     @testset "det of a view whose parent is written afterwards" begin

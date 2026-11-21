@@ -1,0 +1,3 @@
+summary = "Stores of pointers alone after a custom rule's call leave its overwritten flag false for an argument whose reachable mutable memory holds no pointers"
+libenzyme_build = "05ce259ccbc1f40097351cdb7e7528dea722a303"
+tests = ["test/rules/overwritten_references.jl"]
