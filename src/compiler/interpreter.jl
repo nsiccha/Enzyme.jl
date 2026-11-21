@@ -1657,7 +1657,10 @@ function enzyme_abstract_call_known(
     end
     if interp.broadcast_rewrite && f === Base.materialize && length(argtypes) == 2
         bcty = widenconst(argtypes[2])
-        if Base.isconcretetype(bcty) && bcty <: Base.Broadcast.Broadcasted{<:Base.Broadcast.DefaultArrayStyle, Nothing} && bc_or_array_or_number_ty(bcty) && has_array(bcty)
+        # Base materializes a rank-zero broadcast as its scalar element.
+        if Base.isconcretetype(bcty) && bcty <: Base.Broadcast.Broadcasted{<:Base.Broadcast.DefaultArrayStyle, Nothing} &&
+                !(bcty <: Base.Broadcast.Broadcasted{Base.Broadcast.DefaultArrayStyle{0}}) &&
+                bc_or_array_or_number_ty(bcty) && has_array(bcty)
             ElType = ty_broadcast_getindex_eltype((; interp, sv, max_methods), bcty)
             if VERSION < v"1.12"
                 if ElType !== Union{} && Base.isconcretetype(ElType)
