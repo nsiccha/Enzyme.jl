@@ -837,6 +837,159 @@ function lazy_lookup_callee_type(inst::LLVM.Instruction)
     return nothing
 end
 
+# The name of the function that stands for the symbol `fname` behind the call-site slot `slot`.
+runtime_lookup_stub_name(slot::LLVM.GlobalVariable, fname::String) = "ejlrt\$" * fname * "\$" * slot.name
+
+"""
+    runtime_lookup_stub!(mod, slot, address_type, fname, FT, cc) -> LLVM.Function
+
+The function that stands for the native symbol `fname` behind the call-site slot `slot`: its
+body loads the address the lazy lookup stored there and calls it with its own arguments, in the
+calling convention `cc`. It carries the symbol's name (`enzyme_math`), is not inlined before
+differentiation, and keeps its signature.
+"""
+function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, address_type::LLVM.LLVMType, fname::String, FT::LLVM.FunctionType, cc)::LLVM.Function
+    name = runtime_lookup_stub_name(slot, fname)
+    funcs = mod.functions
+    haskey(funcs, name) && return funcs[name]
+    stub = LLVM.Function(mod, name, FT)
+    stub.linkage = LLVM.Linkage.Internal
+    stub.callconv = cc
+    attributes = stub.function_attributes
+    push!(attributes, StringAttribute("enzyme_math", fname))
+    push!(attributes, StringAttribute(PRESERVEPRIMAL_ATTR_KIND, "*"))
+    push!(attributes, EnumAttribute(:noinline))
+    builder = IRBuilder()
+    position!(builder, LLVM.at_end(BasicBlock(stub, "entry")))
+    # Imported call sites can store their pointer in a rooted Julia value. The
+    # lookup determines the loaded type even if the slot has an opaque body.
+    location = bitcast!(builder, slot, LLVM.PointerType(address_type, slot.value_type.addrspace))
+    address = load!(builder, address_type, location)
+    address.ordering = LLVM.AtomicOrdering.Unordered
+    callee = address
+    T_callee = LLVM.PointerType(FT)
+    if callee.value_type != T_callee
+        callee = bitcast!(builder, callee, T_callee)
+    end
+    result = call!(builder, FT, callee, LLVM.Value[p for p in stub.parameters])
+    result.callconv = cc
+    if FT.return_type == LLVM.VoidType()
+        ret!(builder)
+    else
+        ret!(builder, result)
+    end
+    return stub
+end
+
+# Typed LLVM pointers may view a symbol address both as a generic function
+# pointer and as the function pointer in the indirect call's signature.
+function collect_runtime_lookup_accesses!(accesses::Vector{LLVM.Instruction}, location::LLVM.Value)
+    for user in location.users
+        if user isa LLVM.LoadInst || (user isa LLVM.StoreInst && user.operands[2] == location && user.operands[1] != location)
+            push!(accesses, user)
+        elseif user isa LLVM.ConstantExpr && user.opcode == LLVM.Opcode.BitCast
+            collect_runtime_lookup_accesses!(accesses, user) || return false
+        else
+            return false
+        end
+    end
+    return true
+end
+
+# Keep a host call site's runtime address with its compiled thunk. The table of Julia
+# values referenced by a thunk is shared with every compilation importing its bitcode.
+function share_runtime_lookup_caches!(mod::LLVM.Module, enzyme_ctx::EnzymeContext)
+    for slot in collect(mod.globals)
+        haskey(slot.metadata, "enzymejl_ccall_cache") || continue
+        slot.initializer isa LLVM.PointerNull || continue
+        accesses = LLVM.Instruction[]
+        collect_runtime_lookup_accesses!(accesses, slot) || continue
+        isempty(accesses) && continue
+        @dispose builder = IRBuilder() begin
+            position!(builder, LLVM.before(first(accesses)))
+            cell = unsafe_to_llvm(builder, Ref{Ptr{Cvoid}}(C_NULL); insert_name_if_not_exists = "ccall_cache", enzyme_ctx)
+            for access in accesses
+                index = access isa LLVM.LoadInst ? 1 : 2
+                element_type = access isa LLVM.LoadInst ? access.value_type : access.operands[1].value_type
+                access.operands[index] = LLVM.const_bitcast(cell, LLVM.PointerType(element_type, Tracked))
+            end
+        end
+        LLVM.remove_dead_constant_users!(slot)
+        erase!(slot)
+    end
+    return nothing
+end
+
+"""
+    outline_runtime_lookup_calls!(mod, inst, fname)
+
+The lazy lookup `inst` of the symbol `fname` keeps a library that is a run-time value: an
+expression Julia 1.12 and earlier evaluate the first time the call runs. The code stores the
+address it finds in a slot of the call site and calls through that slot from then on.
+
+Each call through the address becomes a call of a function named for the symbol
+([`runtime_lookup_stub!`](@ref)), which makes the same call through the slot. A derivative rule
+Enzyme has for `fname` then applies as it does for a library known when the derivative is
+compiled, where an indirect call through a looked-up address has no name to go by. The slot
+holds the address of native code and no derivative data (`enzyme_inactive`), so a call that
+stays indirect is reported as one without a derivative (`EnzymeNoDerivativeError`) if it
+carries derivative data.
+
+"""
+function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fname::String)
+    slot = nothing
+    for u in inst.uses
+        st = u.user
+        isa(st, LLVM.StoreInst) || continue
+        LLVM.Value(LLVM.API.LLVMGetOperand(st, 0)) == inst || continue
+        dest = LLVM.Value(LLVM.API.LLVMGetOperand(st, 1))
+        if isa(dest, LLVM.GlobalVariable)
+            slot = dest
+            break
+        end
+    end
+    slot === nothing && return nothing
+    slot.metadata["enzyme_inactive"] = LLVM.MDNode(LLVM.Metadata[])
+    @static if VERSION < v"1.13-"
+        slot.metadata["enzymejl_ccall_cache"] = LLVM.MDNode(LLVM.Metadata[])
+    end
+    # BLAS differentiation may require other routines from the selected library.
+    FFI.BLASSupport.lookup_blas_symbol(fname) === nothing || return nothing
+
+    # The calls through the address: of the lookup's result or of a load of the slot, which
+    # reach the call through phis and casts. The slot may already have its function, from
+    # another copy of the call site in the module; the load in that function's body is the one
+    # call that must stay a call through the address.
+    stub_name = runtime_lookup_stub_name(slot, fname)
+    through = LLVM.CallInst[]
+    seen = Set{LLVM.Value}()
+    worklist = LLVM.Value[inst]
+    for u in slot.uses
+        ld = u.user
+        isa(ld, LLVM.LoadInst) || continue
+        ld.parent.parent.name == stub_name && continue
+        push!(worklist, ld)
+    end
+    while !isempty(worklist)
+        v = pop!(worklist)
+        v in seen && continue
+        push!(seen, v)
+        for u in v.uses
+            user = u.user
+            if isa(user, LLVM.CallInst)
+                user.called_operand == v && push!(through, user)
+            elseif isa(user, LLVM.PHIInst) || isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst)
+                push!(worklist, user)
+            end
+        end
+    end
+    for call in through
+        stub = runtime_lookup_stub!(mod, slot, inst.value_type, fname, call.called_type, call.callconv)
+        call.called_operand = stub
+    end
+    return nothing
+end
+
 function try_import_llvmbc(mod::LLVM.Module, flib::String, fname::String, imported::Set{String})
     found = false
     inmod = nothing
@@ -1395,6 +1548,8 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
                     end
                     replace_uses!(inst, replacement)
                     erase!(inst)
+                elseif flib isa LLVM.Value
+                    outline_runtime_lookup_calls!(mod, inst, fname)
                 end
             end
         elseif fn == "julia.call" || fn == "julia.call2"

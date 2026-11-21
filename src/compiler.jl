@@ -7455,6 +7455,9 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     # definitions: its JITDylib does not resolve the names that this thunk defines.
     # Device modules keep theirs: GPUCompiler binds its relocation records to them by name.
     if !device_module
+        @static if VERSION < v"1.13-"
+            share_runtime_lookup_caches!(mod, enzyme_ctx)
+        end
         for gv in mod.globals
             isdeclaration(gv) && continue
             gv.linkage in (LLVM.API.LLVMInternalLinkage, LLVM.API.LLVMPrivateLinkage) && continue

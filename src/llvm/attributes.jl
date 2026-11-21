@@ -250,6 +250,8 @@ const nofreefns = Set{String}(
 
 const inactivefns = Set{String}(
     (
+        "jl_lazy_load_and_lookup",
+        "ijl_lazy_load_and_lookup",
         "jl_f__compute_sparams",
         "ijl_f__compute_sparams",
 
