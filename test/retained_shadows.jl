@@ -360,6 +360,27 @@ end
         @test all(==(2), base)
     end
 
+    @testset "The derivative calls the reuse helper without run-time dispatch" begin
+        for T in (Float32, Float64)
+            args = retained_fixture(16, T)
+            retained_gradient!(args...)
+            report = Enzyme.derivative_report(() -> retained_gradient!(args...))
+            ds = [d for d in report.derivatives if d.func === typeof(retained_view)]
+            @test length(ds) == 1
+            d = only(ds)
+            @test d.findings !== nothing
+            dynamic = [
+                f for f in something(d.findings, Enzyme.Compiler.DerivativeFinding[])
+                    if !f.throw_only && f.kind in (:dynamic_dispatch, :enzyme_runtime_fallback, :box)
+            ]
+            @test isempty(dynamic)
+            # The reuse still happens.
+            sink = sink_of(args[5])
+            retained_gradient!(args...)
+            @test sink_of(args[5]) === sink
+        end
+    end
+
     @testset "Registry of allocated copies" begin
         sinks = Enzyme.Compiler.RETAINED_SINKS
         x = zeros(3)

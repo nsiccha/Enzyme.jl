@@ -1,0 +1,2 @@
+summary = "Reverse calls the zero-shadow helpers of a reused constant array and of a constant mutable object directly, without run-time dispatch"
+tests = ["test/retained_shadows.jl", "test/derivative_report.jl"]
