@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- On Julia 1.10, Forward and Reverse derivatives of `copyto!(dest, Hermitian(B))`
+  for a `Matrix{ComplexF32}` work. They stopped with `cannot handle unknown
+  binary operator: shl` (Forward) or `Cannot deduce adding type (cast)`
+  (Reverse). Julia 1.10 copies each `ComplexF32` as one `i64`, unpacking the
+  upper float with a shift and packing the halves again with `zext`, `shl` and
+  `or`. libEnzyme's type analysis typed the shifted half as unknown, so the
+  rules for packed floats did not apply. A shift of an integer holding only
+  floats by a whole number of floats, and a disjoint `or` of two such
+  integers, now keep the float type. The repair is in libEnzyme (build
+  `e5c08438`) and is available as
+  `Enzyme.has_dogfood_repair(:packed_float_lanes)`.
 - On Julia 1.12, the second derivative of a call such as
   `ccall((:cos, library()), Float64, (Float64,), x)` works on the first call
   when `library()` returns a constant library name. The first and second
