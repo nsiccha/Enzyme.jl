@@ -358,6 +358,10 @@ end
 struct Boxed
     box::Base.RefValue{Vector{Float64}}
 end
+struct IndexedWeights
+    values::Vector{Float64}
+    index::Dict{Tuple{Float64, Float64}, Int32}
+end
 struct Rows
     rows::Vector{Vector{Float64}}
 end
@@ -367,6 +371,7 @@ end
 struct Named
     name::Name
 end
+data(g::IndexedWeights) = g.values
 data(g::Boxed) = g.box[]
 data(g::Rows) = g.rows[1]
 
@@ -558,6 +563,28 @@ end
         if pointer_precise && name in pointer_free_containers
             @test !ROW_FLAGS[][2]
         end
+    end
+
+    @testset "A later store to a Ref outside a dictionary-backed argument" begin
+        g = IndexedWeights([3.0], Dict((1.0, 2.0) => Int32(1)))
+        @test box_derivative(stored_in_box, g) == 9.0
+        if isdefined(Enzyme, :has_dogfood_repair) && Enzyme.has_dogfood_repair(:later_store_targets)
+            @test !ROW_FLAGS[][2]
+            @test box_derivative(stored_in_box, Wrapped([3.0])) == 9.0
+            @test !ROW_FLAGS[][2]
+        end
+    end
+
+    @testset "The same Ref reaches the rule and the later store" begin
+        box = Ref([3.0])
+        ROW_FLAGS[] = nothing
+        result = Enzyme.autodiff(
+            Reverse, Const(stored_in_box), Active, Duplicated(box, Ref([0.0])),
+            Const(Boxed(box)), Active(2.0),
+        )
+        @test box[][1] == 6.0
+        @test result[1][end] == 9.0
+        @test ROW_FLAGS[][2]
     end
 
     @testset "A pointer stored after the call replaces what the rule read, $(nameof(caller))" for (caller, wrap) in (
