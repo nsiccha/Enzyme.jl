@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Forward mode through complex BLAS and LAPACK calls gives the right tangent.
+  libEnzyme wrote every constant of its BLAS rules as `v + v*im` for a complex
+  routine, so with two or more active arguments the Forward rules of `gemv`,
+  `gemm`, `symv`, `symm` and `syrk` multiplied every tangent term but the first
+  by `1 + im`: Forward of `A * x` with `A` and `x` active returned
+  `dA * x + (1 + im) * A * dx`, without an error. The constants are now
+  `(v, 0)`. The Forward rule of `potrf` also takes the conjugate transpose and
+  conjugates the triangle it copies, and drops the imaginary part of the
+  diagonal, which `zpotrf` never reads. Real routines are unchanged. The native
+  repair is available as `Enzyme.has_dogfood_repair(:complex_forward_blas)`.
 - On Julia 1.12, the second derivative of a call such as
   `ccall((:cos, library()), Float64, (Float64,), x)` works on the first call
   when `library()` returns a constant library name. The first and second
