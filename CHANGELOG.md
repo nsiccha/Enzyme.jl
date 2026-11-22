@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- On Julia 1.12, the second derivative of a call such as
+  `ccall((:cos, library()), Float64, (Float64,), x)` works on the first call
+  when `library()` returns a constant library name. The first and second
+  derivatives share the call site's resolved address whichever runs first, so
+  taking the second derivative does not evaluate the library expression again.
+- Merge upstream support for Julia 1.14 rule lookup and JIT modules, and its
+  fixes for deferred derivatives and cached thunk imports. The in-tree
+  EnzymeCore is now 0.8.29. Enzyme requires LLVM.jl 10.5.2 or newer on the
+  10.x line, and GPUCompiler 2.23 or newer on the 2.x line.
 - Reverse gradients make a few native allocations per call where they made one
   `malloc` and one `free` per cached value. The non-inlined calls a combined
   Reverse derivative makes inside loops reserve their loop caches of numbers

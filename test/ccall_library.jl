@@ -16,6 +16,16 @@ module CcallLibraries
         const constant = Base.libm_name
     end
     name() = Base.libm_name
+    const warm_calls = Ref(0)
+    const cold_calls = Ref(0)
+    function warm_name()
+        warm_calls[] += 1
+        return Base.libm_name
+    end
+    function cold_name()
+        cold_calls[] += 1
+        return Base.libm_name
+    end
     lapack() = LinearAlgebra.BLAS.libblastrampoline
     const dot_library = Ref("")
     dot_provider() = dot_library[]
@@ -69,6 +79,8 @@ const lapack_spellings = Pair{Symbol, Any}[
 
 @static if VERSION < v"1.13-"
     cos_computed(x) = ccall((:cos, CcallLibraries.name()), Float64, (Float64,), x)
+    cold_cos_computed(x) = ccall((:cos, CcallLibraries.cold_name()), Float64, (Float64,), x)
+    warm_cos_computed(x) = ccall((:cos, CcallLibraries.warm_name()), Float64, (Float64,), x)
     scaled_by_computed(x) = x * ccall((:cos, CcallLibraries.name()), Float64, (Float64,), 2.0)
     function remquo_computed(x)
         quotient = Ref{Cint}(0)
@@ -142,6 +154,23 @@ reverse_derivative(f, x) = autodiff(Reverse, f, Active, Active(x))[1][1]
 
 @testset "ccall libraries" begin
     x = 0.3
+    @static if VERSION < v"1.13-"
+        @testset "Imported derivatives share a computed library lookup" begin
+            @test CcallLibraries.warm_calls[] == CcallLibraries.cold_calls[] == 0
+            @test reverse_derivative(warm_cos_computed, x) ≈ -sin(x)
+            @test CcallLibraries.warm_calls[] == 1
+            for _ in 1:2
+                @test only(autodiff(Forward, reverse_derivative, Const(warm_cos_computed), Duplicated(x, 1.0))) ≈ -cos(x)
+                @test CcallLibraries.warm_calls[] == 1
+            end
+
+            # The outer derivative can also be the first user of the call site.
+            @test only(autodiff(Forward, reverse_derivative, Const(cold_cos_computed), Duplicated(x, 1.0))) ≈ -cos(x)
+            @test CcallLibraries.cold_calls[] == 1
+            @test reverse_derivative(cold_cos_computed, x) ≈ -sin(x)
+            @test CcallLibraries.cold_calls[] == 1
+        end
+    end
     @testset "$f" for f in scalar_libraries
         @test f(x) ≈ cos(x)
         @test autodiff(Reverse, f, Active, Active(x))[1][1] ≈ -sin(x)

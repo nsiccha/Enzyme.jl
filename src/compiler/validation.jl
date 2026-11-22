@@ -951,14 +951,14 @@ end
 runtime_lookup_stub_name(slot::LLVM.GlobalVariable, fname::String) = "ejlrt\$" * fname * "\$" * slot.name
 
 """
-    runtime_lookup_stub!(mod, slot, fname, FT, cc) -> LLVM.Function
+    runtime_lookup_stub!(mod, slot, address_type, fname, FT, cc) -> LLVM.Function
 
 The function that stands for the native symbol `fname` behind the call-site slot `slot`: its
 body loads the address the lazy lookup stored there and calls it with its own arguments, in the
 calling convention `cc`. It carries the symbol's name (`enzyme_math`), is not inlined before
 differentiation, and keeps its signature.
 """
-function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname::String, FT::LLVM.FunctionType, cc)::LLVM.Function
+function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, address_type::LLVM.LLVMType, fname::String, FT::LLVM.FunctionType, cc)::LLVM.Function
     name = runtime_lookup_stub_name(slot, fname)
     funcs = mod.functions
     haskey(funcs, name) && return funcs[name]
@@ -971,7 +971,10 @@ function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname
     push!(attributes, EnumAttribute(:noinline))
     builder = IRBuilder()
     position!(builder, LLVM.at_end(BasicBlock(stub, "entry")))
-    address = load!(builder, slot.global_value_type, slot)
+    # Imported call sites can store their pointer in a rooted Julia value. The
+    # lookup determines the loaded type even if the slot has an opaque body.
+    location = bitcast!(builder, slot, LLVM.PointerType(address_type, slot.value_type.addrspace))
+    address = load!(builder, address_type, location)
     address.ordering = LLVM.AtomicOrdering.Unordered
     callee = address
     T_callee = LLVM.PointerType(FT)
@@ -986,6 +989,45 @@ function runtime_lookup_stub!(mod::LLVM.Module, slot::LLVM.GlobalVariable, fname
         ret!(builder, result)
     end
     return stub
+end
+
+# Typed LLVM pointers may view a symbol address both as a generic function
+# pointer and as the function pointer in the indirect call's signature.
+function collect_runtime_lookup_accesses!(accesses::Vector{LLVM.Instruction}, location::LLVM.Value)
+    for user in location.users
+        if user isa LLVM.LoadInst || (user isa LLVM.StoreInst && user.operands[2] == location && user.operands[1] != location)
+            push!(accesses, user)
+        elseif user isa LLVM.ConstantExpr && user.opcode == LLVM.Opcode.BitCast
+            collect_runtime_lookup_accesses!(accesses, user) || return false
+        else
+            return false
+        end
+    end
+    return true
+end
+
+# Keep a host call site's runtime address with its compiled thunk. The table of Julia
+# values referenced by a thunk is shared with every compilation importing its bitcode.
+function share_runtime_lookup_caches!(mod::LLVM.Module, enzyme_ctx::EnzymeContext)
+    for slot in collect(mod.globals)
+        haskey(slot.metadata, "enzymejl_ccall_cache") || continue
+        slot.initializer isa LLVM.PointerNull || continue
+        accesses = LLVM.Instruction[]
+        collect_runtime_lookup_accesses!(accesses, slot) || continue
+        isempty(accesses) && continue
+        @dispose builder = IRBuilder() begin
+            position!(builder, LLVM.before(first(accesses)))
+            cell = unsafe_to_llvm(builder, Ref{Ptr{Cvoid}}(C_NULL); insert_name_if_not_exists = "ccall_cache", enzyme_ctx)
+            for access in accesses
+                index = access isa LLVM.LoadInst ? 1 : 2
+                element_type = access isa LLVM.LoadInst ? access.value_type : access.operands[1].value_type
+                access.operands[index] = LLVM.const_bitcast(cell, LLVM.PointerType(element_type, Tracked))
+            end
+        end
+        LLVM.remove_dead_constant_users!(slot)
+        erase!(slot)
+    end
+    return nothing
 end
 
 """
@@ -1020,6 +1062,9 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
     end
     slot === nothing && return nothing
     slot.metadata["enzyme_inactive"] = LLVM.MDNode(LLVM.Metadata[])
+    @static if VERSION < v"1.13-"
+        slot.metadata["enzymejl_ccall_cache"] = LLVM.MDNode(LLVM.Metadata[])
+    end
     blas = API.supports_blas_library_call(fname)
     # Older builds leave a computed BLAS call behind its inactive pointer.
     if blas === nothing && FFI.BLASSupport.lookup_blas_symbol(fname) !== nothing
@@ -1055,7 +1100,7 @@ function outline_runtime_lookup_calls!(mod::LLVM.Module, inst::LLVM.CallInst, fn
     end
     if blas !== true
         for call in through
-            stub = runtime_lookup_stub!(mod, slot, fname, call.called_type, call.callconv)
+            stub = runtime_lookup_stub!(mod, slot, inst.value_type, fname, call.called_type, call.callconv)
             call.called_operand = stub
         end
         return nothing
@@ -1318,7 +1363,10 @@ function import_cached_autodiff!(mod::LLVM.Module, ptr::Ptr{Cvoid}, FT::LLVM.Fun
         cached = in_calling_world(cached_autodiff_without_tape_arena, cached, several_threads)::CachedThunk
     end
     enzyme_ctx.by_threads |= cached.by_threads
-    pname = cached.entry
+    # Add the address of the thunk to the name of the entry. Two thunks can have the same
+    # entry name: each thunk has its own JITDylib, and Julia's codegen gives names that are
+    # unique only in one module (JuliaLang/julia#60031).
+    pname = cached.entry * "_" * string(convert(UInt, ptr); base = 62)
 
     if haskey(enzyme_ctx.imported_thunks, ptr)
         if haskey(mod.functions, pname)
@@ -1333,7 +1381,8 @@ function import_cached_autodiff!(mod::LLVM.Module, ptr::Ptr{Cvoid}, FT::LLVM.Fun
 
     @assert !haskey(mod.functions, pname) || isdeclaration(mod.functions[pname])
     pmod = parse(LLVM.Module, unsafe_wrap(Vector{UInt8}, cached.bitcode))
-    @assert haskey(pmod.functions, pname)
+    @assert haskey(pmod.functions, cached.entry)
+    LLVM.name!(pmod.functions[cached.entry], pname)
 
     # Everything the blob carries besides the entry is internal, so that a
     # second blob carrying the same Julia function does not collide with it.
@@ -1343,9 +1392,12 @@ function import_cached_autodiff!(mod::LLVM.Module, ptr::Ptr{Cvoid}, FT::LLVM.Fun
         end
     end
 
+    # Make the globals that the blob defines internal too, and keep their initializers. The
+    # JITDylib of this compilation does not resolve the definitions in the JITDylib of the
+    # thunk.
     for glob in pmod.globals
-        if glob.linkage == LLVM.Linkage.External
-            glob.initializer = nothing
+        if !isdeclaration(glob) && glob.linkage == LLVM.Linkage.External
+            glob.linkage = LLVM.Linkage.Internal
         end
     end
 
@@ -1866,7 +1918,10 @@ function check_ir!(interp, @nospecialize(job::CompilerJob), errors::Vector{IRErr
                     ptr,
                     inst.called_type,
                 )
-                replace_uses!(ptr_arg, LLVM.const_pointercast(replaceWith, ptr_arg.value_type))
+                # `ptr_arg` is constant data, which has no use list (RAUW on it
+                # asserts on LLVM 21+); retarget this call instead. With typed
+                # pointers the imported entry's type can differ from the call's.
+                inst.called_operand = LLVM.const_pointercast(replaceWith, LLVM.value_type(dest))
                 return errors
             end
 

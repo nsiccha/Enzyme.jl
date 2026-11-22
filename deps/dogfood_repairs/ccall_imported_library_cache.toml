@@ -1,0 +1,2 @@
+summary = "A derivative and its imported code share the same resolved address for a computed ccall library on Julia versions that support library expressions"
+tests = ["test/ccall_library.jl"]

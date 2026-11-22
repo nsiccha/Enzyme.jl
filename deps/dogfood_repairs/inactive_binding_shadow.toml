@@ -1,0 +1,2 @@
+summary = "Forward-over-reverse differentiation can carry an inactive constant binding through a boxed tuple, including a computed library name on Julia 1.12"
+tests = ["test/ccall_library.jl", "test/passes.jl"]

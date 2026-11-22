@@ -205,6 +205,51 @@ end
     end
 end
 
+@static if isdefined(Base, :lookup_binding_partition)
+    @testset "activity of a boxed constant binding" begin
+        fixture = Module(:BindingShadowFixture)
+        Core.eval(fixture, :(const constant = "first"))
+        Core.eval(fixture, :(variable = "first"))
+        world = Base.get_world_counter()
+        constant = convert(Core.Binding, GlobalRef(fixture, :constant))
+        variable = convert(Core.Binding, GlobalRef(fixture, :variable))
+        LLVM.Context() do llvmctx
+            mod = parse(
+                LLVM.Module, """
+                @cell = external global ptr
+                declare ptr addrspace(10) @jl_get_binding_value_seqcst(ptr)
+                define ptr addrspace(10) @read_cell() {
+                    %addr = load ptr, ptr @cell
+                    %value = call ptr addrspace(10) @jl_get_binding_value_seqcst(ptr %addr)
+                    ret ptr addrspace(10) %value
+                }
+                """
+            )
+            _, read, _ = collect(only(mod.functions["read_cell"].blocks).instructions)
+            ctx = Enzyme.Compiler.EnzymeContext(world)
+            @test !Enzyme.Compiler.inactive_binding_load(read, ctx)
+            ctx.julia_values["cell"] = variable
+            @test !Enzyme.Compiler.inactive_binding_load(read, ctx)
+            @test isempty(ctx.edges)
+            ctx.julia_values["cell"] = constant
+            @test Enzyme.Compiler.inactive_binding_load(read, ctx)
+            @test ctx.edges == Any[constant]
+            validity = Enzyme.Compiler.track_validity(ctx.edges)
+            @test validity isa Core.CodeInstance
+            @test validity.max_world == typemax(UInt)
+
+            Core.eval(fixture, :(const constant = Ref(1.0)))
+            new_world = Base.get_world_counter()
+            @test validity.max_world < new_world
+            new_ctx = Enzyme.Compiler.EnzymeContext(new_world)
+            new_ctx.julia_values["cell"] = constant
+            @test !Enzyme.Compiler.inactive_binding_load(read, new_ctx)
+            @test isempty(new_ctx.edges)
+            @test Enzyme.Compiler.inactive_binding_load(read, ctx)
+        end
+    end
+end
+
 @testset "import_cached_autodiff!" begin
     LLVM.Context() do ctx
         # A cached thunk's bitcode carries the Julia functions it calls. Two
@@ -229,11 +274,16 @@ end
         LLVM.dispose(buf)
 
         ptr = reinterpret(Ptr{Cvoid}, UInt(0x2788))
-        # The synthetic thunk has the same body for every thread count.
+        # A second thunk with the same entry name (JuliaLang/julia#60031).
+        other_ptr = reinterpret(Ptr{Cvoid}, UInt(0x4078))
+        # The synthetic thunks have the same body for every thread count.
         job = Enzyme.Compiler.get_job(identity, Const, Tuple{Const{Int64}})
-        Enzyme.Compiler.autodiff_cache[ptr] = Enzyme.Compiler.CachedThunk(
-            "thunk", bitcode, Enzyme.Compiler.JuliaValueTable(), job, false, Nothing, false, Ref{Any}(nothing),
-        )
+        for key in (ptr, other_ptr)
+            Enzyme.Compiler.autodiff_cache[key] = Enzyme.Compiler.CachedThunk(
+                "thunk", bitcode, Enzyme.Compiler.JuliaValueTable(), job, false, Nothing, false, Ref{Any}(nothing),
+                false, Dict{Bool, Any}(),
+            )
+        end
         try
             Enzyme.@with Enzyme.Compiler.ENZYME_CONTEXT =>
                 Enzyme.Compiler.EnzymeContext(GPUCompiler.tls_world_age()) begin
@@ -253,14 +303,23 @@ end
                 # The blob is not imported a second time, so nothing it carries
                 # is defined twice.
                 @test !haskey(second_mod.functions, "julia_shared")
+                @test LLVM.name(declared) == LLVM.name(imported)
 
+                # The entry of the second thunk gets a different name.
+                other = Enzyme.Compiler.import_cached_autodiff!(first_mod, other_ptr, FT)
+                @test !LLVM.isdeclaration(other)
+                @test !LLVM.isdeclaration(imported)
+                @test LLVM.name(other) != LLVM.name(imported)
+
+                entry = LLVM.name(imported)
                 LLVM.link!(first_mod, second_mod)
                 Enzyme.Compiler.internalize_imported_thunks!(first_mod)
-                @test first_mod.functions["thunk"].linkage ==
+                @test first_mod.functions[entry].linkage ==
                     LLVM.Linkage.Internal
             end
         finally
             delete!(Enzyme.Compiler.autodiff_cache, ptr)
+            delete!(Enzyme.Compiler.autodiff_cache, other_ptr)
         end
     end
 end
