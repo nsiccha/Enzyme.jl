@@ -1,0 +1,2 @@
+summary = "A field of a Const by-value argument read at a run-time index from its stack copy, as getfield(nt, s) with a non-constant Symbol does, counts as Const data and gets a zero shadow under static activity"
+tests = ["test/boxed_union_return.jl"]

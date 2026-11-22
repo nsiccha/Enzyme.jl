@@ -2114,6 +2114,39 @@ function byref_alloca_type(inst::LLVM.AllocaInst, DL)
     return RT
 end
 
+"""
+    boxed_typetree(world, T, ctx, dl, seen)
+
+The type tree of a pointer to a boxed `T`: `typetree(T)`, which describes the object's
+contents, under a pointer level.
+"""
+function boxed_typetree(world::UInt, @nospecialize(T::Type), ctx, dl, seen::TypeTreeTable)
+    tt = copy(typetree_in_world(world, T, ctx, dl, seen))
+    merge!(tt, TypeTree(API.DT_Pointer, ctx))
+    only!(tt, -1)
+    return tt
+end
+
+"""
+    returns_boxed(RT, llRT)
+
+Whether a function whose Julia return type is `RT` returns a pointer to a box, where `llRT` is
+the first value `get_return_info(RT)` gives: `Ptr{RT}` for a concrete type that Julia boxes,
+and `Any` for a union that Julia does not split into a payload and a selector byte (no member
+is stored inline).
+
+The type tree of such a return is [`boxed_typetree`](@ref). For a union, `typetree(RT)` is the
+contents a member object has: empty for most unions, but a union whose members all match one
+`typetree_inner` method takes that method's tree. On Julia 1.10
+`Union{Vector{Float64}, Matrix{Float64}}`, which `getproperty(nt, s)` of a `NamedTuple` of a
+vector and a matrix returns, is a subtype of `Array{Float64}`, so its tree is the array header
+both members share. Given as the tree of the returned pointer itself, that header made type
+analysis abort the process ("Canonicalization failed", or "illegal insertion" in its return
+analysis).
+"""
+returns_boxed(@nospecialize(RT::Type), @nospecialize(llRT)) =
+    llRT == Ptr{RT} || (RT isa Union && llRT == Any)
+
 function set_module_types!(interp, mod::LLVM.Module, primalf::Union{Nothing, LLVM.Function}, job, edges, run_enzyme, mode::API.CDerivativeMode, enzyme_ctx::EnzymeContext)::Tuple{Dict{String, LLVM.Linkage.T}, HandlerState}
     # One memo table for the whole module: the argument and return types of
     # its functions overlap heavily (the same model / array types recur in
@@ -2267,11 +2300,8 @@ function set_module_types!(interp, mod::LLVM.Module, primalf::Union{Nothing, LLV
             if llRT !== nothing &&
                     f.function_type.return_type != LLVM.VoidType()
                 @assert !retRemoved
-                rest = if llRT == Ptr{RT}
-                    typeTree = copy(typetree_in_world(world, RT, ctx, dl, seen))
-                    merge!(typeTree, TypeTree(API.DT_Pointer, ctx))
-                    only!(typeTree, -1)
-                    typeTree
+                rest = if returns_boxed(RT, llRT)
+                    boxed_typetree(world, RT, ctx, dl, seen)
                 else
                     typetree_in_world(world, RT, ctx, dl)
                 end
@@ -3861,13 +3891,20 @@ function enzyme!(
 
         TA = TypeAnalysis(logic)
 
-        retTT = if !isa(actualRetType, Union) &&
-                actualRetType <: Tuple &&
-                in(Any, actualRetType.parameters)
+        retTT = if isa(actualRetType, Union)
+            # A union returned as a tracked pointer points to a box (`returns_boxed`),
+            # including the one `lower_convention` makes of a split union.
+            llvm_ret = LLVM.return_type(LLVM.function_type(primalf))
+            if llvm_ret isa LLVM.PointerType && LLVM.addrspace(llvm_ret) == Tracked
+                boxed_typetree(job.world, actualRetType, ctx, dl, seen)
+            else
+                typetree_in_world(job.world, actualRetType, ctx, dl, seen)
+            end
+        elseif actualRetType <: Tuple && in(Any, actualRetType.parameters)
             TypeTree()
         else
             typeTree = typetree_in_world(job.world, actualRetType, ctx, dl, seen)
-            if !isa(actualRetType, Union) && GPUCompiler.deserves_retbox(actualRetType)
+            if GPUCompiler.deserves_retbox(actualRetType)
                 typeTree = copy(typeTree)
                 merge!(typeTree, TypeTree(API.DT_Pointer, ctx))
                 only!(typeTree, -1)
@@ -6342,7 +6379,8 @@ function lower_convention(
                 position!(builder, LLVM.at_end(def))
                 ret!(builder, extract_value!(builder, res, 0))
 
-                ret_tt0 = typetree_in_world(world, actualRetType, ctx, dl, seen)
+                # The wrapper returns the union boxed.
+                ret_tt0 = boxed_typetree(world, actualRetType, ctx, dl, seen)
 
                 push!(
                     wrapper_f.return_attributes,
@@ -6471,14 +6509,10 @@ function lower_convention(
                 unreachable!(builder)
             else
                 llactualRetType = get_return_info(actualRetType)[1]
-                ret_tt0 = typetree_in_world(world, actualRetType, ctx, dl, seen)
-                ret_tt = if llactualRetType == Ptr{actualRetType}
-                    typeTree = copy(ret_tt0)
-                    merge!(typeTree, TypeTree(API.DT_Pointer, ctx))
-                    only!(typeTree, -1)
-                    typeTree
+                ret_tt = if returns_boxed(actualRetType, llactualRetType)
+                    boxed_typetree(world, actualRetType, ctx, dl, seen)
                 else
-                    ret_tt0
+                    typetree_in_world(world, actualRetType, ctx, dl, seen)
                 end
 
                 push!(
