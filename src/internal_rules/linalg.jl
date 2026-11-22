@@ -416,6 +416,62 @@ function _lapack_shadow(A::Annotation, b, N)
     return dA === A.val ? nothing : dA
 end
 
+# Newer LinearAlgebra versions use lacpy! to copy the stored triangle of a
+# Hermitian matrix before factoring it. Each copied element overwrites B.
+@static if isdefined(LinearAlgebra.LAPACK, :lacpy!)
+    function EnzymeRules.augmented_primal(
+            config::EnzymeRules.RevConfig,
+            func::Const{typeof(LinearAlgebra.LAPACK.lacpy!)},
+            ::Type{RT},
+            B::Annotation{<:StridedMatrix{T}},
+            A::Annotation{<:StridedMatrix{T}},
+            uplo::Const{<:AbstractChar},
+        ) where {RT, T <: LinearAlgebra.BlasComplex}
+        result = func.val(B.val, A.val, uplo.val)
+        primal = EnzymeRules.needs_primal(config) ? result : nothing
+        shadow = if !EnzymeRules.needs_shadow(config)
+            nothing
+        elseif B isa Const
+            EnzymeRules.width(config) == 1 ? result : ntuple(Returns(result), Val(EnzymeRules.width(config)))
+        else
+            B.dval
+        end
+        return EnzymeRules.AugmentedReturn(primal, shadow, nothing)
+    end
+
+    function EnzymeRules.reverse(
+            config::EnzymeRules.RevConfig,
+            ::Const{typeof(LinearAlgebra.LAPACK.lacpy!)},
+            ::Type{RT},
+            tape,
+            B::Annotation{<:StridedMatrix{T}},
+            A::Annotation{<:StridedMatrix{T}},
+            uplo::Const{<:AbstractChar},
+        ) where {RT, T <: LinearAlgebra.BlasComplex}
+        m, n = size(A.val)
+        upper = uplo.val in ('U', 'u')
+        lower = uplo.val in ('L', 'l')
+        N = EnzymeRules.width(config)
+        for b in 1:N
+            dB = _lapack_shadow(B, b, N)
+            dB === nothing && continue
+            dA = _lapack_shadow(A, b, N)
+            for j in n:-1:1
+                firstrow = lower ? j : 1
+                lastrow = upper ? min(j, m) : m
+                for i in lastrow:-1:firstrow
+                    seed = dB[i, j]
+                    dB[i, j] = zero(T)
+                    if dA !== nothing
+                        dA[i, j] += seed
+                    end
+                end
+            end
+        end
+        return (nothing, nothing, nothing)
+    end
+end
+
 # Write the pullback into the selected triangle. In lower-factor coordinates,
 # L⁻¹ dA L⁻ᴴ = L⁻¹ dL + (L⁻¹ dL)ᴴ. Its diagonal is twice the real
 # diagonal of L⁻¹ dL. Folding the reflected entries into LAPACK's single

@@ -71,3 +71,28 @@ end
     autodiff(Reverse, failed_potrf_fallback, Active, Duplicated(A, dA))
     @test dA == [0 im; 0 0]
 end
+
+@static if isdefined(LAPACK, :lacpy!)
+    function complex_lacpy_sum!(B, A, uplo)
+        out = LAPACK.lacpy!(B, A, uplo)
+        return sum(real, out) + 2 * sum(imag, out)
+    end
+
+    @testset "Complex lacpy! accumulates and clears only copied cells" begin
+        for (m, n, uplo) in ((4, 2, 'U'), (2, 4, 'L'), (3, 2, 'A')), active in (true, false)
+            # LAPACK allows an output smaller than the source when a whole
+            # row or column is outside the requested triangle.
+            mb = uplo == 'U' ? min(m, n) : m
+            nb = uplo == 'L' ? min(m, n) : n
+            A = ones(ComplexF64, m, n)
+            B = zeros(ComplexF64, mb, nb)
+            dA = fill(3.0 + 4im, size(A))
+            dB = zero(B)
+            input = active ? Duplicated(A, dA) : Const(A)
+            autodiff(Reverse, complex_lacpy_sum!, Active, Duplicated(B, dB), input, Const(uplo))
+            copied = [uplo == 'U' ? i <= j : uplo == 'L' ? i >= j : true for i in 1:m, j in 1:n]
+            @test dA == (3 + 4im) .+ (active * (1 + 2im)) .* copied
+            @test dB == (1 + 2im) .* .!copied[1:mb, 1:nb]
+        end
+    end
+end
