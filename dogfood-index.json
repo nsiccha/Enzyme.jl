@@ -3,14 +3,14 @@
   "line": {
     "repo": "nsiccha/Enzyme.jl",
     "ref": "dogfood",
-    "sha": "37b2a484727a28a78679d28a24e7071d916ca437"
+    "sha": "ebfd4a4952a809e219f2f10a1a73269d7d5cdede"
   },
   "upstream": {
     "repo": "EnzymeAD/Enzyme.jl",
     "ref": "main",
-    "sha": "1ee9a6f86e12601d4912fe45d73ec37ea745a880"
+    "sha": "5e8c14e62362994ab0bdcdcb9bc9d6428827289f"
   },
-  "prepared_at": "2026-11-21T15:38:22Z",
+  "prepared_at": "2026-11-22T13:27:40Z",
   "problems": [
     {
       "id": "nodecayed-parent-fold",
@@ -6109,6 +6109,175 @@
         }
       ],
       "validation": []
+    },
+    {
+      "id": "inactive-binding-shadow",
+      "title": "Forward-over-reverse errors on the length of a constant string returned by dynamic dispatch",
+      "role": "fix",
+      "summary": "Forward-over-reverse differentiation fails when a boxed aggregate carries a string returned by dynamic dispatch from a constant binding.",
+      "repairs": [
+        {
+          "id": "inactive_binding_shadow",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "draft": {
+        "title": "Forward-over-reverse errors on the length of a constant string returned by dynamic dispatch",
+        "body": "With Julia 1.12.7, upstream Enzyme.jl `5e8c14e6` and stock Enzyme_jll `0.0.311+0` (LLVM 18), a function that obtains a constant string by dynamic dispatch can fail on its second derivative.\n\n```julia\nusing Enzyme\n\nmodule Libraries\n    name() = Base.libm_name\n    const selected = Ref{Any}(name)\nend\n\nby_length(x) = length(Libraries.selected[]()) * x^2\ndf(f, x) = only(only(autodiff(Reverse, f, Active, Active(x))))\nd2 = only(autodiff(Forward, df, Const(by_length), Duplicated(0.7, 1.0)))\n@assert d2 ≈ 2 * length(Base.libm_name)\n```\n\nThe expected second derivative is twice the length of the string. The observed exception is `EnzymeRuntimeActivityError`. The LLVM diagnostic names an `insertvalue` that places the result of `jl_get_binding_value_seqcst` for `Base.libm_name` in a three-element aggregate. The aggregate carries the primal result, the shadow, and the reverse-mode tape. The first two elements refer to the same string.\n\nA related issue surfaced on the Enzyme.jl dogfood line when a foreign call obtained its library name from a Julia function. On Julia 1.12.7, checking the type of the constant binding while processing the returned aggregate restored the expected second derivative of cosine on both the first and repeated calls. The change registers a dependency on the binding so a redefinition can invalidate the assumption.\n\n## Comparison on stock upstream\n\nOn Linux x86-64, the example returned `22.0` after changing `src/errors.jl` on top of upstream `5e8c14e62362994ab0bdcdcb9bc9d6428827289f`. Both runs used Julia 1.12.7 and the same two native libraries from stock Enzyme_jll `0.0.311+0`. Unmodified upstream raised the activity error. A control that dispatched on the returned string and evaluated `2 * x^2` produced `4.0` on both revisions.\n\nThe proposed compiler change handles a constant binding read only when its type is guaranteed inactive in the compilation's world. It registers a binding dependency and reuses the primal value as the shadow when rebuilding the aggregate.\n\nThe single-commit review patch `f1421fec8fcd491acba499b12f91c1eb95717dd3` adds the source change and the self-contained test `test/constant_binding_shadow.jl` to stock upstream. Fresh Julia processes ran that test with forced bounds checks. The upstream process raised the activity error and the patched process passed.",
+        "prepared_at": "2026-11-21T23:02:04Z"
+      },
+      "upstream_refs": [],
+      "depends_on": [],
+      "fix": {
+        "originals": [
+          "5f7a6276c70fb854ba975522113fbd7709da57cf"
+        ],
+        "commits": [
+          {
+            "sha": "f1421fec8fcd491acba499b12f91c1eb95717dd3",
+            "title": "Reuse the inactive shadow of a constant binding in returned aggregates",
+            "original": [
+              "5f7a6276c70fb854ba975522113fbd7709da57cf"
+            ]
+          }
+        ],
+        "branch": "rebase/inactive-binding-shadow",
+        "why_together": "One commit against upstream 5e8c14e6 implements the constant-binding rule and adds the standalone regression test. It has no computed-foreign-call prerequisite."
+      },
+      "requires": [],
+      "validation": [
+        {
+          "base": "5e8c14e62362994ab0bdcdcb9bc9d6428827289f",
+          "julia": "1.12.7",
+          "bounds": "yes",
+          "native_build": "Enzyme_jll 0.0.311+0 (stock LLVM 18)",
+          "tests": [
+            "test/constant_binding_shadow.jl"
+          ],
+          "result": "passed",
+          "detail": "The identical fixture errored on stock upstream and returned the expected second derivative 22.0 with the review commit. Both native library hashes were verified."
+        }
+      ]
+    },
+    {
+      "id": "ccall-imported-library-cache",
+      "title": "Importing a derivative calls an already-resolved ccall library provider again",
+      "role": "fix",
+      "summary": "Importing a compiled derivative can evaluate its computed library expression again on Julia versions that accept an expression as the ccall library.",
+      "repairs": [
+        {
+          "id": "ccall_imported_library_cache",
+          "covers": [
+            "implementation",
+            "regression"
+          ]
+        }
+      ],
+      "draft": {
+        "title": "Importing a derivative calls an already-resolved ccall library provider again",
+        "body": "A library provider can observe how often Julia evaluates the library expression in a foreign call. On Julia 1.12.7 a compiled call site caches its resolved address. Importing that derivative into an outer differentiation can give it a second, empty cache.\n\n```julia\nusing Enzyme\n\nmodule Libraries\n    const calls = Ref(0)\n    function name()\n        calls[] += 1\n        return Base.libm_name\n    end\nend\nf(x) = ccall((:cos, Libraries.name()), Float64, (Float64,), x)\ndf(fn, x) = only(only(autodiff(Reverse, fn, Active, Active(x))))\nx = 0.7\n@assert df(f, x) ≈ -sin(x)\n@assert Libraries.calls[] == 1\n@assert only(autodiff(Forward, df, Const(f), Duplicated(x, 1.0))) ≈ -cos(x)\n@assert Libraries.calls[] == 1\n```\n\nIn the measured public dogfood control (`37b2a484`), the provider count was one after the first derivative, one after the second derivative, and one after repeating the second derivative. With the weekly merge and the separately tested correction for inactive constant bindings, the same counts were one, two, and two. Both returned `-0.7648421872844885` for the second derivative. The extra call is observable even when the library name is unchanged.\n\nThe public derivative’s LLVM IR refers to the original call-site cache. With the merge, the imported derivative defines a new global initialized to null. The comparison used Julia 1.12.7, LLVM 18 and the same native compiler built from `bfb732a1`.\n\nA tested change keeps the resolved address in the compiled derivative's Julia value table, which an outer derivative imports with the code. On Julia 1.12.7 with the same native libraries, the provider ran once when the first derivative ran first and once in a fresh call site when the second derivative ran first. Subsequent calls reused each address. The first derivative was `-0.644217687237691` and the second was `-0.7648421872844885` at `x = 0.7`. The 190 existing foreign-library assertions also passed.\n\n## Reproduction on upstream Julia 1.12.7\n\nWith stock Enzyme_jll 0.0.311+0 the module-qualified provider first needs the dynamic-module-lookup rule. After applying that prerequisite, its 76 regression assertions passed, and the computed cosine example reached `EnzymeNoDerivativeError` in `ijl_lazy_load_and_lookup`. The final patch names the scalar math call during differentiation and stores the resolved address with the compiled derivative. All 11 assertions for first and second derivatives and provider counts then passed in a fresh process with the same native files and forced bounds checks.\n\n## Julia 1.10.12\n\nLLVM 15 can read the call-site cache through a constant pointer cast. The final patch handles that form. On Julia 1.10.12 the preceding port passed eight assertions and failed three provider-count assertions. Each expected one lookup and observed two. The final port passes all 11 assertions on Julia 1.10.12 and all 11 on Julia 1.12.7.",
+        "prepared_at": "2026-11-22T00:05:44Z"
+      },
+      "upstream_refs": [],
+      "depends_on": [
+        "module-lookup",
+        "inactive-binding-shadow"
+      ],
+      "fix": {
+        "originals": [
+          "ac7b9ce5f9cfb52f4ec1769ab1c4c9ef1f985b77",
+          "af62fb548bca0250935f5b6fe1f571600efd4be9",
+          "97680cec995d328435de698d39a1176897371078",
+          "ac13e13b8c7b4b283fcf8ad342b6de48c120677d"
+        ],
+        "commits": [
+          {
+            "sha": "3a2a47bdcea2f1a320b04f991caab8930aae8a2a",
+            "title": "Share computed foreign-library addresses with imported derivatives",
+            "original": [
+              "ac7b9ce5f9cfb52f4ec1769ab1c4c9ef1f985b77",
+              "af62fb548bca0250935f5b6fe1f571600efd4be9",
+              "97680cec995d328435de698d39a1176897371078",
+              "ac13e13b8c7b4b283fcf8ad342b6de48c120677d"
+            ]
+          }
+        ],
+        "branch": "rebase/computed-library-address",
+        "why_together": "The final patch recognizes runtime-selected scalar math calls and shares a resolved library address across imported derivatives, including LLVM 15 typed-pointer accesses. Its prerequisites are the constant binding repair and the dynamic module lookup rule at 06aa3a2985494cce401809824b79b802322e18c3."
+      },
+      "requires": [],
+      "validation": [
+        {
+          "base": "5e8c14e62362994ab0bdcdcb9bc9d6428827289f",
+          "julia": "1.12.7",
+          "bounds": "yes",
+          "native_build": "Enzyme_jll 0.0.311+0 (stock LLVM 18)",
+          "tests": [
+            "test/module_lookup.jl",
+            "test/computed_library_address.jl"
+          ],
+          "result": "passed",
+          "detail": "The prerequisite port passed 76 module-lookup assertions. On that prefix the foreign-call fixture errored at ijl_lazy_load_and_lookup. Adding the scalar math and cache patch passed all 11 assertions in the same fixture with the same native hashes."
+        },
+        {
+          "base": "37b2a484727a28a78679d28a24e7071d916ca437",
+          "julia": "1.10.12",
+          "bounds": "yes",
+          "native_build": "bfb732a1c0b74802107646aa7645f3e2a22037a4",
+          "tests": [
+            "test/ccall_library.jl"
+          ],
+          "result": "passed",
+          "detail": "The exact integration ac13e13b passed all 193 assertions. Both call orders exercised the counted library provider."
+        },
+        {
+          "base": "5e8c14e62362994ab0bdcdcb9bc9d6428827289f",
+          "julia": "1.10.12",
+          "bounds": "yes",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/computed_library_address.jl"
+          ],
+          "result": "passed",
+          "detail": "All 11 derivative and provider-count assertions passed with stock libraries on the upstream patch series."
+        },
+        {
+          "base": "37b2a484727a28a78679d28a24e7071d916ca437",
+          "julia": "1.12.7",
+          "bounds": "yes",
+          "native_build": "bfb732a1c0b74802107646aa7645f3e2a22037a4",
+          "tests": [
+            "test/ccall_library.jl"
+          ],
+          "result": "passed",
+          "detail": "The exact integration ac13e13b passed all 200 assertions. Both call orders exercised the counted library provider."
+        },
+        {
+          "base": "5e8c14e62362994ab0bdcdcb9bc9d6428827289f",
+          "julia": "1.12.7",
+          "bounds": "yes",
+          "native_build": "Enzyme_jll 0.0.311+0",
+          "tests": [
+            "test/computed_library_address.jl"
+          ],
+          "result": "passed",
+          "detail": "All 11 derivative and provider-count assertions passed with stock libraries on the upstream patch series."
+        },
+        {
+          "base": "37b2a484727a28a78679d28a24e7071d916ca437",
+          "julia": "1.13.1",
+          "bounds": "yes",
+          "native_build": "bfb732a1c0b74802107646aa7645f3e2a22037a4",
+          "tests": [
+            "test/ccall_library.jl"
+          ],
+          "result": "passed",
+          "detail": "The exact integration ac13e13b passed all 130 assertions. Julia 1.13 runs the supported foreign-call cases and skips the computed-library expression."
+        }
+      ]
     }
   ]
 }
