@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A custom reverse rule can reread a wrapper around numeric arrays or a
+  dictionary after the caller stores its result in a separate `Ref`. The
+  compiler checks where each later store writes before setting
+  `EnzymeRules.overwritten(config)`. A `Ref` the wrapper itself holds can
+  still be changed by that store. The native repair is available as
+  `Enzyme.has_dogfood_repair(:later_store_targets)`.
+
 - Reverse gradients make a few native allocations per call where they made one
   `malloc` and one `free` per cached value. The non-inlined calls a combined
   Reverse derivative makes inside loops reserve their loop caches of numbers

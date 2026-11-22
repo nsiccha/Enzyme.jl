@@ -375,6 +375,12 @@ data(g::IndexedWeights) = g.values
 data(g::Boxed) = g.box[]
 data(g::Rows) = g.rows[1]
 
+function write_boxed_number(box, g, x)
+    y = scaled(g, x)
+    box[] = 42.0
+    return y
+end
+
 function replaced_in_ref(g, a, x)
     y = doubled(g, x)
     g[] = [42.0]
@@ -585,6 +591,21 @@ end
         @test box[][1] == 6.0
         @test result[1][end] == 9.0
         @test ROW_FLAGS[][2]
+    end
+
+    @testset "An array wraps the later store's scalar field" begin
+        box = Ref(3.0)
+        GC.@preserve box begin
+            values = unsafe_wrap(Vector{Float64}, Base.unsafe_convert(Ptr{Float64}, box), 1)
+            FLAGS[] = nothing
+            result = Enzyme.autodiff(
+                Reverse, Const(write_boxed_number), Active, Duplicated(box, Ref(0.0)),
+                Const(Wrapped(values)), Active(2.0),
+            )
+            @test box[] == 42.0
+            @test FLAGS[][2]
+            @test result[1][end] == 3.0
+        end
     end
 
     @testset "A pointer stored after the call replaces what the rule read, $(nameof(caller))" for (caller, wrap) in (
