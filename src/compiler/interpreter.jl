@@ -1160,8 +1160,28 @@ end
         end
     end
 
-    # The existing code is rather slow for broadcast in practice: https://github.com/EnzymeAD/Enzyme.jl/issues/1434
-    src = Base.Broadcast.preprocess(dest, bc)
+    @static if VERSION >= v"1.11-"
+        # With Memory-backed arrays, merging a Const input with its unaliascopy
+        # can allocate a shadow even on the disjoint path. Keep the loops separate.
+        if broadcast_can_skip_unalias(dest, bc)
+            return broadcast_copyto_loop!(dest, bc, Val(false))
+        end
+        return @noinline broadcast_copyto_loop!(dest, bc, Val(true))
+    else
+        return broadcast_copyto_loop!(dest, bc, Val(true))
+    end
+end
+
+@inline broadcast_can_skip_unalias(dest, bc::Base.Broadcast.Broadcasted) =
+    all(Base.Fix1(broadcast_can_skip_unalias, dest), bc.args)
+@inline broadcast_can_skip_unalias(dest, src::Union{Array, SubArray}) =
+    dest === src || !Base.mightalias(dest, src)
+broadcast_can_skip_unalias(dest, src::Number) = true
+# Let Base preprocess other broadcast arguments, including custom array types.
+broadcast_can_skip_unalias(dest, src) = false
+
+@inline function broadcast_copyto_loop!(dest, bc, ::Val{unalias}) where {unalias}
+    src = Base.Broadcast.preprocess(unalias ? dest : nothing, bc)
     idx = Base.eachindex(src)
     @inline Enzyme.Compiler.Interpreter.lindex_v3(idx, dest, src)
     return dest
