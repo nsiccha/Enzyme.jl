@@ -41,6 +41,12 @@
   lists one complete chain of source lines per call path.
   `Enzyme.has_dogfood_repair(:derivative_report_call_sites)` reports this
   repair.
+- Reverse can differentiate a loop that chooses among four array views and
+  bounds-checks its reads. When the pass reconstructed which arm ran, it
+  could ask for a bounds-check result it had already discarded and throw
+  `EnzymeInternalError`. Reaching the merge establishes that the check passed.
+  The native repair is available as
+  `Enzyme.has_dogfood_repair(:returning_branch_predicates)`.
 - Call the helper that reuses a constant array's zero shadow in a write-only
   output, and the zero-shadow helper of a constant mutable object such as a
   `Ref` stored beside active data, as compiled functions. Reverse called both
