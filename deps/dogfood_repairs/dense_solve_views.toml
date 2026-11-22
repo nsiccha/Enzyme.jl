@@ -1,0 +1,2 @@
+summary = "Reverse of a dense real linear solve accumulates into a strided right-hand-side vector view"
+tests = ["test/rules/internal_rules/dense_solve_views.jl"]
