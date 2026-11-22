@@ -496,6 +496,66 @@ import Core.Compiler: CallInfo
         end
         return result
     end
+elseif VERSION < v"1.11-"
+    # The same widening on Julia 1.10. Its `compileable_specialization` takes
+    # no inlining state, so the interpreter cannot overload it. Instead, the
+    # three callers that hold the state and return its `InvokeCase` are
+    # overloaded: each keeps the inferred MethodInstance as the invoke target
+    # when this interpreter's cache holds its code. That MethodInstance is the
+    # one `compileable_specialization` already recorded as the backedge.
+    # (`handle_modifyfield!_call!`, the fourth caller, keeps Julia's target.)
+    function keep_inferred_invoke(
+            case, mi::MethodInstance, state::Core.Compiler.InliningState{<:EnzymeInterpreter},
+        )
+        CC = Core.Compiler
+        if case isa CC.InvokeCase && case.invoke !== mi && Base.isdispatchtuple(mi.specTypes) &&
+                mi.def isa Method && mi.def.nospecialize == 0 && CC.validate_sparams(mi.sparam_vals)
+            # On Julia 1.10, `Core.Compiler.get` is not `Base.get`.
+            cached = CC.get(CC.code_cache(state), mi, nothing)
+            if cached isa Core.CodeInstance && cached.inferred !== nothing
+                return CC.InvokeCase(mi, case.effects, case.info)
+            end
+        end
+        return case
+    end
+
+    function Core.Compiler.resolve_todo(
+            mi::MethodInstance, result::Union{Core.MethodMatch, Core.Compiler.InferenceResult},
+            argtypes::Vector{Any}, @nospecialize(info::CallInfo), flag::UInt8,
+            state::Core.Compiler.InliningState{<:EnzymeInterpreter};
+            invokesig::Union{Nothing, Vector{Any}} = nothing,
+        )
+        CC = Core.Compiler
+        case = @invoke CC.resolve_todo(
+            mi::MethodInstance, result::Union{Core.MethodMatch, CC.InferenceResult},
+            argtypes::Vector{Any}, info::CallInfo, flag::UInt8, state::CC.InliningState;
+            invokesig,
+        )
+        return keep_inferred_invoke(case, mi, state)
+    end
+
+    function Core.Compiler.semiconcrete_result_item(
+            result::Core.Compiler.SemiConcreteResult, @nospecialize(info::CallInfo), flag::UInt8,
+            state::Core.Compiler.InliningState{<:EnzymeInterpreter},
+        )
+        CC = Core.Compiler
+        case = @invoke CC.semiconcrete_result_item(
+            result::CC.SemiConcreteResult, info::CallInfo, flag::UInt8, state::CC.InliningState,
+        )
+        return keep_inferred_invoke(case, result.mi, state)
+    end
+
+    function Core.Compiler.concrete_result_item(
+            result::Core.Compiler.ConcreteResult, @nospecialize(info::CallInfo),
+            state::Core.Compiler.InliningState{<:EnzymeInterpreter};
+            invokesig::Union{Nothing, Vector{Any}} = nothing,
+        )
+        CC = Core.Compiler
+        case = @invoke CC.concrete_result_item(
+            result::CC.ConcreteResult, info::CallInfo, state::CC.InliningState; invokesig,
+        )
+        return keep_inferred_invoke(case, result.mi, state)
+    end
 end
 
 struct NoInlineCallInfo <: CallInfo
