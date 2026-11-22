@@ -1,0 +1,3 @@
+summary = "A store that writes back the value a stack slot already holds, as Julia stores a struct it passes by reference into its slot again before each call in a loop, no longer counts as overwriting what an earlier call read through the slot"
+libenzyme_build = "9cbce74ffd295a6d6a92e2972b7df7f3101cea71"
+tests = ["test/rules/overwritten_references.jl"]

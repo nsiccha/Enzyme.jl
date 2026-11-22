@@ -36,6 +36,36 @@ end
 # can overwrite x, so its augmented forward pass has no tape to return.
 const tape_free_distance = r"define[^\n]*void @augmented_julia_fresh_buffer_distance_"
 
+# Julia 1.11 and later keep an array's elements in a Memory, which they merge
+# with the shared empty Memory and, on Julia 1.13 or with bounds checks forced
+# on, reload from the array header. libEnzyme follows writes into such new
+# storage with repair `unexposed_memory_storage`. The losses that keep a tape
+# with it write their arrays through calls Julia does not inline: the
+# channels of `fresh_buffer_channels` (tape-free only on Julia 1.12 with
+# default bounds checks, also without the repair), `_mapreducedim!` and a
+# matrix product. Measured on Julia 1.12.7 and 1.13.1; other versions from
+# 1.11 on skip the check.
+const memory_repair = isdefined(Enzyme, :has_dogfood_repair) &&
+    Enzyme.has_dogfood_repair(:unexposed_memory_storage)
+const forced_bounds = Base.JLOptions().check_bounds == 1
+const channel_losses = (:doses_buffer_loss, :readout_buffer_loss)
+const call_written_losses = (:rowsum_buffer_loss, :second_field_loss, :structured_field_loss)
+
+function tape_free_expected(loss::Symbol)
+    VERSION < v"1.11-" && return true
+    channels_free = v"1.12-" <= VERSION < v"1.13-" && !forced_bounds
+    loss in channel_losses && return channels_free
+    return memory_repair && !(loss in call_written_losses)
+end
+
+function test_tape_free(loss::Symbol, ir)
+    return if VERSION < v"1.11-" || v"1.12-" <= VERSION < v"1.14-"
+        @test occursin(tape_free_distance, ir) broken = !tape_free_expected(loss)
+    else
+        @test_skip occursin(tape_free_distance, ir)
+    end
+end
+
 # `vec` of a fresh matrix after the call: Julia 1.10 fills a dims box and calls
 # jl_reshape_array, which writes only the header it creates.
 function reshaped_buffer_loss(x, m)
@@ -95,15 +125,9 @@ end
         dump_module = true, second_stage = false, debuginfo = :none
     )
     ir = String(take!(io))
-    # On Julia 1.10 the split callee rereads x in reverse, so its augmented
-    # forward pass has no tape to return. Later Julia versions merge fresh
-    # Memory with a shared empty singleton before loading its data pointer;
-    # that control-dependent case still conservatively retains the tape.
-    if VERSION < v"1.11-"
-        @test occursin(r"define[^\n]*void @augmented_julia_fresh_buffer_distance_", ir)
-    else
-        @test_broken occursin(r"define[^\n]*void @augmented_julia_fresh_buffer_distance_", ir)
-    end
+    # The split callee rereads x in reverse, so its augmented forward pass has
+    # no tape to return (on Julia 1.11 and later with the repair).
+    test_tape_free(:fresh_buffer_loss, ir)
 end
 
 @testset "Fresh boxes and reshapes after the call preserve earlier reads" begin
@@ -132,17 +156,9 @@ end
         Tuple{Const{@NamedTuple{x::Vector{Float64}}}, Active{Float64}}
     )
     @test !occursin(tape_free_distance, overwrite)
-    if VERSION < v"1.11-"
-        @test occursin(tape_free_distance, reshaped)
-        @test occursin(tape_free_distance, structured)
-        @test occursin(tape_free_distance, merged)
-    else
-        # Later Julia versions merge fresh Memory with a shared empty
-        # singleton before loading its data pointer (testset above).
-        @test_broken occursin(tape_free_distance, reshaped)
-        @test_broken occursin(tape_free_distance, structured)
-        @test_broken occursin(tape_free_distance, merged)
-    end
+    test_tape_free(:reshaped_buffer_loss, reshaped)
+    test_tape_free(:structured_buffer_loss, structured)
+    test_tape_free(:broadcast_buffer_loss, merged)
 end
 
 # Calls after the differentiated call that Julia does not inline, as a model
@@ -228,13 +244,7 @@ end
     @test !occursin(tape_free_distance, fresh_buffer_ir(doubled_operand_loss, argtypes))
     @test !occursin(tape_free_distance, fresh_buffer_ir(doubled_prior_loss, argtypes))
     for loss in (doses_buffer_loss, readout_buffer_loss, rowsum_buffer_loss)
-        ir = fresh_buffer_ir(loss, argtypes)
-        if VERSION < v"1.11-"
-            @test occursin(tape_free_distance, ir)
-        else
-            # Fresh Memory merged with the shared empty singleton above.
-            @test_broken occursin(tape_free_distance, ir)
-        end
+        test_tape_free(nameof(loss), fresh_buffer_ir(loss, argtypes))
     end
 end
 
@@ -282,16 +292,7 @@ end
     argtypes = Tuple{Const{Vector{Float64}}, Active{Float64}}
     structured = Tuple{Const{@NamedTuple{x::Vector{Float64}}}, Active{Float64}}
     grouped = Tuple{Const{Vector{Float64}}, Active{Float64}, Const{Vector{Vector{Int}}}}
-    for ir in (
-            fresh_buffer_ir(second_field_loss, argtypes),
-            fresh_buffer_ir(structured_field_loss, structured),
-            fresh_buffer_ir(grouped_buffer_loss, grouped),
-        )
-        if VERSION < v"1.11-"
-            @test occursin(tape_free_distance, ir)
-        else
-            # Fresh Memory merged with the shared empty singleton above.
-            @test_broken occursin(tape_free_distance, ir)
-        end
-    end
+    test_tape_free(:second_field_loss, fresh_buffer_ir(second_field_loss, argtypes))
+    test_tape_free(:structured_field_loss, fresh_buffer_ir(structured_field_loss, structured))
+    test_tape_free(:grouped_buffer_loss, fresh_buffer_ir(grouped_buffer_loss, grouped))
 end
