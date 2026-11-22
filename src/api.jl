@@ -774,6 +774,35 @@ function reports_subsequent_writes()
     end
 end
 
+# Query both parts of one call-site record. Older libraries report only the
+# combined write kind through EnzymeGradientUtilsGetSubsequentWrites.
+function EnzymeGradientUtilsGetSubsequentStores(gutils, orig)
+    handle = Libdl.dlopen(libEnzyme)
+    try
+        fn = Libdl.dlsym_e(handle, :EnzymeGradientUtilsGetSubsequentStores)
+        fn == C_NULL && return nothing
+        remaining = Ref{UInt8}(0)
+        n = ccall(
+            fn, Int64,
+            (EnzymeGradientUtilsRef, LLVMValueRef, Ptr{UInt8}, Ptr{LLVMValueRef}, UInt64),
+            gutils, orig, remaining, C_NULL, 0,
+        )
+        n < 0 && return nothing
+        stores = Vector{LLVMValueRef}(undef, n)
+        if n != 0
+            count = ccall(
+                fn, Int64,
+                (EnzymeGradientUtilsRef, LLVMValueRef, Ptr{UInt8}, Ptr{LLVMValueRef}, UInt64),
+                gutils, orig, remaining, stores, n,
+            )
+            count == n || return nothing
+        end
+        return remaining[], stores
+    finally
+        Libdl.dlclose(handle)
+    end
+end
+
 # The kinds of write libEnzyme reports, as bits (`SubsequentWriteAny` and
 # `SubsequentWritePointers` in its `EnzymeLogic.cpp`). Any is any write, and absorbs
 # the other kind. Pointers alone means only stores of pointer values: they cannot

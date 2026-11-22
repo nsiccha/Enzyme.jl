@@ -1,0 +1,3 @@
+summary = "Custom reverse rules can reread an argument when later stores only write to boxed objects the argument cannot reach"
+libenzyme_build = "e43aeb4f41e88ac543f0a76667a706a23408371e"
+tests = ["test/rules/overwritten_references.jl"]

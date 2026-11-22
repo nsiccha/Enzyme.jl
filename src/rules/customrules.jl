@@ -448,6 +448,51 @@ function later_writes_may_reach(writes::UInt8, @nospecialize(T))::Bool
     return reaches_mutable_pointers(T)
 end
 
+# Follow the fields a rule can read. Distinct boxed struct types cannot be
+# the same object. Raw pointers, unknown layouts and array element storage
+# need separate treatment: an array may wrap or share another object's bytes.
+function may_reach_store_object(
+        @nospecialize(T), @nospecialize(target), kind::UInt8, seen::Base.IdSet{Any},
+    )::Bool
+    T === target && return true
+    if T isa Union
+        return may_reach_store_object(T.a, target, kind, seen) ||
+            may_reach_store_object(T.b, target, kind, seen)
+    end
+    T isa DataType && isconcretetype(T) || return true
+    (T <: Ptr || T <: Core.LLVMPtr || T === Module || T === Core.SimpleVector) && return true
+    (T === String || T === Symbol) && return false
+    T in seen && return false
+    # Recursive field types can introduce infinitely many distinct parameters.
+    length(seen) >= 128 && return true
+    push!(seen, T)
+    if T <: Array || (@static isdefined(Core, :GenericMemory) ? T <: Core.GenericMemory : false)
+        E = eltype(T)
+        # Only a pointer store is disjoint from external numeric element
+        # storage. Even an inline element may itself carry a raw pointer.
+        kind == API.SubsequentWritePointers || return true
+        (isbitstype(E) || Base.isbitsunion(E)) || return true
+        return may_reach_store_object(E, target, kind, seen)
+    end
+    T.layout == C_NULL && return true
+    Base.datatype_fielddesc_type(T) == 3 && return true
+    for i in 1:fieldcount(T)
+        may_reach_store_object(fieldtype(T, i), target, kind, seen) && return true
+    end
+    return false
+end
+
+function later_writes_may_reach((remaining, targets)::Tuple, @nospecialize(T))::Bool
+    later_writes_may_reach(remaining, T) && return true
+    for (target, kind) in targets
+        if later_writes_may_reach(kind, T) &&
+                may_reach_store_object(T, target, kind, Base.IdSet{Any}())
+            return true
+        end
+    end
+    return false
+end
+
 function enzyme_custom_setup_args(
         @nospecialize(B::Union{Nothing, LLVM.IRBuilder}),
         orig::LLVM.CallInst,

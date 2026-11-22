@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A custom reverse rule can reread a wrapper around numeric arrays or a
+  dictionary after the caller stores its result in a separate `Ref`. The
+  compiler checks where each later store writes before setting
+  `EnzymeRules.overwritten(config)`. A `Ref` the wrapper itself holds can
+  still be changed by that store. The native repair is available as
+  `Enzyme.has_dogfood_repair(:later_store_targets)`.
+
 - On Julia 1.12, the second derivative of a call such as
   `ccall((:cos, library()), Float64, (Float64,), x)` works on the first call
   when `library()` returns a constant library name. The first and second

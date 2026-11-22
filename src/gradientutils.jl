@@ -68,17 +68,72 @@ function get_uncacheable(gutils::GradientUtils, orig::LLVM.CallInst)
     return uncacheable
 end
 
-# The kinds of write that the callee of `orig` cannot see and that may follow the
-# call before its reverse pass runs: writes later in the calling function, or after
-# a call of that function. 0 means none, and otherwise the bits are
-# `API.SubsequentWriteAny` or `API.SubsequentWritePointers`. Such a write may change
-# memory the callee reads through a pointer it loads, which `get_uncacheable` does
-# not describe: its flags cover the memory each operand points to. Without an
-# answer from libEnzyme this assumes a write of any kind.
-function subsequent_writes(gutils::GradientUtils, orig::LLVM.CallInst)::UInt8
-    get_mode(gutils) == API.DEM_ForwardMode && return 0x00
-    writes = API.EnzymeGradientUtilsGetSubsequentWrites(gutils, orig)
-    return writes === nothing ? API.SubsequentWriteAny : writes
+# A Julia object whose own bytes the store writes. A type inferred for a
+# loaded pointer can describe its pointee without proving object identity.
+# Only a boxed parameter or a GC allocation gives us the object itself.
+function later_store_object(store::LLVM.StoreInst)
+    value, dest = store.operands
+    base, offset = get_base_and_offset(dest)
+    ty = base.value_type
+    ty isa LLVM.PointerType && ty.addrspace == Tracked || return nothing
+    if base isa LLVM.Argument
+        idx = findfirst(==(base), collect(base.parent.parameters))
+        T, cc = enzyme_extract_parm_type(base.parent, idx, false)
+        cc == GPUCompiler.MUT_REF || return nothing
+    elseif is_fresh_object(base)
+        known, T, _ = abs_typeof(base, enzyme_context())
+        known || return nothing
+    else
+        return nothing
+    end
+    T isa DataType && isconcretetype(T) && ismutabletype(T) || return nothing
+    # Runtime objects and array buffers can have storage outside their fields.
+    (T <: Array || parentmodule(T) === Core || T.layout == C_NULL) && return nothing
+    Base.datatype_fielddesc_type(T) == 3 && return nothing
+    stored = value.value_type
+    stored isa Union{LLVM.IntegerType, LLVM.FloatingPointType, LLVM.PointerType} || return nothing
+    size = datatype_layoutsize(T)
+    width = LLVM.storage_size(store.parent.parent.parent.datalayout, stored)
+    0 <= offset <= size && width <= size - offset || return nothing
+    if stored isa LLVM.PointerType
+        # A raw pointer field, or a pointer written across field boundaries,
+        # need not be GC reference storage.
+        stored.addrspace == Tracked || return nothing
+        desc = Base.DataTypeFieldDesc(T)
+        for i in 1:fieldcount(T)
+            fieldoffset(T, i) == offset && desc[i].isptr && return T
+        end
+        return nothing
+    end
+    return T
+end
+
+# Keep the kind of inherited and opaque writes, and combine local stores to
+# each known object type. A missing record retains the older kind-only proof.
+function subsequent_writes(gutils::GradientUtils, orig::LLVM.CallInst)
+    targets = Tuple{DataType, UInt8}[]
+    get_mode(gutils) == API.DEM_ForwardMode && return 0x00, targets
+    writes = API.EnzymeGradientUtilsGetSubsequentStores(gutils, orig)
+    if writes === nothing
+        kind = API.EnzymeGradientUtilsGetSubsequentWrites(gutils, orig)
+        return something(kind, API.SubsequentWriteAny), targets
+    end
+    remaining, stores = writes
+    for ref in stores
+        remaining & API.SubsequentWriteAny != 0 && break
+        ref == C_NULL && return API.SubsequentWriteAny, targets
+        store = LLVM.Value(ref)
+        store isa LLVM.StoreInst || return API.SubsequentWriteAny, targets
+        kind = store.operands[1].value_type isa LLVM.PointerType ?
+            API.SubsequentWritePointers : API.SubsequentWriteAny
+        target = later_store_object(store)
+        if target === nothing
+            remaining |= kind
+        elseif !((target, kind) in targets)
+            push!(targets, (target, kind))
+        end
+    end
+    return remaining, targets
 end
 
 erase_with_placeholder(
