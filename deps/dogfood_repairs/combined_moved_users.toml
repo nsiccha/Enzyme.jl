@@ -1,0 +1,3 @@
+summary = "ReverseWithPrimal compiles when two non-inlined calls in different blocks feed the returned value"
+libenzyme_build = "577fdb825cb2412e460cce57cf366a92397d50f4"
+tests = ["test/combined_moved_users.jl"]
