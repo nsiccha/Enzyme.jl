@@ -439,6 +439,131 @@ function _lapack_shadow(A::Annotation, b, N)
     return dA === A.val ? nothing : dA
 end
 
+# Newer LinearAlgebra versions use lacpy! to copy the stored triangle of a
+# Hermitian matrix before factoring it. Each copied element overwrites B.
+@static if isdefined(LinearAlgebra.LAPACK, :lacpy!)
+    function EnzymeRules.augmented_primal(
+            config::EnzymeRules.RevConfig,
+            func::Const{typeof(LinearAlgebra.LAPACK.lacpy!)},
+            ::Type{RT},
+            B::Annotation{<:StridedMatrix{T}},
+            A::Annotation{<:StridedMatrix{T}},
+            uplo::Const{<:AbstractChar},
+        ) where {RT, T <: LinearAlgebra.BlasComplex}
+        result = func.val(B.val, A.val, uplo.val)
+        primal = EnzymeRules.needs_primal(config) ? result : nothing
+        shadow = if !EnzymeRules.needs_shadow(config)
+            nothing
+        elseif B isa Const
+            EnzymeRules.width(config) == 1 ? result : ntuple(Returns(result), Val(EnzymeRules.width(config)))
+        else
+            B.dval
+        end
+        return EnzymeRules.AugmentedReturn(primal, shadow, nothing)
+    end
+
+    function EnzymeRules.reverse(
+            config::EnzymeRules.RevConfig,
+            ::Const{typeof(LinearAlgebra.LAPACK.lacpy!)},
+            ::Type{RT},
+            tape,
+            B::Annotation{<:StridedMatrix{T}},
+            A::Annotation{<:StridedMatrix{T}},
+            uplo::Const{<:AbstractChar},
+        ) where {RT, T <: LinearAlgebra.BlasComplex}
+        m, n = size(A.val)
+        upper = uplo.val in ('U', 'u')
+        lower = uplo.val in ('L', 'l')
+        N = EnzymeRules.width(config)
+        for b in 1:N
+            dB = _lapack_shadow(B, b, N)
+            dB === nothing && continue
+            dA = _lapack_shadow(A, b, N)
+            for j in n:-1:1
+                firstrow = lower ? j : 1
+                lastrow = upper ? min(j, m) : m
+                for i in lastrow:-1:firstrow
+                    seed = dB[i, j]
+                    dB[i, j] = zero(T)
+                    if dA !== nothing
+                        dA[i, j] += seed
+                    end
+                end
+            end
+        end
+        return (nothing, nothing, nothing)
+    end
+end
+
+# Write the pullback into the selected triangle. In lower-factor coordinates,
+# L⁻¹ dA L⁻ᴴ = L⁻¹ dL + (L⁻¹ dL)ᴴ. Its diagonal is twice the real
+# diagonal of L⁻¹ dL. Folding the reflected entries into LAPACK's single
+# stored triangle gives L⁻ᴴ hermitian_lower(Lᴴ dLbar) L⁻¹, with half its diagonal.
+function _potrf_lower_pullback!(L, dA)
+    product = L' * LowerTriangular(dA)
+    G = Matrix(Hermitian(product, :L))
+    _trisolve!(L', G)
+    rdiv!(G, L)
+    for j in axes(dA, 2)
+        dA[j, j] = real(G[j, j]) / 2
+        for i in (j + 1):size(dA, 1)
+            dA[i, j] = G[i, j]
+        end
+    end
+    return nothing
+end
+
+function EnzymeRules.augmented_primal(
+        config::EnzymeRules.RevConfig,
+        func::Const{typeof(LinearAlgebra.LAPACK.potrf!)},
+        ::Type{RT},
+        uplo::Const{<:AbstractChar},
+        A::Annotation{<:StridedMatrix{<:LinearAlgebra.BlasComplex}},
+    ) where {RT}
+    result = func.val(uplo.val, A.val)
+    factor, info = result
+    cache = !(A isa Const) && EnzymeRules.overwritten(config)[3] ? copy(factor) : nothing
+    primal = EnzymeRules.needs_primal(config) ? result : nothing
+    shadow = if !EnzymeRules.needs_shadow(config)
+        nothing
+    elseif A isa Const
+        EnzymeRules.width(config) == 1 ? result : ntuple(Returns(result), Val(EnzymeRules.width(config)))
+    elseif EnzymeRules.width(config) == 1
+        (A.dval, info)
+    else
+        map(Base.Fix2(tuple, info), A.dval)
+    end
+    return EnzymeRules.AugmentedReturn(primal, shadow, (cache, info))
+end
+
+function EnzymeRules.reverse(
+        config::EnzymeRules.RevConfig,
+        ::Const{typeof(LinearAlgebra.LAPACK.potrf!)},
+        ::Type{RT},
+        tape,
+        uplo::Const{<:AbstractChar},
+        A::Annotation{<:StridedMatrix{<:LinearAlgebra.BlasComplex}},
+    ) where {RT}
+    cache, info = tape
+    factor = cache === nothing ? A.val : cache
+    lower = uplo.val == 'L'
+    L = lower ? LowerTriangular(factor) : UpperTriangular(factor)'
+    N = EnzymeRules.width(config)
+    for b in 1:N
+        dA = _lapack_shadow(A, b, N)
+        dA === nothing && continue
+        seed = lower ? dA : dA'
+        if !iszero(info)
+            # A failed potrf! returns a partial factor. Its status can still
+            # select a fallback whose result is independent of that factor.
+            iszero(LowerTriangular(seed)) && continue
+            throw(LinearAlgebra.PosDefException(info))
+        end
+        _potrf_lower_pullback!(L, seed)
+    end
+    return (nothing, nothing)
+end
+
 # What a forward rule returns for a LAPACK routine that overwrites B with its result X.
 function _lapack_inplace_forward_return(config::EnzymeRules.FwdConfig, X, B)
     N = EnzymeRules.width(config)

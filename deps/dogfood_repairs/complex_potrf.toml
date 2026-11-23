@@ -1,0 +1,2 @@
+summary = "Reverse differentiation of a complex Hermitian positive-definite Cholesky factorization through LAPACK.potrf!"
+tests = ["test/rules/internal_rules/complex_potrf.jl"]
