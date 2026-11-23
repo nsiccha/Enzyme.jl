@@ -1,6 +1,6 @@
 # The branch contains the source history for dogfood's native Enzyme builds.
 # The resolver uses the exact commit to select libEnzyme and libEnzymeBCLoad
 # for the host Julia's LLVM version.
-commit = "24b444434b8a1a90cc8dcc33bd9c997698a39d3c"
+commit = "577fdb825cb2412e460cce57cf366a92397d50f4"
 branch = "dogfood"
 repository = "https://github.com/nsiccha/Enzyme"

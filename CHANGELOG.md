@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `ReverseWithPrimal`, and everything built on it, no longer aborts the
+  process with `Instruction does not dominate all uses!` while compiling a
+  function where two calls Julia does not inline, in different blocks, both
+  feed the returned value. libEnzyme runs the later call's forward pass as an
+  ordinary call instead of inside its reverse pass. The native repair is
+  available as `Enzyme.has_dogfood_repair(:combined_moved_users)`.
+
 - A custom reverse rule can reread a wrapper around numeric arrays or a
   dictionary after the caller stores its result in a separate `Ref`. The
   compiler checks where each later store writes before setting
