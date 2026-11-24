@@ -1,15 +1,54 @@
 using Enzyme, LinearAlgebra, Test
+import Enzyme.EnzymeRules
 
 @noinline invoke_select(op::Function, x) = op === identity ? x * x : x
 invoke_square(x) = invoke_select(identity, x)
 
-@static if VERSION >= v"1.12-"
+# Julia 1.11 has no toolchain on the hosts that test the dogfood line, so the
+# repair is not applied (nor tested) there.
+const SPECIALIZED_INVOKES = VERSION >= v"1.12-" || VERSION < v"1.11-"
+
+returning_findings(report) = [
+    finding for d in report.derivatives for finding in something(d.findings, [])
+        if !finding.throw_only && finding.kind in (:dynamic_dispatch, :enzyme_runtime_fallback)
+]
+
+@static if SPECIALIZED_INVOKES
     @testset "A non-inlined call keeps its inferred function argument" begin
         report = Enzyme.derivative_report() do
             autodiff(Reverse, invoke_square, Active, Active(3.0))
         end
         @test report.value == ((6.0,),)
         @test all(f -> f.throw_only || f.kind !== :enzyme_runtime_fallback, only(report.derivatives).findings)
+        @test isempty(returning_findings(report))
+    end
+
+    # The primal of a custom rule is compiled with the derivative, so its calls
+    # that do not inline keep their inferred function argument too. LinearAlgebra's
+    # `generic_trimatdiv!(C, uplo, isunit, tfun::Function, A, B)`, which the
+    # pivoted QR solve calls, is one.
+    rule_square(x) = x * x
+    function EnzymeRules.augmented_primal(
+            config::EnzymeRules.RevConfigWidth{1}, ::Const{typeof(rule_square)},
+            ::Type{<:Active}, x::Active,
+        )
+        primal = EnzymeRules.needs_primal(config) ? invoke_select(identity, x.val) : nothing
+        return EnzymeRules.AugmentedReturn(primal, nothing, nothing)
+    end
+    function EnzymeRules.reverse(
+            config::EnzymeRules.RevConfigWidth{1}, ::Const{typeof(rule_square)},
+            dret::Active, tape, x::Active,
+        )
+        return (2 * x.val * dret.val,)
+    end
+
+    @testset "A custom rule's primal keeps an inferred function argument" begin
+        report = Enzyme.derivative_report() do
+            autodiff(ReverseWithPrimal, rule_square, Active, Active(3.0))
+        end
+        @test report.value == ((6.0,), 9.0)
+        @test any(d -> d.func === typeof(rule_square), report.derivatives)
+        @test isempty(returning_findings(report))
     end
 end
 

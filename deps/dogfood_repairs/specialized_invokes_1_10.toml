@@ -1,0 +1,2 @@
+summary = "On Julia 1.10, a call that does not inline keeps the specialization inference holds when Julia's compilable signature widens an argument (such as a function to Function), so the derivative and a custom rule's primal call it directly"
+tests = ["test/specialized_invokes.jl"]

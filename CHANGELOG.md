@@ -36,6 +36,14 @@
   repairs, on Julia 1.10, 1.12 and 1.13, its gradient is the one the same
   function gives with a `const` global
   (`Enzyme.has_dogfood_repair(:dynamic_slot_field_loads)`).
+- On Julia 1.10, a call that does not inline keeps the specialization
+  inference already holds when Julia's compilable signature would widen an
+  argument, as Julia 1.12 and later already did (repair
+  `specialized_invokes_1_10`). A function argument such as `identity` passed
+  to a `::Function` parameter no longer turns the call into a run-time
+  dispatch: Reverse compiles the callee's derivative into the gradient instead
+  of at run time, and the primal of a custom rule that reaches LinearAlgebra's
+  triangular solve (`generic_trimatdiv!`) calls it directly.
 - On Julia 1.12, the second derivative of a call such as
   `ccall((:cos, library()), Float64, (Float64,), x)` works on the first call
   when `library()` returns a constant library name. The first and second
