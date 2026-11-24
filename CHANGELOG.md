@@ -29,6 +29,13 @@
   conjugates the triangle it copies, and drops the imaginary part of the
   diagonal, which `zpotrf` never reads. Real routines are unchanged. The native
   repair is available as `Enzyme.has_dogfood_repair(:complex_forward_blas)`.
+- Static reverse mode can differentiate a read-only use of a dense array field
+  from a non-constant global `NamedTuple` without allocating a zero array for
+  that field. In `data.y - data.A * q` the gradient reads the current binding
+  at each access. A consumer that may write through or return the field still
+  gets a writable shadow. Query this repair with
+  `Enzyme.has_dogfood_repair(:readonly_global_fields)`.
+
 - On Julia 1.10, Forward and Reverse derivatives of `copyto!(dest, Hermitian(B))`
   for a `Matrix{ComplexF32}` work. They stopped with `cannot handle unknown
   binary operator: shl` (Forward) or `Cannot deduce adding type (cast)`

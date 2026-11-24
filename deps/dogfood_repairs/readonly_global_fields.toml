@@ -1,0 +1,2 @@
+summary = "Static reverse mode avoids a zero shadow for a dense array selected from a non-constant global NamedTuple when its dynamic consumer only reads the field"
+tests = ["test/readonly_global_fields.jl"]

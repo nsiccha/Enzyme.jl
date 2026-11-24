@@ -296,6 +296,20 @@ function is_pointerfree_copy(call::LLVM.CallInst, enzyme_ctx::EnzymeContext)::Bo
             return true
         end
     end
+    @static if VERSION >= v"1.11-"
+        # BLAS dimension errors copy A.size into a tuple in a LazyString.
+        # Both whole objects hold references, but the copied dimensions cannot
+        # alias the array's storage. Check the entire byte range of the source.
+        count = call.operands[3]
+        count isa LLVM.ConstantInt || return false
+        base, offset = get_base_and_offset(call.operands[2])
+        known, T, byref = abs_typeof(base, enzyme_ctx)
+        known && byref == GPUCompiler.MUT_REF && isconcretetype(T) && T <: Array || return false
+        first = Int(fieldoffset(T, Base.fieldindex(T, :size)))
+        size = sizeof(fieldtype(T, :size))
+        bytes = convert(Int, count)
+        return first <= offset && 0 <= bytes <= size && offset - first <= size - bytes
+    end
     return false
 end
 
