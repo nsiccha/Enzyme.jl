@@ -1,0 +1,2 @@
+summary = "The rule for a dense solve `A \\ b` keeps the factorization `\\` picks in fields of concrete types, so its solve and its tape make no call dispatched at run time"
+tests = ["test/rules/internal_rules/dense_solve_dispatch.jl", "test/rules/internal_rules/dense_solve_views.jl", "test/rules/internal_rules/linear_algebra_rules.jl"]

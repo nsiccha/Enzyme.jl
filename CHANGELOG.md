@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Reverse of a dense solve `A \ b` makes no call dispatched at run time. The
+  rule keeps the factorization `\` picks (diagonal, triangular, LU, the matrix
+  of a real rectangular system, or pivoted QR) in fields of concrete types, so
+  its solve, its tape and its pullback each compile for that factorization. On
+  Julia 1.10 a warm gradient of a 2×2 solve takes about half as long and
+  allocates 208 bytes less. The derivative now compiles the solves the matrix
+  may need, so the first such gradient of a session takes a few seconds longer.
 - `ReverseWithPrimal`, and everything built on it, no longer aborts the
   process with `Instruction does not dominate all uses!` while compiling a
   function where two calls Julia does not inline, in different blocks, both
