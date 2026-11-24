@@ -3708,6 +3708,7 @@ include("compiler/retained_shadows.jl")
 include("compiler/slot_field_types.jl")
 include("compiler/memory_lengths.jl")
 include("compiler/bitcode_wrappers.jl")
+include("compiler/property_calls.jl")
 
 function enzyme!(
         job::CompilerJob,
@@ -3871,6 +3872,13 @@ function enzyme!(
 
     type_inline_memory_copies!(mod, enzyme_ctx, dl, ctx, seen)
     if !runtimeActivity
+        if mode in (API.DEM_ReverseModeCombined, API.DEM_ReverseModePrimal, API.DEM_ReverseModeGradient)
+            if eltype(TT.parameters[1]) <: PropertyCall
+                elide_readonly_property_shadows!(mod, enzyme_ctx)
+            else
+                combine_property_calls!(primalf, enzyme_ctx)
+            end
+        end
         type_slot_field_loads!(mod, enzyme_ctx)
         restore_boxed_reference_copies!(mod, enzyme_ctx)
         mark_constant_fields!(mod, primalf, args_activity)
@@ -7056,10 +7064,12 @@ callee's `ret`.
 
 Data that may have been thrown can come back through a `catch`: once the walk has met
 that, the walk with `emit` follows what the module's `catch` blocks read as well.
+With `defer_calls=false` the caller needs the proof during compilation. An
+opaque call or a custom derivative reached by the data then ends the proof.
 """
 function readonly_walk!(
         todo::Vector{LLVM.Value}, @nospecialize(rootfn::Union{Nothing, LLVM.Function}), world::UInt,
-        enzyme_ctx::EnzymeContext, state::ReadonlyWalkState, emit::Bool,
+        enzyme_ctx::EnzymeContext, state::ReadonlyWalkState, emit::Bool; defer_calls::Bool = true,
     )::Tuple{Bool, Bool}
     wrote = false
     returned = false
@@ -7122,6 +7132,19 @@ function readonly_walk!(
                 end
             end
 
+            # Eliding a shadow needs a proof now. A dynamic call can only
+            # check its writes later, and a custom derivative can use the
+            # shadow independently of what its primal does.
+            if !defer_calls && user isa LLVM.CallInst
+                called = user.called_operand
+                if dynamic_call_operands(user) !== nothing ||
+                        (
+                        called isa LLVM.Function && haskey(called.function_attributes, "enzyme_math") &&
+                            called.function_attributes["enzyme_math"].value == "enzyme_custom"
+                    )
+                    return (true, returned)
+                end
+            end
             if !mayWriteToMemory(user)
                 slegal, foundv, byref = abs_typeof(user, enzyme_ctx)
                 if slegal
@@ -7302,7 +7325,7 @@ function readonly_walk!(
                                 for i in positions
                                     push!(roots, parms[i])
                                 end
-                                res = readonly_walk!(roots, called, world, enzyme_ctx, state, false)
+                                res = readonly_walk!(roots, called, world, enzyme_ctx, state, false; defer_calls)
                                 state.shared[key] = res
                             end
                             callee_wrote, callee_returned = res

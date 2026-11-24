@@ -1273,6 +1273,28 @@ end
 
 const DENSE_VCAT_METHOD = which(Base.vcat, Tuple{Vararg{Vector{T}}} where {T})
 
+# A dynamic property read can wait until its consumer only for Base's
+# projection of an existing immutable field. In particular a user method or
+# derivative rule must still run at the original getter site.
+plain_array_property(owner, name) = false
+const DEFAULT_PROPERTY_METHOD = which(getproperty, Tuple{Any, Symbol})
+
+function plain_property_rewrite(interp, argtypes, sv)
+    length(argtypes) == 3 && DEFAULT_PROPERTY_METHOD.module === Base || return nothing
+    owner = Core.Compiler.widenconst(argtypes[2])
+    key = Core.Compiler.widenconst(argtypes[3])
+    owner isa DataType && owner <: NamedTuple && isconcretetype(owner) || return nothing
+    key isa DataType && key <: Val && isconcretetype(key) || return nothing
+    name = only(key.parameters)
+    name isa Symbol && hasfield(owner, name) || return nothing
+    T = fieldtype(owner, name)
+    T <: Array && isconcretetype(T) && isbitstype(eltype(T)) || return nothing
+    return checked_method_rewrite(
+        interp, getproperty, Tuple{typeof(getproperty), owner, Symbol}, sv,
+        (DEFAULT_PROPERTY_METHOD, Returns(true)),
+    )
+end
+
 include("concatenation.jl")
 include("foreach.jl")
 include("tuple_map.jl")
@@ -1881,6 +1903,9 @@ function enzyme_abstract_call_known(
 
     if interp.broadcast_rewrite
         replacement = concat_rewrite(interp, f, argtypes, sv)
+        if f === plain_array_property
+            replacement = plain_property_rewrite(interp, argtypes, sv)
+        end
         @static if VERSION >= v"1.11-"
             if replacement === nothing && f === getindex
                 replacement = boxed_index_rewrite(interp, argtypes, sv)
