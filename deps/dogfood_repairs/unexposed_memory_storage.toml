@@ -1,0 +1,3 @@
+summary = "On Julia 1.11 and later, writes into an array the function allocates after a call, or before it without exposing it to the call, no longer count as overwriting what the call read: libEnzyme follows the array's Memory when it is new or merged with the empty Memory (with default or forced bounds checks), allocated inline or on the stack, also when Julia loads its data pointer back from the array header"
+libenzyme_build = "9cbce74ffd295a6d6a92e2972b7df7f3101cea71"
+tests = ["test/rules/overwritten_references.jl", "test/fresh_buffer_cache.jl"]

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- On Julia 1.11 and later, writes into arrays a function allocates no longer
+  count as overwriting what an earlier call read, so the reverse pass rereads
+  the call's inputs instead of saving them, and a custom reverse rule over a
+  struct that holds an array keeps `EnzymeRules.overwritten(config)` `false`.
+  This covers arrays allocated after the call (`zeros`, a broadcast, a
+  reshape) and arrays allocated before a loop that stores each result into
+  them, as a plate of cells does: the compiler now follows the array's
+  `Memory` when it is new or merged with the empty `Memory` (with default or
+  forced bounds checks), allocated inline or moved to the stack, also when
+  Julia loads its data pointer back from the array header. The store Julia
+  makes before each call of a struct it passes by reference, when the struct
+  comes from a container, no longer counts either: it writes back the value
+  the slot already holds. ReactiveKernels' rule adapter then reads the
+  struct's array in place instead of copying it on every call. The native
+  repairs are available as
+  `Enzyme.has_dogfood_repair(:unexposed_memory_storage)` and
+  `Enzyme.has_dogfood_repair(:unchanged_slot_stores)`.
 - Forward mode through complex BLAS and LAPACK calls gives the right tangent.
   libEnzyme wrote every constant of its BLAS rules as `v + v*im` for a complex
   routine, so with two or more active arguments the Forward rules of `gemv`,

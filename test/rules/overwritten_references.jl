@@ -309,6 +309,28 @@ function stored_rows_runtime_length(g, a, x)
     end
     return sum(sum, cells)
 end
+# Cells that hold a number computed from each result, as a plate whose cells hold
+# a sum does. On Julia 1.12 and 1.13 such an array of length 3 lives on the stack.
+function summed_rows(g, a, x)
+    term = Vector{Float64}(undef, 3)
+    for k in 1:3
+        term[k] = sum(doubled(g, x))
+    end
+    return sum(term)
+end
+function summed_rows_runtime_length(g, a, x)
+    term = Vector{Float64}(undef, length(a) + 2)
+    for k in eachindex(term)
+        term[k] = sum(doubled(g, x))
+    end
+    return sum(term)
+end
+# One result stored once, outside a loop.
+function stored_row(g, a, x)
+    cell = Vector{Vector{Float64}}(undef, length(a))
+    cell[1] = doubled(g, x)
+    return sum(cell[1])
+end
 # The same, also writing the array behind `g` after each call.
 function stored_rows_written(g, a, x)
     cells = Vector{Vector{Float64}}(undef, length(a) + 2)
@@ -317,6 +339,38 @@ function stored_rows_written(g, a, x)
         a[1] += 1.0
     end
     return sum(sum, cells)
+end
+# The rule's argument read from a tuple the function receives, inside the loop.
+# Julia passes the struct to the rule by reference, through a stack slot that it
+# fills again before each call, with the same value.
+function ctx_summed_rows(ctx, a, x)
+    s = 0.0
+    for k in 1:(length(a) + 2)
+        s += sum(doubled(ctx[1], x))
+    end
+    return s
+end
+function ctx_stored_rows(ctx, a, x)
+    cells = Vector{Vector{Float64}}(undef, length(a) + 2)
+    for k in eachindex(cells)
+        cells[k] = doubled(ctx[1], x)
+    end
+    return sum(sum, cells)
+end
+# The same, also writing the array behind the rule's argument after each call.
+function ctx_written_rows(ctx, a, x)
+    s = 0.0
+    for k in 1:(length(a) + 2)
+        s += sum(doubled(ctx[1], x))
+        a[1] += 1.0
+    end
+    return s
+end
+# A number stored into the array the rule read, after the call.
+function summed_into_argument(g, a, x)
+    y = sum(doubled(g, x))
+    a[1] = 4.0
+    return y
 end
 # Here the array the result goes into is the rule's argument: the store replaces
 # the vector the rule read.
@@ -404,11 +458,18 @@ end
 
 # Whether the loaded libEnzyme lets a write barrier leave such an array unexposed.
 # Julia 1.11 and later keep an array's elements in a `Memory`, whose data pointer
-# libEnzyme does not trace back to the allocation when the memory is allocated
-# inline or merged with the shared empty memory, so there the flag stays `true`.
-const barrier_precise = precise && VERSION < v"1.11-" &&
-    isdefined(Enzyme, :has_dogfood_repair) &&
-    Enzyme.has_dogfood_repair(:unexposed_storage_barriers)
+# libEnzyme traces back to the allocation, also when the memory is allocated
+# inline, moved to the stack or merged with the shared empty memory, only with
+# repair `unexposed_memory_storage`; without it the flag stays `true` there.
+const barrier_precise = precise && isdefined(Enzyme, :has_dogfood_repair) &&
+    Enzyme.has_dogfood_repair(:unexposed_storage_barriers) &&
+    (VERSION < v"1.11-" || Enzyme.has_dogfood_repair(:unexposed_memory_storage))
+
+# Whether the loaded libEnzyme sees that the store Julia makes into the stack
+# slot of a struct it passes by reference, before each call in a loop, writes
+# back the value the slot already holds.
+const slot_precise = precise && isdefined(Enzyme, :has_dogfood_repair) &&
+    Enzyme.has_dogfood_repair(:unchanged_slot_stores)
 
 # Whether stores of pointers alone after the call leave the flag `false` for an
 # argument whose reachable mutable memory holds no pointers. From Julia 1.11 an
@@ -541,9 +602,13 @@ end
             "immutable struct" => Wrapped,
             "tuple" => v -> (v, 1),
         )
-        @testset "$(nameof(caller))" for caller in (stored_rows, stored_rows_runtime_length)
+        @testset "$(nameof(caller))" for (caller, expected) in (
+                stored_rows => 27.0, stored_rows_runtime_length => 27.0,
+                summed_rows => 27.0, summed_rows_runtime_length => 27.0,
+                stored_row => 9.0,
+            )
             shared[1] = 3.0
-            @test row_derivative(caller, wrap(shared)) == 27.0
+            @test row_derivative(caller, wrap(shared)) == expected
             if barrier_precise
                 @test !ROW_FLAGS[][2]
             end
@@ -551,6 +616,28 @@ end
         shared[1] = 3.0
         @test row_derivative(stored_rows_written, wrap(shared)) == 3 * (3.0 + 4.0 + 5.0)
         @test ROW_FLAGS[][2]
+        shared[1] = 3.0
+        @test row_derivative(summed_into_argument, wrap(shared)) == 9.0
+        @test ROW_FLAGS[][2]
+        shared[1] = 3.0
+    end
+
+    @testset "The rule's argument read from a tuple in the loop, $name" for (name, wrap) in (
+            "Vector" => identity,
+            "immutable struct" => Wrapped,
+            "tuple" => v -> (v, 1),
+        )
+        @testset "$(nameof(caller))" for caller in (ctx_summed_rows, ctx_stored_rows)
+            shared[1] = 3.0
+            @test row_derivative(caller, (wrap(shared), 1)) == 27.0
+            if slot_precise && barrier_precise
+                @test !ROW_FLAGS[][2]
+            end
+        end
+        shared[1] = 3.0
+        @test row_derivative(ctx_written_rows, (wrap(shared), 1)) == 3 * (3.0 + 4.0 + 5.0)
+        @test ROW_FLAGS[][2]
+        shared[1] = 3.0
     end
 
     @testset "A result stored into the array the rule read" begin
