@@ -1343,24 +1343,52 @@ function constant_slot_load(
     ld in seen && return true
     push!(seen, ld)
     slot, offset = constant_field_pointer(ld.operands[1])
-    is_stack_slot(slot) || return false
+    # `getfield(nt, s)` of a `NamedTuple` passed by value, with a `Symbol` `s` that is
+    # not a constant, reads the field at an index computed at run time from the slot
+    # holding a copy of `nt` (`gep [2 x ptr], slot, 0, %i`). Such a load reads one of
+    # the slot's fields, so it returns constant data when every field holds some.
+    dynamic = !is_stack_slot(slot)
+    if dynamic
+        slot = dynamic_slot_base(slot)
+        slot === nothing && return false
+    end
     loads = Tuple{LLVM.LoadInst, Int}[]
     writes = Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}[]
     dl = slot.parent.parent.parent.datalayout
-    slot_field_accesses!(loads, writes, slot, 0, dl) || return false
+    dynamic_loads = dynamic ? LLVM.LoadInst[] : nothing
+    # Accesses on paths that end in `unreachable` cannot reach `ld` on another path.
+    dead = guaranteed_unreachable(ld.parent.parent)
+    ld.parent in dead && (dead = nothing)
+    slot_field_accesses!(loads, writes, slot, 0, dl; dynamic_loads, dead) || return false
+    dynamic && !(ld in dynamic_loads) && return false
     stored = false
     for (woff, len, val) in writes
-        (woff < offset + sizeof(Int) && offset < woff + len) || continue
-        if val === false
-            # A zero `memset` or a stored zero constant that covers the field.
-            (woff <= offset && offset + sizeof(Int) <= woff + len) || return false
-            continue
+        if dynamic
+            # A cleared field holds null; any other write must store a pointer.
+            val === false && continue
+        else
+            (woff < offset + sizeof(Int) && offset < woff + len) || continue
+            if val === false
+                # A zero `memset` or a stored zero constant that covers the field.
+                (woff <= offset && offset + sizeof(Int) <= woff + len) || return false
+                continue
+            end
         end
-        (val isa LLVM.Value && woff == offset && len == sizeof(Int)) || return false
+        (val isa LLVM.Value && (dynamic || woff == offset) && len == sizeof(Int)) || return false
         constant_argument_data(gutils, val, enzyme_ctx, seen) || return false
         stored = true
     end
     return stored
+end
+
+# The stack slot that `ptr` points into through casts and `getelementptr`s, constant
+# or not, or `nothing`.
+function dynamic_slot_base(@nospecialize(ptr::LLVM.Value))::Union{Nothing, LLVM.Value}
+    while isa(ptr, LLVM.BitCastInst) || isa(ptr, LLVM.AddrSpaceCastInst) ||
+            isa(ptr, LLVM.GetElementPtrInst)
+        ptr = ptr.operands[1]
+    end
+    return is_stack_slot(ptr) ? ptr : nothing
 end
 
 # A boxed binding can supply its own shadow when its value cannot contain derivative

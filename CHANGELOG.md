@@ -16,6 +16,26 @@
   still be changed by that store. The native repair is available as
   `Enzyme.has_dogfood_repair(:later_store_targets)`.
 
+- On Julia 1.10, differentiating a call that returns a union of arrays with one
+  element type no longer aborts the process with `LLVM ERROR: Canonicalization
+  failed` (or `illegal insertion`). Such a call is `getproperty` of a
+  `NamedTuple` of a vector and a matrix read from a non-constant global, which
+  every Reverse and Forward derivative of a function reading that global
+  dispatches at run time. Enzyme gave the returned pointer the type of the
+  array header it points to; a boxed union return now gets the pointer level a
+  boxed argument gets (`Enzyme.has_dogfood_repair(:boxed_union_return)`).
+- A field of a `Const` argument passed by value that a call reads at an index
+  known only at run time, as `getfield(nt, s)` does with a `Symbol` `s` that is
+  not a constant, counts as constant data under static activity: it gets a zero
+  shadow where it meets active data instead of raising
+  `EnzymeRuntimeActivityError`. Writes into the argument's stack copy on paths
+  that end in `unreachable`, such as the bounds error under
+  `--check-bounds=yes`, no longer keep any field of it from counting as
+  constant data. A function that reads its data from a non-constant global
+  `NamedTuple` of arrays raised that error on Julia 1.12 and 1.13; with both
+  repairs, on Julia 1.10, 1.12 and 1.13, its gradient is the one the same
+  function gives with a `const` global
+  (`Enzyme.has_dogfood_repair(:dynamic_slot_field_loads)`).
 - On Julia 1.12, the second derivative of a call such as
   `ccall((:cos, library()), Float64, (Float64,), x)` works on the first call
   when `library()` returns a constant library name. The first and second

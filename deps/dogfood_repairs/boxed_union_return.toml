@@ -1,0 +1,2 @@
+summary = "A boxed union return gets the pointer level of its type tree, so a dynamically dispatched getproperty of a NamedTuple of arrays no longer aborts compilation on Julia 1.10"
+tests = ["test/boxed_union_return.jl"]

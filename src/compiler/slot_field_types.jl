@@ -23,19 +23,36 @@
 # into. `writes` holds (offset, length, stored value), with `nothing` for a write
 # of unknown values and `false` for a zero `memset` or a stored zero constant.
 # Returns false if code this walk does not see could write into the slot.
+#
+# A pointer into the slot at an offset known only at run time makes the walk fail,
+# unless `dynamic_loads` is a vector and loads are the only accesses through that
+# pointer: they are then collected there, since they read some field of the slot.
+#
+# Uses in the blocks `dead` are skipped. From such a block every path ends in
+# `unreachable`, so nothing it writes reaches a load in any other block: under
+# `--check-bounds=yes`, the error a bounds check raises receives the slot.
 function slot_field_accesses!(
         loads::Vector{Tuple{LLVM.LoadInst, Int}},
         writes::Vector{Tuple{Int, Int, Union{Nothing, Bool, LLVM.Value}}},
-        @nospecialize(ptr::LLVM.Value), offset::Int, dl::LLVM.DataLayout,
+        @nospecialize(ptr::LLVM.Value), offset::Int, dl::LLVM.DataLayout;
+        dynamic_loads::Union{Nothing, Vector{LLVM.LoadInst}} = nothing,
+        dead::Union{Nothing, Set{LLVM.BasicBlock}} = nothing,
     )::Bool
     for u in ptr.uses
         user = u.user
+        if dead !== nothing && isa(user, LLVM.Instruction) && user.parent in dead
+            continue
+        end
         if isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst)
-            slot_field_accesses!(loads, writes, user, offset, dl) || return false
+            slot_field_accesses!(loads, writes, user, offset, dl; dynamic_loads, dead) || return false
         elseif isa(user, LLVM.GetElementPtrInst) && user.operands[1] == ptr
             off = constant_gep_offset(user)
-            off === nothing && return false
-            slot_field_accesses!(loads, writes, user, offset + off, dl) || return false
+            if off === nothing
+                dynamic_loads === nothing && return false
+                dynamic_slot_loads!(dynamic_loads, user, dead) || return false
+                continue
+            end
+            slot_field_accesses!(loads, writes, user, offset + off, dl; dynamic_loads, dead) || return false
         elseif isa(user, LLVM.LoadInst)
             push!(loads, (user, offset))
         elseif isa(user, LLVM.StoreInst) && user.operands[2] == ptr && user.operands[1] != ptr
@@ -46,6 +63,31 @@ function slot_field_accesses!(
             push!(writes, (offset, len, isa(val, LLVM.Constant) && LLVM.isnull(val) ? false : val))
         elseif isa(user, LLVM.CallInst)
             slot_field_call!(writes, user, ptr, offset) || return false
+        else
+            return false
+        end
+    end
+    return true
+end
+
+# The loads through `ptr`, a pointer into a slot at an offset known only at run time,
+# such as the field `getfield(nt, s)` reads with a `Symbol` `s` that is not a constant.
+# False if anything else uses it: a write through it could change any field. Uses in
+# the blocks `dead` are skipped (`slot_field_accesses!`).
+function dynamic_slot_loads!(
+        loads::Vector{LLVM.LoadInst}, @nospecialize(ptr::LLVM.Value),
+        dead::Union{Nothing, Set{LLVM.BasicBlock}} = nothing,
+    )::Bool
+    for u in ptr.uses
+        user = u.user
+        if dead !== nothing && isa(user, LLVM.Instruction) && user.parent in dead
+            continue
+        end
+        if isa(user, LLVM.BitCastInst) || isa(user, LLVM.AddrSpaceCastInst) ||
+                (isa(user, LLVM.GetElementPtrInst) && user.operands[1] == ptr)
+            dynamic_slot_loads!(loads, user, dead) || return false
+        elseif isa(user, LLVM.LoadInst)
+            push!(loads, user)
         else
             return false
         end
