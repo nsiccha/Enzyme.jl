@@ -1,0 +1,3 @@
+summary = "Forward the combined Reverse tape arena through non-inlined augmented callees to their bounded pointer-free loop caches"
+libenzyme_build = "eb5570f7aed8ea06777f35cab0d4f7d1b992016b"
+tests = ["test/tape_arena.jl"]
