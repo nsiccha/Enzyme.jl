@@ -141,6 +141,21 @@ function arena_expm_many(p, scales, ::Val)
     end
     return total
 end
+
+# Keep both call boundaries, as in a propagator that uses the matrix
+# exponential on one branch. The intermediate function has no loop of its own.
+@noinline function arena_expm_step(x, scale)
+    m = Base.@noinline arena_expm(scale * x)
+    return m[1] + m[5] + m[9]
+end
+
+function arena_nested_expm(p, scales, ::Val)
+    total = zero(eltype(p))
+    for scale in scales
+        total += arena_expm_step(arena_matrix(p), scale)
+    end
+    return total
+end
 arena_expm_gradient(p, tag) = (dp = zero(p); autodiff(Reverse, arena_expm_once, Active, Duplicated(copy(p), dp), Const(tag)); dp)
 arena_expm_many_gradient(p, scales, tag) = (dp = zero(p); autodiff(Reverse, arena_expm_many, Active, Duplicated(copy(p), dp), Const(scales), Const(tag)); dp)
 arena_expm_many_gradient!(dp, p, scales, tag) = (fill!(dp, 0); autodiff(Reverse, arena_expm_many, Active, Duplicated(p, dp), Const(scales), Const(tag)); nothing)
@@ -235,10 +250,14 @@ if ARENA
         end
     end
 
-    function allocation_sites(f, argtypes)
+    function arena_derivative_ir(f, argtypes)
         io = IOBuffer()
         Enzyme.Compiler.enzyme_code_llvm(io, f, Active, argtypes; raw = true, dump_module = true, debuginfo = :none)
-        ir = String(take!(io))
+        return String(take!(io))
+    end
+
+    function allocation_sites(f, argtypes)
+        ir = arena_derivative_ir(f, argtypes)
         # Calls of malloc outside the arena's own chunk allocation.
         body = replace(ir, r"define [^\n]*@__enzyme_caller_tape_reserve\(.*?\n}\n"s => "")
         return (malloc = count(r"call[^\n]*@malloc\(", body), reserve = count(r"call[^\n]*@__enzyme_caller_tape_reserve\(", ir))
@@ -275,5 +294,28 @@ if ARENA
         # Eighteen caches of the Taylor and squaring loops, each one malloc
         # without the arena.
         @test expm_on.malloc <= expm_off.malloc - 17
+    end
+
+    @testset "Tape arena through an augmented caller" begin
+        p = [0.75, 0.14, -0.22, -0.1, 0.83, 0.03, 0.08, -0.29, 0.58]
+        scales = [0.2, 0.8, 2.0]
+        tag = Val(:nested_caller)
+        dp = zero(p)
+        autodiff(Reverse, arena_nested_expm, Active, Duplicated(p, dp), Const(scales), Const(tag))
+        @test dp ≈ central(x -> arena_nested_expm(x, scales, tag), p, 1.0e-6) rtol = 1.0e-6 atol = 1.0e-7
+
+        types = Tuple{Duplicated{typeof(p)}, Const{typeof(scales)}, Const{typeof(tag)}}
+        leaf = r"^define [^\n]*@augmented_julia_arena_expm_\d+[^\n]*\n(.*?)^}"ms
+        on = match(leaf, arena_derivative_ir(arena_nested_expm, types))
+        off = with_arena(() -> match(leaf, arena_derivative_ir(arena_nested_expm, types)), false)
+        @test on !== nothing && off !== nothing
+        if on !== nothing && off !== nothing
+            # Count inside the matrix exponential, independently of the outer
+            # derivative's cache allocations and the arena's own chunk mallocs.
+            alloc = r"call[^\n]*@malloc\("
+            @test count(alloc, off.captures[1]) >= 9
+            @test count(alloc, on.captures[1]) < count(alloc, off.captures[1])
+            @test occursin("@__enzyme_caller_tape_reserve(", on.captures[1])
+        end
     end
 end
