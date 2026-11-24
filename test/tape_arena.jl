@@ -306,16 +306,15 @@ if ARENA
 
         types = Tuple{Duplicated{typeof(p)}, Const{typeof(scales)}, Const{typeof(tag)}}
         leaf = r"^define [^\n]*@augmented_julia_arena_expm_\d+[^\n]*\n(.*?)^}"ms
-        on = match(leaf, arena_derivative_ir(arena_nested_expm, types))
-        off = with_arena(() -> match(leaf, arena_derivative_ir(arena_nested_expm, types)), false)
-        @test on !== nothing && off !== nothing
-        if on !== nothing && off !== nothing
-            # Count inside the matrix exponential, independently of the outer
-            # derivative's cache allocations and the arena's own chunk mallocs.
-            alloc = r"call[^\n]*@malloc\("
-            @test count(alloc, off.captures[1]) >= 9
-            @test count(alloc, on.captures[1]) < count(alloc, off.captures[1])
-            @test occursin("@__enzyme_caller_tape_reserve(", on.captures[1])
-        end
+        on = eachmatch(leaf, arena_derivative_ir(arena_nested_expm, types))
+        off = with_arena(() -> eachmatch(leaf, arena_derivative_ir(arena_nested_expm, types)), false)
+        alloc = r"call[^\n]*@malloc\("
+        reserve = r"call[^\n]*@__enzyme_caller_tape_reserve\("
+        baseline = maximum((count(alloc, m.captures[1]) for m in off); init = 0)
+        @test baseline >= 9
+        # Peeling can emit a separate leaf for calls outside the loop. The
+        # leaf for the loop body must replace every baseline malloc with a
+        # reservation, regardless of which specialization is printed first.
+        @test any(m -> !occursin(alloc, m.captures[1]) && count(reserve, m.captures[1]) == baseline, on)
     end
 end
