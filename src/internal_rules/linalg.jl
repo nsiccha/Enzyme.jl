@@ -1,27 +1,111 @@
-# From LinearAlgebra ~/.julia/juliaup/julia-1.10.0-beta3+0.x64.apple.darwin14/share/julia/stdlib/v1.10/LinearAlgebra/src/generic.jl:1110
-@inline function compute_lu_cache(cache_A::AT, b::BT) where {AT, BT}
+# How `A \ b` solves with a matrix, as LinearAlgebra's `\` decides it (generic.jl, the same
+# on Julia 1.10, 1.12 and 1.13): a diagonal, lower or upper triangular solve, or an LU
+# factorization of a square matrix, and a pivoted QR factorization of a rectangular one.
+const _DENSE_DIAGONAL = 0x01
+const _DENSE_LOWER = 0x02
+const _DENSE_UPPER = 0x03
+const _DENSE_LU = 0x04
+# For a real rectangular system the pullback needs the matrix for both the transpose solve
+# and the least-squares residuals, so the matrix itself is solved with.
+const _DENSE_MATRIX = 0x05
+const _DENSE_QR = 0x06
+
+@inline function _dense_solve_kind(cache_A::AT, b::BT) where {AT, BT}
     LinearAlgebra.require_one_based_indexing(cache_A, b)
     m, n = size(cache_A)
 
     if m == n
         if LinearAlgebra.istril(cache_A)
-            if LinearAlgebra.istriu(cache_A)
-                return LinearAlgebra.Diagonal(cache_A)
-            else
-                return LinearAlgebra.LowerTriangular(cache_A)
-            end
-        elseif LinearAlgebra.istriu(cache_A)
-            return LinearAlgebra.UpperTriangular(cache_A)
-        else
-            return LinearAlgebra.lu(cache_A)
+            return LinearAlgebra.istriu(cache_A) ? _DENSE_DIAGONAL : _DENSE_LOWER
         end
+        return LinearAlgebra.istriu(cache_A) ? _DENSE_UPPER : _DENSE_LU
     end
-    # For a real rectangular system the pullback needs the matrix for both the
-    # transpose solve and the least-squares residuals.
-    if AT <: Matrix{<:LinearAlgebra.BlasReal} && eltype(AT) === eltype(BT)
+    return _dense_rectangular_kind(AT, BT)
+end
+
+# How a rectangular system is solved, which the types alone decide.
+@inline _dense_rectangular_kind(::Type{AT}, ::Type{BT}) where {AT, BT} =
+    AT <: Matrix{<:LinearAlgebra.BlasReal} && eltype(AT) === eltype(BT) ? _DENSE_MATRIX : _DENSE_QR
+
+@inline function compute_lu_cache(cache_A, b)
+    kind = _dense_solve_kind(cache_A, b)
+    if kind == _DENSE_DIAGONAL
+        return LinearAlgebra.Diagonal(cache_A)
+    elseif kind == _DENSE_LOWER
+        return LinearAlgebra.LowerTriangular(cache_A)
+    elseif kind == _DENSE_UPPER
+        return LinearAlgebra.UpperTriangular(cache_A)
+    elseif kind == _DENSE_LU
+        return LinearAlgebra.lu(cache_A)
+    elseif kind == _DENSE_MATRIX
         return cache_A
     end
     return LinearAlgebra.qr(cache_A, ColumnNorm())
+end
+
+# The factorization `compute_lu_cache` makes of a matrix, in fields of concrete types. Its
+# six types as one value form a union Julia cannot split, so a rule that solved with it,
+# or kept it on its tape, would dispatch at run time on every call. `R` is
+# `_dense_rectangular_kind` of the matrix and the right-hand side, so code for the other
+# way of solving a rectangular system is not compiled.
+struct DenseSolveCache{T, M <: AbstractMatrix{T}, R}
+    kind::UInt8
+    # The matrix (a diagonal, triangular or rectangular solve), or the factors of the LU
+    # or the QR factorization.
+    factors::M
+    # The diagonal of a diagonal matrix, or the scalars τ of the QR factorization.
+    values::Union{Nothing, Vector{T}}
+    # The row pivots of the LU, or the column permutation of the QR factorization.
+    perm::Union{Nothing, Vector{Int}}
+    info::LinearAlgebra.BlasInt
+end
+
+@inline function DenseSolveCache(cache_A::M, b::BT) where {T, M <: AbstractMatrix{T}, BT}
+    R = _dense_rectangular_kind(M, BT)
+    kind = _dense_solve_kind(cache_A, b)
+    if kind == _DENSE_DIAGONAL
+        D = LinearAlgebra.Diagonal(cache_A)
+        return DenseSolveCache{T, M, R}(kind, cache_A, D.diag, nothing, 0)
+    elseif kind == _DENSE_LU
+        F = LinearAlgebra.lu(cache_A)
+        return DenseSolveCache{T, M, R}(kind, F.factors::M, nothing, F.ipiv::Vector{Int}, F.info)
+    elseif R == _DENSE_QR && kind == _DENSE_QR
+        F = LinearAlgebra.qr(cache_A, ColumnNorm())
+        return DenseSolveCache{T, M, R}(kind, F.factors::M, F.τ::Vector{T}, F.jpvt::Vector{Int}, 0)
+    end
+    return DenseSolveCache{T, M, R}(kind, cache_A, nothing, nothing, 0)
+end
+
+# `f(F)`, for the factorization F that `C` holds, of the type `compute_lu_cache` gives it.
+# Each branch calls `f` with a concrete type.
+@inline function _with_factorization(f::F, C::DenseSolveCache{T, M, R}) where {F, T, M, R}
+    kind = C.kind
+    if kind == _DENSE_DIAGONAL
+        return f(LinearAlgebra.Diagonal(C.values::Vector{T}))
+    elseif kind == _DENSE_LOWER
+        return f(LinearAlgebra.LowerTriangular(C.factors))
+    elseif kind == _DENSE_UPPER
+        return f(LinearAlgebra.UpperTriangular(C.factors))
+    elseif kind == _DENSE_LU
+        return f(LinearAlgebra.LU(C.factors, C.perm::Vector{Int}, C.info))
+    elseif R == _DENSE_MATRIX
+        return f(C.factors)
+    end
+    return f(LinearAlgebra.QRPivoted(C.factors, C.values::Vector{T}, C.perm::Vector{Int}))
+end
+
+# Whether `C` holds a real rectangular matrix, solved with as it is.
+_solves_with_matrix(C::DenseSolveCache{T, M, R}) where {T, M, R} = R == _DENSE_MATRIX && C.kind == _DENSE_MATRIX
+
+# F \ B
+struct _LeftDivide{B}
+    B::B
+end
+(d::_LeftDivide)(F) = F \ d.B
+
+# transpose(F) \ B
+struct _TransposeSolve{B}
+    B::B
 end
 
 # Triangular solves for derivatives. For a strided triangular BLAS matrix, `ldiv!` and `\`
@@ -78,6 +162,8 @@ _trisolve(A, B) = A \ B
 _trisolve(A::AbstractMatrix{T}, B::StridedVecOrMat{T}) where {T <: LinearAlgebra.BlasFloat} =
     _tri_blas_args(A) === nothing ? A \ B : _trisolve!(A, copy(B))
 
+(d::_TransposeSolve)(F) = _trisolve(transpose(F), d.B)
+
 # y=inv(A) B
 #   dA −= z y^T
 #   dB += z, where  z = inv(A^T) dy
@@ -108,9 +194,9 @@ function _augmented_dense_solve(config, ::Type{RT}, A::Annotation{AT}, b) where 
         A.val
     end
 
-    cache_A = compute_lu_cache(cache_A, b.val)
+    cache_A = DenseSolveCache(cache_A, b.val)
 
-    res = (cache_A \ b.val)::eltype(RT)
+    res = _with_factorization(_LeftDivide(b.val), cache_A)::eltype(RT)
 
     dres = if EnzymeRules.width(config) == 1
         zero(res)
@@ -139,15 +225,6 @@ function _augmented_dense_solve(config, ::Type{RT}, A::Annotation{AT}, b) where 
         nothing
     end
 
-    UT = Union{
-        AT,
-        LinearAlgebra.Diagonal{eltype(AT), Vector{eltype(AT)}},
-        LinearAlgebra.LowerTriangular{eltype(AT), AT},
-        LinearAlgebra.UpperTriangular{eltype(AT), AT},
-        LinearAlgebra.LU{eltype(AT), AT, Vector{Int}},
-        LinearAlgebra.QRPivoted{eltype(AT), AT, Vector{eltype(AT)}, Vector{Int}},
-    }
-
     cache = NamedTuple{
         (Symbol("1"), Symbol("2"), Symbol("3"), Symbol("4")),
         Tuple{
@@ -157,7 +234,7 @@ function _augmented_dense_solve(config, ::Type{RT}, A::Annotation{AT}, b) where 
                     EnzymeRules.width(config) == 1 ? eltype(RT) :
                     NTuple{EnzymeRules.width(config), eltype(RT)}
                 ) : Nothing,
-            UT,
+            typeof(cache_A),
             typeof(cache_b),
         },
     }((cache_res, dres, cache_A, cache_b))
@@ -221,14 +298,15 @@ function EnzymeRules.reverse(
     end
 
     for (dA, db, dy) in zip(dAs, dbs, dys)
-        z = _trisolve(transpose(cache_A), dy)
+        z = _with_factorization(_TransposeSolve(dy), cache_A)
         if dA !== nothing && !(EnzymeRules.runtime_activity(config) && dA === A.val)
             dA .-= z * transpose(y)
-            if cache_A isa Matrix
+            if _solves_with_matrix(cache_A)
                 # The pseudoinverse also differentiates the residual and the
                 # projection onto the row space when the system is rectangular.
-                dA .+= (cache_b - cache_A * y) * transpose(cache_A \ z)
-                dA .+= (transpose(cache_A) \ y) * transpose(dy - transpose(cache_A) * z)
+                M = cache_A.factors
+                dA .+= (cache_b - M * y) * transpose(M \ z)
+                dA .+= (transpose(M) \ y) * transpose(dy - transpose(M) * z)
             end
         end
         if db !== nothing && !(EnzymeRules.runtime_activity(config) && db === b.val)
