@@ -1,0 +1,3 @@
+summary = "Forward mode through complex (c and z) BLAS and LAPACK routines: rule constants are (v, 0) instead of v + v*im, so gemv, gemm, symv, symm and syrk tangents with two active arguments are right, and the potrf Forward rule conjugates where a Hermitian factor needs it"
+libenzyme_build = "c504dd83812c122f343c693c82b4b5f387c3ffe2"
+tests = ["test/complex_forward_blas.jl"]
