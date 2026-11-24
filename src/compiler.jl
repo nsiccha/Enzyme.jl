@@ -3707,6 +3707,7 @@ include("compiler/record_merges.jl")
 include("compiler/retained_shadows.jl")
 include("compiler/slot_field_types.jl")
 include("compiler/memory_lengths.jl")
+include("compiler/bitcode_wrappers.jl")
 
 function enzyme!(
         job::CompilerJob,
@@ -7544,8 +7545,10 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
         end
     end
     found = String[]
+    wrapper_candidates = bitcode_wrapper_candidates(mod)
     if bitcode_replacement() &&
             API.EnzymeBitcodeReplacement(mod, disableFallback, found) != 0
+        inline_bitcode_wrappers!(wrapper_candidates, found)
         run!(InstCombinePass(), mod)
         toremove = String[]
         for f in mod.functions

@@ -348,6 +348,17 @@
   `test/ccall_library.jl` covers each spelling of the library for a libm
   function and for LAPACK's `lacpy` in Reverse, Forward and Forward over
   Reverse, calls that carry no derivative, and a function without a rule.
+- On Julia 1.12 and later, Forward mode differentiates `lmul!`, `rmul!` and `*`
+  with a triangular matrix (BLAS `trmm` and `trmv`), `BLAS.spmv!`, and nested
+  Forward derivatives through `potrf!`, instead of raising
+  `EnzymeNoDerivativeError` ("cannot handle blas argument within trmm").
+  Reverse over Forward through `A * transpose(B)` and `X' * X` (the `syrk`
+  branch) no longer raises `EnzymeInternalError`, and Reverse through
+  `BLAS.spmv!` with an active packed matrix no longer fails to compile. As on
+  Julia 1.10, a BLAS routine Enzyme has no native rule for in a mode is
+  differentiated through its reference implementation: Julia 1.12 names the
+  call after its library, and that call now reaches the implementation too.
+  The repair is available as `Enzyme.has_dogfood_repair(:blas_fallback_wrappers)`.
 - Differentiate BLAS and LAPACK calls such as `ccall((:dlacpy_64_, lbt()), ...)`
   on Julia 1.10–1.12. The derivative evaluates the library expression the
   first time the call site runs and uses that library for the original routine

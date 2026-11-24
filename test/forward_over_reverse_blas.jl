@@ -72,26 +72,18 @@ const BLAS_FOR_CASES = (
     "gemv N 4x3 * 3" => (x -> sum(abs2, reshape(x[1:12], 4, 3) * x[13:15]), 15),
 )
 
-# Products for which Julia keeps a run-time `A === B` branch to syrk. On Julia 1.12
-# and 1.13 Reverse over Forward through that branch raises an EnzymeInternalError
-# (Enzyme todo `0j5bnf4`, also before lascl had rules), so the reference comparison
-# is pinned there. Forward over Reverse itself passes.
-const BLAS_SYRK_BRANCH = (
-    "gemm N,T 1x3 * transpose(3x3)", "gemm N,T 4x3 * transpose(2x3)",
-    "gemm T,N transpose(3x4) * 3x2", "syrk X' * X", "syrk X * X'",
-)
-
+# Julia keeps a run-time `A === B` branch to syrk for `A * transpose(B)` and `X' * X`.
+# Reverse over Forward through it differentiates the syr2k call that syrk's Forward rule
+# makes through syr2k's reference bitcode. On Julia 1.12 and 1.13 that call is named
+# after its library, and it raised an EnzymeInternalError until the repair
+# `blas_fallback_wrappers` (Enzyme todo `0j5bnf4`).
 @testset "Forward over Reverse through BLAS products" begin
     @testset "$name" for (name, (f, n)) in BLAS_FOR_CASES
         x = [0.1 + 0.07i for i in 1:n]
         v = [cos(i) for i in 1:n]
         hv = blas_hvp_forward_over_reverse(f, x, v)
         @test isapprox(hv, blas_hvp_central(f, x, v); rtol = 1.0e-6, atol = 1.0e-6)
-        if VERSION >= v"1.12" && name in BLAS_SYRK_BRANCH
-            @test_broken isapprox(hv, blas_hvp_reverse_over_forward(f, x, v); rtol = 1.0e-10, atol = 1.0e-10)
-        else
-            @test isapprox(hv, blas_hvp_reverse_over_forward(f, x, v); rtol = 1.0e-10, atol = 1.0e-10)
-        end
+        @test isapprox(hv, blas_hvp_reverse_over_forward(f, x, v); rtol = 1.0e-10, atol = 1.0e-10)
         # The inputs are left alone.
         @test x == [0.1 + 0.07i for i in 1:n]
     end

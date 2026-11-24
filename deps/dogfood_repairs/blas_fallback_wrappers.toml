@@ -1,0 +1,2 @@
+summary = "On Julia 1.12 and later, Forward mode through BLAS routines libEnzyme has no Forward rule for (trmm, trmv, spmv), such as lmul! with a triangular matrix, differentiates their reference implementation as on Julia 1.10 instead of raising EnzymeNoDerivativeError"
+tests = ["test/blas_fallback_wrappers.jl"]
