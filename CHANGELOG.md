@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Native CPU derivatives of the visible Float64 expression `exp(-exp(x))`
+  preserve representable tail derivatives, including when the value has
+  rounded to zero. Forward, reverse and nested differentiation also return
+  zero where the inner exponential overflows and the derivative underflows.
+  The repair is available as `Enzyme.has_dogfood_repair(:expnegexp_derivatives)`.
+
 - On Julia 1.11 and later, writes into arrays a function allocates no longer
   count as overwriting what an earlier call read, so the reverse pass rereads
   the call's inputs instead of saving them, and a custom reverse rule over a
