@@ -1,5 +1,80 @@
 using Enzyme, Test
 
+double_exponential(x) = exp(-exp(x))
+double_exp_forward(x, seed) = only(autodiff(Forward, double_exponential, Duplicated(x, seed)))
+double_exp_first(x) = double_exp_forward(x, 1.0)
+double_exp_second(x) = only(autodiff(Forward, double_exp_first, Duplicated(x, 1.0)))
+double_exp_reverse(x) = only(only(autodiff(Reverse, double_exponential, Active(x))))
+
+function double_exp_reference(x, seeds...)
+    a = exp(BigFloat(x))
+    p = (-a, a * (a - 1), a * (-a^2 + 3a - 1))
+    return Float64(prod(BigFloat, seeds) * p[length(seeds)] * exp(-a))
+end
+
+observed_exp(x) = exp(x)
+Enzyme.EnzymeRules.@easy_rule(observed_exp(x::Float64), (7.0,))
+
+@testset "Derivatives of exp(-exp(x))" begin
+    for x in (-750.0, -1.0, 0.0, 2.0, 6.5, log(750.0), 354.0, 355.0, 700.0, 710.0, 990.0, 1000.0)
+        first, second, third = (double_exp_reference(x, ntuple(Returns(1.0), n)...) for n in 1:3)
+        tangent, value = autodiff(ForwardWithPrimal, double_exponential, Duplicated(x, 1.0))
+        @test isequal(value, double_exponential(x))
+        for d in (tangent, double_exp_reverse(x))
+            @test isapprox(d, first; rtol = 2.0e-13, atol = 0.0)
+        end
+        for d in (
+                double_exp_second(x),
+                only(autodiff(Forward, double_exp_reverse, Duplicated(x, 1.0))),
+                only(only(autodiff(Reverse, double_exp_first, Active(x)))),
+            )
+            @test isapprox(d, second; rtol = 2.0e-13, atol = 0.0)
+        end
+        @test isapprox(only(only(autodiff(Reverse, double_exp_second, Active(x)))), third; rtol = 2.0e-13, atol = 0.0)
+    end
+    for (x, seed) in ((log(750.0), 2.0), (-750.0, 1.0e300), (7.0, -1.0e200))
+        @test double_exp_forward(x, seed) ≈ double_exp_reference(x, seed) rtol = 2.0e-13
+    end
+    x = log(750.0)
+    @test Tuple(only(autodiff(Forward, double_exponential, BatchDuplicated(x, (0.0, -3.0))))) ==
+        (0.0, double_exp_reference(x, -3.0))
+    # A later derivative can act on the seed as well as on x.
+    dx, ds = only(autodiff(Reverse, double_exp_forward, Active(x), Active(0.0)))
+    @test dx == 0.0
+    @test ds == double_exp_reference(x, 1.0)
+    @test only(autodiff(Forward, double_exp_forward, Duplicated(x, 2.0), Duplicated(-3.0, 0.0))) ==
+        double_exp_reference(x, 2.0, -3.0)
+    # The two seeds overflow if multiplied before the common exponential scale.
+    @test only(autodiff(Forward, double_exp_forward, Duplicated(7.0, 1.0e200), Const(1.0e200))) ≈
+        double_exp_reference(7.0, 1.0e200, 1.0e200) rtol = 2.0e-13
+    scaled(t) = 1.0e200 * double_exponential(t)
+    @test only(only(autodiff(Reverse, scaled, Active(7.0)))) ≈ double_exp_reference(7.0, 1.0e200) rtol = 2.0e-13
+
+    # Both exponentials also occur in ordinary likelihoods or can have other uses.
+    loglik(t) = -0.5 * ((0.4 - double_exponential(t)) / 0.2)^2
+    score(t) = only(autodiff(Forward, loglik, Duplicated(t, 1.0)))
+    curvature(t) = only(autodiff(Forward, score, Duplicated(t, 1.0)))
+    @test only(only(autodiff(Reverse, curvature, Active(1000.0)))) == 0.0
+    function population(t, offsets)
+        means = @. exp(-exp(t + offsets))
+        return -(t^2 + sum(abs2, (0.4 .- means) ./ 0.2)) / 2
+    end
+    @test only(autodiff(Reverse, population, Active(1000.0), Const([-1.0, 2.0])))[1] == -1000.0
+    function shared(t)
+        a = exp(t)
+        return exp(-a) + a
+    end
+    @test only(only(autodiff(Reverse, shared, Active(0.0)))) ≈ 1 - exp(-1)
+    @test only(autodiff(Forward, shared, Duplicated(1000.0, 1.0))) == Inf
+    custom(t) = exp(-observed_exp(t))
+    @test only(autodiff(Forward, custom, Duplicated(0.0, 1.0))) ≈ -7 * exp(-1)
+    @test only(only(autodiff(Reverse, custom, Active(0.0)))) ≈ -7 * exp(-1)
+    @test isnan(double_exp_first(NaN))
+    @test isnan(only(only(autodiff(Reverse, double_exp_second, Active(NaN)))))
+    singular(t) = t / t
+    @test isnan(only(autodiff(Forward, singular, Duplicated(0.0, 1.0))))
+end
+
 struct ScaledExpLog{T}
     scale::T
     offset::T

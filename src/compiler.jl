@@ -764,6 +764,34 @@ function nested_codegen!(mode::API.CDerivativeMode, mod::LLVM.Module, @nospecial
     return nested_codegen!(mode, mod, funcspec)
 end
 
+# The Julia exp specialization is still a call here. An exp with a user rule
+# has already been marked enzyme_custom (or enzyme_inactive) instead.
+function fold_expnegexp!(mod, mode, custom)
+    matches = Tuple{LLVM.CallInst, LLVM.Value}[]
+    for f in mod.functions
+        attrs = f.function_attributes
+        haskey(attrs, "enzyme_math") && attrs["enzyme_math"].value == "exp" || continue
+        haskey(attrs, "enzyme_inactive") && continue
+        mi, _ = enzyme_custom_extract_mi(f, false)
+        mi !== nothing && mi.specTypes === Tuple{typeof(exp), Float64} || continue
+        for outer in f.users
+            outer isa LLVM.CallInst && outer.called_operand == f && length(outer.arguments) == 1 || continue
+            neg = outer.arguments[1]
+            neg isa LLVM.FNegInst || continue
+            inner = neg.operands[1]
+            inner isa LLVM.CallInst && inner.called_operand == f && length(inner.arguments) == 1 || continue
+            push!(matches, (outer, inner.arguments[1]))
+        end
+    end
+    isempty(matches) && return
+    composite = nested_codegen!(mode, mod, Enzyme._expnegexp, Tuple{Float64})
+    custom[composite.name] = LLVM.Linkage.Internal
+    for (outer, x) in matches
+        outer.called_operand = composite
+        outer.arguments[1] = x
+    end
+    return
+end
 
 function prepare_llvm(interp, mod::LLVM.Module, job, meta, enzyme_ctx::EnzymeContext)
     for (mi, k) in meta.compiled
@@ -7764,6 +7792,9 @@ function compile_unhooked_impl(output::Symbol, job::CompilerJob{<:EnzymeTarget})
     end
 
     # Run early pipeline
+    if params.run_enzyme && primal_target isa GPUCompiler.NativeCompilerTarget
+        fold_expnegexp!(mod, mode, custom)
+    end
     optimize!(mod, target_machine, enzyme_ctx, target_info)
 
     if process_module

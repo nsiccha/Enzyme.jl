@@ -1,0 +1,2 @@
+summary = "Native CPU differentiation of exp(-exp(x)) preserves representable Float64 tail derivatives and handles saturation in nested modes"
+tests = ["test/floating_point.jl"]
