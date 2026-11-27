@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Static Forward over Reverse can differentiate a gather through a reshaped
+  array when the inner reverse pass saves its computed index alongside a
+  floating-point value. Previously this could raise `EnzymeRuntimeActivityError`
+  while constructing the tape on Julia 1.10. The native repair is available as
+  `Enzyme.has_dogfood_repair(:taped_gather_index)`.
 - `make_zero` no longer dispatches at run time when it reads or fills its
   table of shadows. This matters where static Reverse makes a zero shadow at
   run time for constant data that a branch selects against active data, and
