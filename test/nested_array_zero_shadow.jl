@@ -1,8 +1,9 @@
 using Enzyme, Test
 
 # A branch selects constant data or data the function makes, and the data is an
-# array of arrays, or an array of tuples of arrays. Static Reverse then needs a
-# shadow for the constant side and makes it at run time with `make_zero`.
+# array whose elements are not floating-point numbers themselves: an array of
+# arrays, or an array of tuples. Static Reverse then needs a shadow for the
+# constant side and makes it at run time with `make_zero`.
 #
 # `make_zero` of such an array keeps a table of the shadows it has made, so that
 # two references to one inner array get one shadow. The table is untyped. Reading
@@ -93,6 +94,42 @@ end
     dx, derivative = reverse_report(pick_tuples, x, tuples, false)
     @test dx ≈ (sum(abs2, 2.0 .* x) + sum(x .+ 1.0)) .* first_unit(x) .+ x[1] .* (8.0 .* x .+ 1.0)
     @test isempty(returning(derivative, :dynamic_dispatch))
+end
+
+# Both sides of the branch are arrays the function makes: an empty one where a
+# group is skipped, else one triple per member. Nothing is stored into the empty
+# one, so it is constant and its shadow is made at run time. An array of float
+# triples is not an array of floating-point numbers, so `make_zero` took the path
+# with the table. A generated model body that allocates each group's output with
+# `similar` reaches this shape once the compiler splits off the empty case.
+@inline function triples_or_empty(x::Vector{Float64}, n::Int, keep::Bool)
+    w = Vector{NTuple{3, Float64}}(undef, 0)
+    if keep
+        w = Vector{NTuple{3, Float64}}(undef, n)
+        for i in 1:n
+            w[i] = (x[1] * i, x[2], x[3] + i)
+        end
+    end
+    return w
+end
+
+function sum_triples(x::Vector{Float64}, n::Int, keep::Bool)
+    total = 0.0
+    for (a, b, c) in triples_or_empty(x, n, keep)
+        total += a * b + c
+    end
+    return total
+end
+
+@testset "A branch selects an empty or a filled fresh array of float triples" begin
+    x = [0.5, -1.0, 2.0]
+    @testset "n = $n, keep = $keep" for n in (0, 3), keep in (false, true)
+        dx, derivative = reverse_report(sum_triples, x, n, keep)
+        steps = keep ? sum(1:n; init = 0) : 0
+        @test dx ≈ [x[2] * steps, x[1] * steps, keep ? n : 0]
+        @test isempty(returning(derivative, :dynamic_dispatch))
+        @test isempty(returning(derivative, :enzyme_runtime_fallback))
+    end
 end
 
 # On Julia 1.11 and later static activity cannot tell that `tables[g]` is constant

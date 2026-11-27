@@ -1,2 +1,2 @@
-summary = "make_zero reads and fills its table of shadows without a call dispatched at run time, so the zero shadow of constant nested arrays that a branch selects against active ones no longer makes a static Reverse derivative type unstable"
+summary = "make_zero reads and fills its table of shadows without a call dispatched at run time, so the zero shadow of a constant array of arrays or of tuples that a branch selects against an active one no longer makes a static Reverse derivative type unstable"
 tests = ["test/nested_array_zero_shadow.jl", "test/make_zero.jl"]

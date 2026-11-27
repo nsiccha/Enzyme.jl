@@ -5,7 +5,8 @@
 - `make_zero` no longer dispatches at run time when it reads or fills its
   table of shadows. This matters where static Reverse makes a zero shadow at
   run time for constant data that a branch selects against active data, and
-  the data is an array of arrays or an array of tuples of arrays: the
+  the data is an array whose elements are not floating-point numbers
+  themselves, such as an array of arrays or an array of tuples: the
   derivative called `make_zero` with a `jl_apply_generic` in it (and, on
   Julia 1.10, a `jl_invoke`) on every evaluation, and
   `Enzyme.derivative_report` listed both outside error paths, so a caller
