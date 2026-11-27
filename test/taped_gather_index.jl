@@ -9,10 +9,16 @@ end
 Base.size(p::TapedGatherView) = size(p.base)
 Base.IndexStyle(::Type{TapedGatherView}) = IndexLinear()
 
+# Use the same address-index operation across Julia array layouts.
+# GenericMemoryRef on newer Julia versions can also tape a separate byte offset.
+@inline function taped_read(data, i)
+    @boundscheck checkbounds(data, i)
+    return GC.@preserve data unsafe_load(pointer(data), Int(i))
+end
+
 @inline function Base.getindex(p::TapedGatherView, i::Int)
-    @boundscheck checkbounds(p.base, i)
-    k = @inbounds p.slots[i]
-    return iszero(k) ? (@inbounds p.base[i]) : (@inbounds p.active[k])
+    k = taped_read(p.slots, i)
+    return iszero(k) ? taped_read(p.base, i) : taped_read(p.active, k)
 end
 
 @inline taped_entry(data, i, j) = data[i, CartesianIndices(Base.tail(axes(data)))[j]]
