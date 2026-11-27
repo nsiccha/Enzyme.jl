@@ -1,0 +1,3 @@
+summary = "Static Forward over Reverse preserves the integer role of address indices saved by the inner reverse pass, including gathers through a reshaped array"
+libenzyme_build = "5f7ed4259e1d7eb661c3095aee68fa579d8f1d1c"
+tests = ["test/taped_gather_index.jl"]

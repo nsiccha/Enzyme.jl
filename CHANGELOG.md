@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Static Forward over Reverse can differentiate a gather through a reshaped
+  array when the inner reverse pass saves its computed index alongside a
+  floating-point value. Previously this could raise `EnzymeRuntimeActivityError`
+  while constructing the tape on Julia 1.10. The native repair is available as
+  `Enzyme.has_dogfood_repair(:taped_gather_index)`.
+
 - On Julia 1.10, a Reverse gradient no longer segfaults or corrupts the heap
   for a loop over groups that stores every step of a recurrence into an array
   it allocates per group, strip by strip: a buffer filled and walked once
