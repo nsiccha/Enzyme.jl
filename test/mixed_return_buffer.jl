@@ -92,6 +92,8 @@ end
 
 @testset "repairs" begin
     @test Enzyme.has_dogfood_repair(:undefined_shadow_stores)
+    # In libEnzyme: without it the child process below dies in the collector.
+    @test Enzyme.has_dogfood_repair(:heap_slot_zero_init)
 end
 
 @testset "a rule's shadow of a returned record stays out of the system image" begin

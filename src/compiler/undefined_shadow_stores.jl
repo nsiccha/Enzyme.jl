@@ -41,7 +41,7 @@ function remove_undefined_shadow_stores!(mod::LLVM.Module)::Bool
             user = use.user
             if user isa LLVM.StoreInst
                 # Storing `nothing` itself somewhere is an ordinary store.
-                user.operands[2] == address && push!(stores, user)
+                user.operands[2] == address && !(user in stores) && push!(stores, user)
             elseif is_address_computation(user) && user.operands[1] == address
                 push!(addresses, user)
             end
