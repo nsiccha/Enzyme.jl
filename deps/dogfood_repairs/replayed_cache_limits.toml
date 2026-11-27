@@ -1,0 +1,3 @@
+summary = "Julia 1.10: Reverse no longer segfaults or corrupts the heap when a loop refills an array of stored steps strip by strip, the first strip ahead of a while loop over the later ones"
+libenzyme_build = "f2ed2bc69e310f8966c832e2c71c85713d9fba31"
+tests = ["test/replayed_cache_limits.jl"]
