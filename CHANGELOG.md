@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- On Julia 1.12 and 1.13, a Reverse gradient no longer kills the process in
+  the garbage collector (`gc_mark_obj8`, or "GC error (probable corruption)")
+  when a call Enzyme dispatches at run time returns a record of arrays and
+  numbers, such as `(A, 0.3)`, a named tuple or a struct of both, and a
+  collection runs while that call or a later part of the derivative does.
+  `deepcopy` of such a record is one such call. Julia returns the record's
+  numbers in a buffer and its references in a separate array, libEnzyme moves
+  the buffer to the heap, and it dropped the buffer's zeroing together with
+  the zeroing of its shadow, so the collector followed the buffer's unwritten
+  reference slot. The native repair is available as
+  `Enzyme.has_dogfood_repair(:heap_slot_zero_init)`.
+- For the same calls, a custom rule's shadow is no longer written eight bytes
+  past `nothing` in the system image. The numbers of the shadow the rule
+  returned were stored through the shadow of the return buffer, which exists
+  only in the reverse pass. On Julia 1.13 every such gradient replaced the
+  cached box of `Int32(-512)`, so boxed `Int32(-512)` read as another number
+  for the rest of the process; on Julia 1.12 it overwrote the first word of
+  the empty `Symbol`. Gradients were right. The repair is available as
+  `Enzyme.has_dogfood_repair(:undefined_shadow_stores)`.
 - Static Forward over Reverse can differentiate a gather through a reshaped
   array when the inner reverse pass saves its computed index alongside a
   floating-point value. Previously this could raise `EnzymeRuntimeActivityError`
