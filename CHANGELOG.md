@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- On Julia 1.10, a Reverse gradient no longer segfaults or corrupts the heap
+  for a loop over groups that stores every step of a recurrence into an array
+  it allocates per group, strip by strip: a buffer filled and walked once
+  ahead of a `while` loop that refills and walks it for each later strip. The
+  reverse pass allocates the array again per group and replays the loops that
+  fill it. Reading the cached steps there, libEnzyme computed the extent of a
+  strip with the reverse pass's own counter of the `while` loop, which is not
+  set during the replay, and the replayed loop then tested its exit against
+  the bound of another strip. From the second `while` iteration on it stored
+  past the end of the array, so the failure appeared as soon as one group
+  took three strips (257 steps at strips of 128). Values were right, and so
+  were gradients of groups of at most two strips. Registered Enzyme has the
+  same defect. The native repair is available as
+  `Enzyme.has_dogfood_repair(:replayed_cache_limits)`.
+
 - Native CPU derivatives of the visible Float64 expression `exp(-exp(x))`
   preserve representable tail derivatives, including when the value has
   rounded to zero. Forward, reverse and nested differentiation also return
