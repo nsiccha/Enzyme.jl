@@ -134,6 +134,21 @@ end
 end
 
 
+# The shadow the table `seen` holds for `prev`. Every method below stores a shadow
+# of `prev`'s own type, and so does `deepcopy_internal`. Asserting that type keeps
+# the read inferred: without it a method's return type annotation converts the
+# untyped table entry, which is a call dispatched at run time.
+@inline make_zero_seen(seen::IdDict, prev::T) where {T} = seen[prev]::T
+
+# Record `shadow` as the shadow of `prev`. `setindex!` of an `IdDict` takes both
+# unspecialized, and on Julia 1.10 the code Enzyme compiles reaches such a method
+# through `jl_invoke`. Inlined here, only the table's own runtime call remains.
+@inline function make_zero_seen!(seen::IdDict, shadow, prev)
+    @inline setindex!(seen, shadow, prev)
+    return nothing
+end
+
+
 @inline function EnzymeCore.make_zero(
         ::Type{Array{Union{}, N}},
         seen::IdDict,
@@ -141,10 +156,10 @@ end
         ::Val{copy_if_inactive} = Val(false),
     )::Array{Union{}, N} where {copy_if_inactive, N}
     if haskey(seen, prev)
-        return seen[prev]
+        return make_zero_seen(seen, prev)
     end
     newa = copy(prev)
-    seen[prev] = newa
+    make_zero_seen!(seen, newa, prev)
     return newa
 end
 
@@ -155,10 +170,10 @@ end
         ::Val{copy_if_inactive} = Val(false),
     )::Array{FT, N} where {copy_if_inactive, FT <: AbstractFloat, N}
     if haskey(seen, prev)
-        return seen[prev]
+        return make_zero_seen(seen, prev)
     end
     newa = Base.zero(prev)
-    seen[prev] = newa
+    make_zero_seen!(seen, newa, prev)
     return newa
 end
 @inline function EnzymeCore.make_zero(
@@ -168,10 +183,10 @@ end
         ::Val{copy_if_inactive} = Val(false),
     )::Array{Complex{FT}, N} where {copy_if_inactive, FT <: AbstractFloat, N}
     if haskey(seen, prev)
-        return seen[prev]
+        return make_zero_seen(seen, prev)
     end
     newa = Base.zero(prev)
-    seen[prev] = newa
+    make_zero_seen!(seen, newa, prev)
     return newa
 end
 
@@ -184,10 +199,10 @@ else
             ::Val{copy_if_inactive} = Val(false),
         )::GenericMemory{kind, FT} where {copy_if_inactive, FT <: AbstractFloat, kind}
         if haskey(seen, prev)
-            return seen[prev]
+            return make_zero_seen(seen, prev)
         end
         newa = Base.zero(prev)
-        seen[prev] = newa
+        make_zero_seen!(seen, newa, prev)
         return newa
     end
     @inline function EnzymeCore.make_zero(
@@ -197,10 +212,10 @@ else
             ::Val{copy_if_inactive} = Val(false),
         )::GenericMemory{kind, Complex{FT}} where {copy_if_inactive, FT <: AbstractFloat, kind}
         if haskey(seen, prev)
-            return seen[prev]
+            return make_zero_seen(seen, prev)
         end
         newa = Base.zero(prev)
-        seen[prev] = newa
+        make_zero_seen!(seen, newa, prev)
         return newa
     end
 end
@@ -230,13 +245,13 @@ end
         ::Val{copy_if_inactive} = Val(false),
     )::RT where {copy_if_inactive, RT <: Array}
     if haskey(seen, prev)
-        return seen[prev]
+        return make_zero_seen(seen, prev)
     end
     if guaranteed_const(RT)
         return copy_if_inactive ? Base.deepcopy_internal(prev, seen) : prev
     end
     newa = RT(undef, size(prev))
-    seen[prev] = newa
+    make_zero_seen!(seen, newa, prev)
     for I in eachindex(prev)
         if isassigned(prev, I)
             pv = prev[I]
@@ -257,13 +272,13 @@ else
             ::Val{copy_if_inactive} = Val(false),
         )::RT where {copy_if_inactive, RT <: GenericMemory}
         if haskey(seen, prev)
-            return seen[prev]
+            return make_zero_seen(seen, prev)
         end
         if guaranteed_const(RT)
             return copy_if_inactive ? Base.deepcopy_internal(prev, seen) : prev
         end
         newa = RT(undef, size(prev))
-        seen[prev] = newa
+        make_zero_seen!(seen, newa, prev)
         for I in eachindex(prev)
             if isassigned(prev, I)
                 pv = prev[I]
@@ -288,7 +303,7 @@ else
             ::Val{copy_if_inactive} = Val(false),
         )::RT where {copy_if_inactive, RT <: GenericMemoryRef}
         if haskey(seen, prev)
-            return seen[prev]
+            return make_zero_seen(seen, prev)
         end
         if guaranteed_const(RT)
             return copy_if_inactive ? Base.deepcopy_internal(prev, seen) : prev
@@ -302,7 +317,7 @@ else
         if offset != 1
             newref = @inbounds Base.memoryref(newref, offset)
         end
-        seen[prev] = newref
+        make_zero_seen!(seen, newref, prev)
         return newref
     end
 end
@@ -366,11 +381,11 @@ end
         ::Val{copy_if_inactive} = Val(false),
     ) where {copy_if_inactive}
     if haskey(seen, prev)
-        return seen[prev]
+        return make_zero_seen(seen, prev)
     end
     prev2 = prev.contents
     res = Core.Box()
-    seen[prev] = res
+    make_zero_seen!(seen, res, prev)
     res.contents = EnzymeCore.make_zero(Core.Typeof(prev2), seen, prev2, Val(copy_if_inactive))
     return res
 end
@@ -382,14 +397,14 @@ end
         ::Val{copy_if_inactive} = Val(false),
     )::Core.SimpleVector where {copy_if_inactive}
     if haskey(seen, prev)
-        return seen[prev]
+        return make_zero_seen(seen, prev)
     end
     data = []
     for v in prev
         push!(data, EnzymeCore.make_zero(Core.Typeof(v), seen, v, Val(copy_if_inactive)))
     end
     newa = Core.svec(data)
-    seen[prev] = newa
+    make_zero_seen!(seen, newa, prev)
     return newa
 end
 
@@ -400,10 +415,10 @@ end
         ::Val{copy_if_inactive} = Val(false),
     )::RT where {copy_if_inactive, RT <: Dict}
     if haskey(seen, prev)
-        return seen[prev]
+        return make_zero_seen(seen, prev)
     end
     res = empty(prev)
-    seen[prev] = res
+    make_zero_seen!(seen, res, prev)
     for (k, v) in prev
         new_v = EnzymeCore.make_zero(Core.Typeof(v), seen, v, Val(copy_if_inactive))
         res[k] = new_v
@@ -453,14 +468,14 @@ end
         return copy_if_inactive ? Base.deepcopy_internal(prev, seen) : prev
     end
     if haskey(seen, prev)
-        return seen[prev]
+        return make_zero_seen(seen, prev)
     end
     @assert !Base.isabstracttype(RT)
     @assert Base.isconcretetype(RT)
     nf = fieldcount(RT)
     if ismutable(prev)
         y = ccall(:jl_new_struct_uninit, Any, (Any,), RT)::RT
-        seen[prev] = y
+        make_zero_seen!(seen, y, prev)
         for i in 1:nf
             if isdefined(prev, i)
                 xi = getfield(prev, i)
@@ -486,7 +501,7 @@ end
         end
     end
     y = ccall(:jl_new_structv, Any, (Any, Ptr{Any}, UInt32), RT, flds, nf)
-    seen[prev] = y
+    make_zero_seen!(seen, y, prev)
     return y
 end
 

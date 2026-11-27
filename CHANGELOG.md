@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `make_zero` no longer dispatches at run time when it reads or fills its
+  table of shadows. This matters where static Reverse makes a zero shadow at
+  run time for constant data that a branch selects against active data, and
+  the data is an array of arrays or an array of tuples of arrays: the
+  derivative called `make_zero` with a `jl_apply_generic` in it (and, on
+  Julia 1.10, a `jl_invoke`) on every evaluation, and
+  `Enzyme.derivative_report` listed both outside error paths, so a caller
+  that requires a type-stable derivative refused it. Arrays of floating-point
+  numbers were not affected. Shadows and derivatives are unchanged. A `seen`
+  table that a caller fills itself must map each value to a shadow of the
+  same type: an entry of another type now raises a `TypeError`, where it was
+  converted, which made a copy that nothing else referred to. The repair is
+  available as `Enzyme.has_dogfood_repair(:make_zero_seen_table)`.
+
 - On Julia 1.10, a Reverse gradient no longer segfaults or corrupts the heap
   for a loop over groups that stores every step of a recurrence into an array
   it allocates per group, strip by strip: a buffer filled and walked once
