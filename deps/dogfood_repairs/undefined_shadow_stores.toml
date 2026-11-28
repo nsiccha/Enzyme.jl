@@ -1,0 +1,2 @@
+summary = "A store through the shadow of an allocation that libEnzyme creates only in the reverse pass is removed from the forward pass; on Julia 1.12 and later the store of a custom rule's shadow of a returned record of references and numbers wrote eight bytes past nothing in the system image (the cached box of Int32(-512) on Julia 1.13, the empty Symbol on Julia 1.12)"
+tests = ["test/mixed_return_buffer.jl"]

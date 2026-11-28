@@ -1,0 +1,3 @@
+summary = "A stack slot libEnzyme moves to the garbage-collected heap keeps its zeroing in the forward pass when its shadow is created only in the reverse pass; on Julia 1.12 and later a collection during or after a dynamically dispatched call that returns a record of arrays and numbers, such as a tuple (A, 0.3), followed the unwritten reference slot of the return buffer (segmentation fault in gc_mark_obj8, or GC error (probable corruption))"
+libenzyme_build = "355bde76aa04901596676558fcf14499d84b0fa1"
+tests = ["test/mixed_return_buffer.jl"]

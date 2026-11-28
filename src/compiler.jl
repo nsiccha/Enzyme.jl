@@ -3735,6 +3735,7 @@ include("compiler/record_merges.jl")
 include("compiler/retained_shadows.jl")
 include("compiler/slot_field_types.jl")
 include("compiler/memory_lengths.jl")
+include("compiler/undefined_shadow_stores.jl")
 include("compiler/bitcode_wrappers.jl")
 include("compiler/property_calls.jl")
 
@@ -4189,6 +4190,7 @@ function enzyme!(
         run!(DCEPass(), mod)
         fix_decayaddr!(mod)
         store_empty_memory_lengths!(mod)
+        remove_undefined_shadow_stores!(mod)
         adjointf = adjointf == nothing ? nothing : mod.functions[adjointfname]
         augmented_primalf =
             augmented_primalf == nothing ? nothing : mod.functions[augmented_primalfname]
