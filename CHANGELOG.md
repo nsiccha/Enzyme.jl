@@ -26,6 +26,28 @@
   floating-point value. Previously this could raise `EnzymeRuntimeActivityError`
   while constructing the tape on Julia 1.10. The native repair is available as
   `Enzyme.has_dogfood_repair(:taped_gather_index)`.
+- Reverse mode differentiates `deepcopy` of constant data and of an immutable
+  value that holds numbers beside arrays, such as a tuple, named tuple or
+  struct of matrices and a float. Before, the rule's reverse method raised
+  `FieldError: type Const has no field dval` for a `Const` value whose copy
+  is used beside active data, and `MethodError: no method matching
+  accumulate_into(::Base.RefValue{...}, ...)` or `setfield!: immutable struct
+  ... cannot be changed` for a value that holds differentiable numbers
+  directly. On Julia 1.10 such a value raised `MixedReturnException`, and
+  the copy of a single active number made by a call dispatched at run time
+  raised `AssertionError: !(x isa Active)`. The copy of a `Const` value now
+  takes a zero shadow of its own and nothing is written back; where Enzyme
+  dispatches the call at run time it makes that copy without compiling a
+  derivative. A value that holds differentiable numbers directly is copied
+  inside a `Ref` box wherever Enzyme dispatches `deepcopy` at run time, and
+  has a `Ref` box as its shadow where it is passed boxed, so the derivative
+  of those numbers reaches the copied value. Copies of arrays and of mutable
+  structs are unchanged, and so is Forward mode. A rule compiled for such a
+  value's own type with a `MixedDuplicated` argument, which only `autodiff`
+  with `deepcopy` itself as the differentiated function reaches, raises
+  `Enzyme.DeepcopyMixedArgument` instead of losing that derivative.
+  Registered Enzyme has the same rule. The repair is available as
+  `Enzyme.has_dogfood_repair(:deepcopy_reverse_activities)`.
 - `make_zero` no longer dispatches at run time when it reads or fills its
   table of shadows. This matters where static Reverse makes a zero shadow at
   run time for constant data that a branch selects against active data, and

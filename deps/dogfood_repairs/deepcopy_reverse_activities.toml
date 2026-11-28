@@ -1,0 +1,2 @@
+summary = "Reverse through deepcopy of constant data and of an immutable value that holds numbers beside arrays (a tuple, named tuple or struct of matrices and a float): the copy of a Const value takes a zero shadow and writes nothing back, and a value that holds differentiable numbers directly is copied inside a Ref box, so the derivative of those numbers reaches the copied value instead of raising MethodError or FieldError from the rule"
+tests = ["test/deepcopy_reverse_activities.jl", "test/rules/internal_rules/deepcopy.jl"]
