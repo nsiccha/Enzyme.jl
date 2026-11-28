@@ -4,9 +4,10 @@
 
 - On Julia 1.12 and 1.13, a Reverse gradient no longer kills the process in
   the garbage collector (`gc_mark_obj8`, or "GC error (probable corruption)")
-  when a call Enzyme dispatches at run time returns a record of arrays and
-  numbers, such as `(A, 0.3)`, a named tuple or a struct of both, and a
-  collection runs while that call or a later part of the derivative does.
+  when a function with a custom rule, called through run-time dispatch,
+  returns a record of arrays and floating-point numbers, such as `(A, 0.3)`, a
+  named tuple or a struct of both, and a collection runs while that call or a
+  later part of the derivative does.
   Julia returns the record's numbers in a buffer and its references in a
   separate array, libEnzyme moves the buffer to the heap, and it dropped the
   buffer's zeroing together with the zeroing of its shadow, so the collector

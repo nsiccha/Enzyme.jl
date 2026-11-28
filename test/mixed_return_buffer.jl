@@ -24,6 +24,10 @@ using LLVM
 #
 # The first needs a collection while the call runs and shows as a crash, so it runs in a
 # child process. The second is silent and is checked here by reading the word back.
+#
+# Julia 1.10 returns such a record in the buffer alone, references included, and Enzyme
+# refuses a rule that returns one, so neither defect can arise there.
+const SPLIT_RETURN_ROOTS = VERSION >= v"1.12"
 
 # The word that follows `nothing` in the system image.
 word_after_nothing() =
@@ -99,7 +103,13 @@ end
     @test Enzyme.has_dogfood_repair(:heap_slot_zero_init)
 end
 
-@testset "a rule's shadow of a returned record stays out of the system image" begin
+SPLIT_RETURN_ROOTS || @testset "Julia 1.10 refuses a rule that returns references and numbers together" begin
+    @test_throws Enzyme.Compiler.MixedReturnException gradient_of(dynamic, Reverse, (A, 0.3))
+    @test_throws Enzyme.Compiler.MixedReturnException gradient_of(direct, Reverse, (A, 0.3))
+    @test gradient_of(dynamic, Reverse, (A, [0.1 0.2])) ≈ expected((A, [0.1 0.2]))
+end
+
+SPLIT_RETURN_ROOTS && @testset "a rule's shadow of a returned record stays out of the system image" begin
     before = word_after_nothing()
     @testset "$fname, $sname, $mname" for (fname, f) in (("dynamic call", dynamic), ("direct call", direct)),
             (sname, data) in SHAPES, (mname, mode) in MODES
@@ -251,7 +261,7 @@ for (fname, f, sname, data) in CASES, (mname, mode) in (("Reverse", Reverse), ("
 end
 """
 
-@testset "a collection while the call runs finds an initialised return buffer" begin
+SPLIT_RETURN_ROOTS && @testset "a collection while the call runs finds an initialised return buffer" begin
     cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $COLLECTING_CHILD`
     out = IOBuffer()
     proc = run(pipeline(ignorestatus(cmd); stdout = out, stderr = out); wait = false)
