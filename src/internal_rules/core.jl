@@ -179,6 +179,49 @@ function EnzymeRules.forward(
     )
 end
 
+# Whether a value of type `T` holds differentiable numbers directly, alone (a `Float64`,
+# a tuple of floats) or beside mutable data (a tuple of an array and a float). Such
+# numbers are immutable, so their derivative cannot accumulate in the value itself.
+@inline function deepcopy_holds_numbers(::Type{T}) where {T}
+    state = Enzyme.Compiler.active_reg_nothrow(T)
+    return state == Enzyme.Compiler.ActiveState || state == Enzyme.Compiler.MixedState
+end
+
+# The shadow of a deep copy `source`, whose declared type is `Declared`. Where that
+# type is abstract the copy is passed boxed, and the shadow of a boxed value that holds
+# differentiable numbers directly is a `Ref` box of the value's type: the derivative
+# of those numbers accumulates in the box. That is also the shadow such an argument
+# arrives with.
+@inline function deepcopy_shadow(::Type{Declared}, source, copy_if_inactive) where {Declared}
+    shadow = Enzyme.make_zero(source, copy_if_inactive)
+    if !isconcretetype(Declared) && deepcopy_holds_numbers(typeof(source))
+        return Ref(shadow)
+    end
+    return shadow
+end
+
+# One shadow per batch lane.
+struct DeepcopyShadow{Declared, S, C}
+    source::S
+    copy_if_inactive::C
+end
+@inline (lane::DeepcopyShadow{Declared})(::Int) where {Declared} =
+    deepcopy_shadow(Declared, lane.source, lane.copy_if_inactive)
+
+struct DeepcopyMixedArgument{T} <: Enzyme.Compiler.EnzymeError end
+
+function Base.showerror(io::IO, ::DeepcopyMixedArgument{T}) where {T}
+    print(
+        io,
+        "Enzyme: the reverse rule of `deepcopy` was compiled for an argument of type ", T,
+        ", which holds differentiable numbers directly beside mutable data. ",
+        "It would return the copy as an immutable value and lose the derivative of those numbers. ",
+        "Enzyme copies such a value inside a `Ref` box wherever it dispatches `deepcopy` itself; ",
+        "to differentiate `deepcopy` as the function passed to `autodiff`, pass `Ref(x)` and read the copy out of the result.",
+    )
+    return
+end
+
 function EnzymeRules.augmented_primal(
         config::EnzymeRules.RevConfig,
         func::Const{typeof(Base.deepcopy)},
@@ -199,19 +242,17 @@ function EnzymeRules.augmented_primal(
 
     shadow = if EnzymeRules.needs_shadow(config)
         @assert !(x isa Active)
+        if x isa Union{MixedDuplicated, BatchMixedDuplicated}
+            throw(DeepcopyMixedArgument{Ty}())
+        end
+        copy_if_inactive = Val(!EnzymeRules.needs_primal(config))
         if EnzymeRules.width(config) == 1
-            Enzyme.make_zero(
-                source,
-                Val(!EnzymeRules.needs_primal(config)),                #=copy_if_inactive=#
-            )
+            deepcopy_shadow(eltype(RT), source, copy_if_inactive)
         else
-            ntuple(Val(EnzymeRules.width(config))) do _
-                Base.@_inline_meta
-                Enzyme.make_zero(
-                    source,
-                    Val(!EnzymeRules.needs_primal(config)),                    #=copy_if_inactive=#
-                )
-            end
+            ntuple(
+                DeepcopyShadow{eltype(RT), typeof(source), typeof(copy_if_inactive)}(source, copy_if_inactive),
+                Val(EnzymeRules.width(config)),
+            )
         end
     else
         nothing
@@ -345,6 +386,42 @@ end
 end
 
 
+# Add the derivative `from` of a deep copy to the shadow `into` of the copied value
+# `primal`, and clear it.
+@inline function accumulate_copy!(into::RT, from::RT, primal::RT, rtact::Val) where {RT}
+    accumulate_into(into, IdDict(), from, primal, rtact)
+    return nothing
+end
+
+# A boxed value that holds differentiable numbers directly: both shadows are `Ref`
+# boxes of its type (see `deepcopy_shadow`), and the numbers are replaced in the boxes.
+@inline function accumulate_copy!(
+        into::Base.RefValue{RT},
+        from::Base.RefValue{RT},
+        primal::RT,
+        rtact::Val,
+    ) where {RT}
+    res = accumulate_into(into[], IdDict(), from[], primal, rtact)
+    into[] = res[1]
+    from[] = res[2]
+    return nothing
+end
+
+# With runtime activity, a shadow that is its primal marks an inactive argument: it
+# has no shadow box, and the copy's derivative goes nowhere.
+@inline function accumulate_copy!(
+        into::RT,
+        from::Base.RefValue{RT},
+        primal::RT,
+        rtact::Val{true},
+    ) where {RT}
+    @assert into === primal
+    return nothing
+end
+
+@inline deepcopy_no_derivative(x, ::Val{1}) = Enzyme.make_zero(x)
+@inline deepcopy_no_derivative(x, ::Val{W}) where {W} = ntuple(Returns(Enzyme.make_zero(x)), Val(W))
+
 function EnzymeRules.reverse(
         config::EnzymeRules.RevConfig,
         func::Const{typeof(Base.deepcopy)},
@@ -352,14 +429,23 @@ function EnzymeRules.reverse(
         shadow,
         x::Annotation{Ty},
     ) where {RT, Ty}
-    @assert !(x isa Active)
-    rtact = EnzymeRules.runtime_activity(config)
-    if EnzymeRules.needs_shadow(config)
+    if x isa Active
+        # The copy of this number is not differentiated (an `Active` copy takes the
+        # method below), so nothing flows back through it. Julia 1.10 compiles a copy
+        # of a bits value to a function that returns its argument, and a caller then
+        # reads the argument in place of the copy.
+        @assert !EnzymeRules.needs_shadow(config)
+        return (deepcopy_no_derivative(x.val, Val(EnzymeRules.width(config))),)
+    end
+    # A `Const` argument has no shadow. The copy got a zero shadow of its own, and the
+    # derivative accumulated there is not that of anything differentiated.
+    if EnzymeRules.needs_shadow(config) && !(x isa Const)
+        rtact = Val(EnzymeRules.runtime_activity(config))
         if EnzymeRules.width(config) == 1
-            accumulate_into(x.dval, IdDict(), shadow, x.val, Val(rtact))
+            accumulate_copy!(x.dval, shadow, x.val, rtact)
         else
             for i in 1:EnzymeRules.width(config)
-                accumulate_into(x.dval[i], IdDict(), shadow[i], x.val, Val(rtact))
+                accumulate_copy!(x.dval[i], shadow[i], x.val, rtact)
             end
         end
     end

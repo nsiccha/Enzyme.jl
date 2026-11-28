@@ -12,6 +12,37 @@ end
     return TT <: Tuple{Any, Base.Any32, Vararg{Base.Any32}} ? RuntimeCallWrapper(f) : f
 end
 
+# `deepcopy` of an immutable value that holds differentiable numbers directly beside
+# mutable data, such as a tuple of an array and a float. Its rule compiled for that
+# type returns the copy as an immutable value, and the derivative of the numbers the
+# copy holds directly is then kept where a rule's reverse pass cannot read it. Copying
+# a `Ref` box around the value instead makes the copy, and its shadow, a mutable box:
+# that derivative accumulates in the shadow box, and the rule adds it to the argument.
+struct BoxedDeepcopy end
+@inline (::BoxedDeepcopy)(x) = Base.deepcopy(Ref(x))[]
+
+# A `Const` argument: the copy is new data that nothing differentiated reaches. The
+# runtime rules below make the copy and its zero shadow themselves when the hook
+# returns this marker, as they do for a global read, and compile no derivative.
+# Called as a function, the marker copies.
+struct ConstantDeepcopy end
+@inline (::ConstantDeepcopy)(x) = Base.deepcopy(x)
+
+# The function a dynamically dispatched call compiles in Reverse mode, from the types
+# `TT` of its arguments and their annotations `Annotated`. The augmented and the
+# reverse pass must choose the same one.
+@inline reverse_runtime_function(f, ::Type{TT}, ::Type{Annotated}) where {TT, Annotated} =
+    runtime_function(f, TT)
+@inline function reverse_runtime_function(
+        f::typeof(Base.deepcopy),
+        ::Type{TT},
+        ::Type{Annotated},
+    ) where {TT, Annotated}
+    TT <: Tuple{Any} || return f
+    fieldtype(Annotated, 1) <: Const && return ConstantDeepcopy()
+    return active_reg_nothrow(fieldtype(TT, 1)) == MixedState ? BoxedDeepcopy() : f
+end
+
 """
     ReadonlyArg{Active}()
 
@@ -486,6 +517,7 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
         )
     end
     globalshadows = fill(:(module_lookup_aug_shadow(gv)), Width)
+    copyshadows = fill(:(module_lookup_aug_shadow(copied)), Width)
 
     ending = if Width == 1
         quote
@@ -578,7 +610,12 @@ function body_runtime_generic_augfwd(N, Width, wrapped, primttypes, active_refs,
         args = ($(wrapped...),)
         $(MakeTypes...)
         tt = Tuple{$(ElTypes...)}
-        f = runtime_function(f, tt)
+        f = reverse_runtime_function(f, tt, Tuple{$(Types...)})
+        if f isa ConstantDeepcopy
+            copied = Base.deepcopy(args[1].val)
+            tape = Tape{Nothing, Nothing, typeof(copied)}(nothing, nothing)
+            return ReturnType((copied, $(copyshadows...), tape))
+        end
 
         FT = Core.Typeof(f)
         dupClosure0 = if is_active_arg(ActivityTup[1])
@@ -823,7 +860,8 @@ function body_runtime_generic_rev(
             args = ($(wrapped...),)
             $(MakeTypes...)
             tt = Tuple{$(ElTypes...)}
-            f = runtime_function(f, tt)
+            f = reverse_runtime_function(f, tt, Tuple{$(Types...)})
+            f isa ConstantDeepcopy && return nothing
 
             FT = Core.Typeof(f)
             dupClosure0 = if is_active_arg(ActivityTup[1])
@@ -1542,12 +1580,18 @@ function body_runtime_iterate_augfwd(N, Width, modbetween, wrapped, primtypes, a
     for i in 1:(Width + 1)
         results[i] = :(tmpvals[$i])
     end
+    copyshadows = fill(:(module_lookup_aug_shadow(copied)), Width)
     return quote
         refs = Base.RefValue[]
         $(active_refs...)
         args = ($(wrappedexexpand...),)
         tt′ = Enzyme.vaTypeof(args...)
-        f = runtime_function(f, Enzyme.vaEltypes(tt′))
+        f = reverse_runtime_function(f, Enzyme.vaEltypes(tt′), tt′)
+        if f isa ConstantDeepcopy
+            copied = Base.deepcopy(args[1].val)
+            tape = Tape{Nothing, Nothing, typeof(copied)}(nothing, nothing)
+            return ReturnType((copied, $(copyshadows...), (tape, refs)))
+        end
         FT = Core.Typeof(f)
         tmpvals = augfwd_with_return(
             runtimeActivity,
@@ -1863,7 +1907,8 @@ function body_runtime_iterate_rev(
         $(active_refs...)
         args = ($(wrappedexexpand...),)
         tt′ = Enzyme.vaTypeof(args...)
-        f = runtime_function(f, Enzyme.vaEltypes(tt′))
+        f = reverse_runtime_function(f, Enzyme.vaEltypes(tt′), tt′)
+        f isa ConstantDeepcopy && return nothing
         FT = Core.Typeof(f)
         rev_with_return(
             runtimeActivity,
