@@ -215,9 +215,10 @@ function Base.showerror(io::IO, ::DeepcopyMixedArgument{T}) where {T}
         io,
         "Enzyme: the reverse rule of `deepcopy` was compiled for an argument of type ", T,
         ", which holds differentiable numbers directly beside mutable data. ",
-        "It would return the copy as an immutable value and lose the derivative of those numbers. ",
+        "It would return the copy as an immutable value, and a custom rule cannot yet receive ",
+        "the derivative of the numbers in such a result, so that derivative would be lost. ",
         "Enzyme copies such a value inside a `Ref` box wherever it dispatches `deepcopy` itself; ",
-        "to differentiate `deepcopy` as the function passed to `autodiff`, pass `Ref(x)` and read the copy out of the result.",
+        "this rule is reached only where `deepcopy` itself is the function being differentiated.",
     )
     return
 end
