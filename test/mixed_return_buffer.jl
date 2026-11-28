@@ -1,5 +1,6 @@
 using Enzyme, Test
 using Enzyme: EnzymeRules
+using LLVM
 
 # From Julia 1.12 a function that returns a record of references and numbers, such as
 # `Tuple{Matrix{Float64}, Float64}`, writes the numbers into a buffer its caller passes
@@ -109,6 +110,57 @@ end
     @test word_after_nothing() == before
     # What Julia keeps there on 1.10 and 1.13.
     @test Base.inferencebarrier(Int32(-512)) + 512 == 0
+end
+
+stores_of(fn::LLVM.Function) =
+    LLVM.StoreInst[inst for bb in LLVM.blocks(fn) for inst in LLVM.instructions(bb) if inst isa LLVM.StoreInst]
+
+# The pass by itself, on the stores the rule handler emits for one shadow and for a batch
+# of two. A handler gets placeholders for the shadows, which libEnzyme replaces by the
+# undefined value afterwards.
+@testset "stores through an undefined shadow are removed" begin
+    LLVM.Context() do ctx
+        T_jlvalue = LLVM.StructType(LLVM.LLVMType[])
+        T_record = LLVM.StructType(LLVM.LLVMType[LLVM.PointerType(T_jlvalue, 10), LLVM.DoubleType()])
+        T_shadow = LLVM.PointerType(T_record, 10)
+        T_derived = LLVM.PointerType(T_record, 11)
+        T_batch = LLVM.ArrayType(T_shadow, 2)
+        mod = LLVM.Module("shadows")
+        fn = LLVM.Function(
+            mod, "f",
+            LLVM.FunctionType(
+                LLVM.VoidType(),
+                LLVM.LLVMType[T_record, T_shadow, T_batch, T_shadow, LLVM.PointerType(T_shadow)],
+            ),
+        )
+        value, single, batch, defined, slot = fn.parameters
+        LLVM.IRBuilder() do B
+            LLVM.position!(B, LLVM.at_end(LLVM.BasicBlock(fn, "entry")))
+            # The buffer reaches the call as a pointer into the object, and so does its shadow.
+            shadows = LLVM.Value[single, LLVM.extract_value!(B, batch, 0), LLVM.extract_value!(B, batch, 1)]
+            for shadow in shadows
+                into = LLVM.addrspacecast!(B, shadow, T_derived)
+                Enzyme.Compiler.extract_nonjlvalues_into!(B, T_record, into, value)
+            end
+            # Kept: a store into a shadow that exists, and a store of an undefined shadow
+            # as a value, which is how its reference reaches the array of return roots.
+            into = LLVM.addrspacecast!(B, defined, T_derived)
+            Enzyme.Compiler.extract_nonjlvalues_into!(B, T_record, into, value)
+            LLVM.store!(B, single, slot)
+            LLVM.ret!(B)
+        end
+        for (placeholder, type) in ((single, T_shadow), (batch, T_batch))
+            undefined = Enzyme.Compiler.julia_undef_value_for_type(mod.ref, type.ref, UInt8(0))
+            LLVM.replace_uses!(placeholder, LLVM.Value(undefined))
+        end
+        @test length(stores_of(fn)) == 5
+        @test Enzyme.Compiler.remove_undefined_shadow_stores!(mod)
+        kept = stores_of(fn)
+        @test length(kept) == 2
+        @test kept[2].operands[2] == slot
+        @test !Enzyme.Compiler.remove_undefined_shadow_stores!(mod)
+        LLVM.dispose(mod)
+    end
 end
 
 # The child fills freed cells of the buffer's size with words that are not addresses,
