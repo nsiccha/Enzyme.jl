@@ -43,13 +43,15 @@ marked(t::Tuple) = map(marked, t)
 marked(t::NamedTuple) = map(marked, t)
 marked(s::Scaled) = Scaled(marked(s.basis), marked(s.scale))
 
-const COLLECT = Ref(false)
+# One shadow, or one per derivative of a batch.
+marked(t, ::Val{1}) = marked(t)
+marked(t, ::Val{N}) where {N} = map(marked, ntuple(Returns(t), Val(N)))
+
 function EnzymeRules.augmented_primal(
-        config::EnzymeRules.RevConfig, ::Const{typeof(passthrough)}, ::Type{RT}, t::Annotation,
-    ) where {RT}
-    COLLECT[] && GC.gc(true)
+        config::EnzymeRules.RevConfigWidth{N}, ::Const{typeof(passthrough)}, ::Type{RT}, t::Annotation,
+    ) where {N, RT}
     primal = EnzymeRules.needs_primal(config) ? t.val : nothing
-    shadow = EnzymeRules.needs_shadow(config) ? marked(t.val) : nothing
+    shadow = EnzymeRules.needs_shadow(config) ? marked(t.val, Val(N)) : nothing
     return EnzymeRules.AugmentedReturn(primal, shadow, nothing)
 end
 EnzymeRules.reverse(::EnzymeRules.RevConfig, ::Const{typeof(passthrough)}, ::Type, tape, t::Annotation) =
@@ -98,7 +100,6 @@ end
 end
 
 @testset "a rule's shadow of a returned record stays out of the system image" begin
-    COLLECT[] = false
     before = word_after_nothing()
     @testset "$fname, $sname, $mname" for (fname, f) in (("dynamic call", dynamic), ("direct call", direct)),
             (sname, data) in SHAPES, (mname, mode) in MODES
@@ -107,6 +108,12 @@ end
         @test word_after_nothing() == before
     end
     @test gradient_of(dynamic, set_runtime_activity(Reverse), (A, 0.3)) ≈ expected((A, 0.3))
+    @test word_after_nothing() == before
+    # A batch of two derivatives has a shadow each.
+    batch = (zero(X), zero(X))
+    autodiff(Reverse, Const(dynamic), Active, BatchDuplicated(copy(X), batch), Const((A, 0.3)))
+    @test batch[1] ≈ expected((A, 0.3))
+    @test batch[2] ≈ expected((A, 0.3))
     @test word_after_nothing() == before
     # What Julia keeps there on 1.10 and 1.13.
     @test Base.inferencebarrier(Int32(-512)) + 512 == 0
